@@ -28,6 +28,11 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
 
+      - name: 교차검증 라이브러리 설치
+        # 핵심 경로에는 필요 없지만, 대시보드에 실제 교차검증 수치를 실으려면 필요하다.
+        # 설치가 실패해도 백테스트는 자체 엔진으로 계속 돌아간다.
+        run: pip install pandas backtesting || echo "교차검증 없이 진행"
+
       - name: 벤치마크 실행 → docs/data/bench.json
         run: python bench/latency_bench.py --out docs/data/bench.json
         env: { PYTHONPATH: src }
@@ -45,7 +50,7 @@ jobs:
       - name: 백테스트 → docs/data/backtest.json
         run: |
           python quant/run_backtest.py --source replay \
-            --symbol BINANCE:BTCUSDT --interval 10 \
+            --symbol BINANCE:BTCUSDT --interval 10 --cross-check \
             --out docs/data/backtest.json || echo "봉 부족 — 건너뜀"
         env: { PYTHONPATH: src }
 
