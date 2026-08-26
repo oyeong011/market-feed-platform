@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: 테스트 (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: 의존성 설치
+        # 핵심 경로는 표준 라이브러리만 쓴다. 테스트 러너만 설치하면 된다.
+        run: pip install pytest
+
+      - name: 문법·임포트 점검
+        run: make lint
+
+      - name: 테스트
+        # 리플레이 어댑터를 쓰므로 거래소 접속 없이 전 구간이 검증된다
+        run: python -m pytest tests/ -v --tb=short
+        env:
+          PYTHONPATH: src
+
+  smoke:
+    name: 스택 스모크 테스트
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+
+      - name: 오프라인 리플레이로 전체 스택 기동
+        run: |
+          mkdir -p data/replay
+          test -f data/replay/sample.mdf || { echo "녹화 파일 없음"; exit 1; }
+          MDFEED_ADAPTERS=replay MDFEED_REPLAY_LOOP=1 \
+          MDFEED_RUN_DIR=/tmp/mdfeed \
+          PYTHONPATH=src python -m mdfeed.cli up > /tmp/stack.log 2>&1 &
+          echo $! > /tmp/sup.pid
+          sleep 15
+
+      - name: 헬스체크 (전 서비스 정상이어야 통과)
+        run: PYTHONPATH=src python ops/healthcheck.py
+
+      - name: 참조 클라이언트로 실제 구독 검증
+        run: |
+          PYTHONPATH=src timeout 30 python -m mdfeed.cli client \
+            --duration 10 --quiet | tee /tmp/client.log
+          # 시퀀스 유실이 있으면 실패시킨다. 배포단 회귀를 잡는 최후 방어선.
+          grep -q "데이터 무결성: 100" /tmp/client.log || {
+            echo "::error::구독자 데이터 무결성 100% 미달"; cat /tmp/client.log; exit 1; }
+
+      - name: REST API 확인
+        run: |
+          curl -sf localhost:9103/api/v1/stats | python3 -m json.tool
+          curl -sf localhost:9100/metrics | head -20
+
+      - name: 우아한 종료 확인 (SIGTERM 이후 프로세스가 남지 않아야 함)
+        run: |
+          kill "$(cat /tmp/sup.pid)"
+          sleep 12
+          if pgrep -f "mdfeed.services" > /dev/null; then
+            echo "::error::SIGTERM 후에도 프로세스가 살아있음"; pgrep -af "mdfeed.services"; exit 1
+          fi
+          echo "정상 종료 확인"
+
+      - name: 실패 시 로그 업로드
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stack-logs
+          path: /tmp/*.log
+
+  bench:
+    name: 성능 벤치마크
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: 벤치마크 실행
+        run: python bench/latency_bench.py --quick --out /tmp/bench.json
+        env: { PYTHONPATH: src }
+      - name: 결과 요약
+        run: |
+          python - <<'PY'
+          import json
+          d = json.load(open("/tmp/bench.json"))
+          print("| 항목 | 값 |"); print("|---|---|")
+          print(f"| MDFP 인코딩 | {d['protocol']['encode_msg_per_s']:,} msg/s |")
+          print(f"| MDFP 파싱 | {d['protocol']['parse_msg_per_s']:,} msg/s |")
+          print(f"| 링버퍼 push | {d['ringbuffer']['push_msg_per_s']:,} msg/s |")
+          print(f"| 버스 지연 p50 | {d['bus_latency']['latency_p50_us']} µs |")
+          print(f"| 버스 처리량 | {d['bus_throughput']['throughput_msg_per_s']:,} msg/s |")
+          print(f"| HTTP | {d['http']['req_per_s']:,} req/s |")
+          PY
+      - uses: actions/upload-artifact@v4
+        with: { name: bench-result, path: /tmp/bench.json }
+
+  docker:
+    name: 컨테이너 빌드
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 이미지 빌드
+        run: docker build -t mdfeed:ci .
+      - name: 컨테이너가 실제로 기동되는지
+        run: |
+          docker run -d --name t -e MDFEED_ADAPTERS=replay \
+            -v "$PWD/data/replay:/opt/mdfeed/data/replay:ro" \
+            -p 9100:9100 mdfeed:ci
+          for i in $(seq 1 20); do
+            if curl -sf localhost:9100/healthz >/dev/null; then break; fi; sleep 2
+          done
+          curl -sf localhost:9100/healthz | python3 -m json.tool
+          docker logs t | tail -20
+          docker rm -f t

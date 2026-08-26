@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# 런타임 산출물
+data/mdfeed.db*
+data/reference/          # financial-database 캐시 (원본은 별도 레포)
+/tmp/
+*.log
+.DS_Store
+.idea/
+.vscode/
+
+# 녹화 샘플은 커밋한다 (오프라인 데모·CI 재현에 필요)
+!data/replay/sample.mdf

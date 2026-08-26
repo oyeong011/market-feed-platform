@@ -1,0 +1,92 @@
+# MDFeed 전체 스택 — 서비스마다 컨테이너 하나.
+#
+# 프로세스를 한 컨테이너에 몰아넣지 않은 이유는 systemd 배포와 같다:
+# 배포단이 죽어도 수집은 살아야 하고, 자원 한계와 재시작 정책을 따로 걸어야 한다.
+#
+# IPC(UDS 소켓)는 컨테이너 경계를 넘지 못하므로 named volume 을 공유한다.
+# 여러 호스트로 흩어질 때는 MDFEED_BUS_BACKEND=zmq 로 바꾼다.
+
+name: mdfeed
+
+x-common: &common
+  build: .
+  image: mdfeed:latest
+  restart: unless-stopped
+  environment: &env
+    MDFEED_RUN_DIR: /run/mdfeed
+    MDFEED_BUS_PATH: /run/mdfeed/bus.sock
+    MDFEED_SIGNAL_BUS_PATH: /run/mdfeed/signals.sock
+    MDFEED_HTTP_HOST: "0.0.0.0"
+    MDFEED_LOG_JSON: "1"
+    DATABASE_URL: postgresql://mdfeed:mdfeed@postgres:5432/mdfeed
+  volumes:
+    - bus:/run/mdfeed          # UDS 소켓 공유 = 컨테이너 간 IPC
+    - data:/var/lib/mdfeed
+    - ./data/replay:/opt/mdfeed/data/replay:ro
+  depends_on:
+    feedd:
+      condition: service_healthy
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mdfeed
+      POSTGRES_PASSWORD: mdfeed
+      POSTGRES_DB: mdfeed
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mdfeed"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports: ["5432:5432"]
+
+  feedd:
+    <<: *common
+    command: ["python3", "-m", "mdfeed.services.feedd"]
+    ports: ["9100:9100"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,json,sys; d=json.loads(urllib.request.urlopen('http://127.0.0.1:9100/healthz',timeout=4).read()); sys.exit(0 if d.get('healthy') else 1)"]
+      interval: 10s
+      timeout: 5s
+      start_period: 25s
+      retries: 3
+
+  tcp-gateway:
+    <<: *common
+    command: ["python3", "-m", "mdfeed.services.tcp_gateway"]
+    ports: ["9101:9101", "9111:9111"]
+
+  ws-gateway:
+    <<: *common
+    command: ["python3", "-m", "mdfeed.services.ws_gateway"]
+    ports: ["9102:9102"]
+
+  writer:
+    <<: *common
+    command: ["python3", "-m", "mdfeed.services.writer"]
+    ports: ["9104:9104"]
+
+  rest-api:
+    <<: *common
+    command: ["python3", "-m", "mdfeed.services.rest_api"]
+    ports: ["9103:9103"]
+
+  strategy:
+    <<: *common
+    command: ["python3", "-m", "mdfeed.services.strategy"]
+    ports: ["9105:9105"]
+
+volumes:
+  bus:
+  data:
+  pgdata:

@@ -1,0 +1,106 @@
+{
+ "symbol": "BINANCE:BTCUSDT",
+ "source": "data/replay/sample.mdf (녹화 리플레이)",
+ "bars": 109,
+ "interval_s": 10,
+ "span_minutes": 18.0,
+ "ticks": 37711,
+ "fee_rate": 0.0005,
+ "slippage_bp": 5.0,
+ "buy_hold_return_pct": -0.339,
+ "results": [
+  {
+   "strategy": "sma_cross",
+   "symbol": "BINANCE:BTCUSDT",
+   "bars": 109,
+   "trades": 1,
+   "total_return_pct": -0.209,
+   "max_drawdown_pct": -0.209,
+   "sharpe": -235.935,
+   "win_rate_pct": 0.0,
+   "profit_factor": 0.0,
+   "start_equity": 1000000,
+   "end_equity": 997910.25,
+   "vs_buy_hold_pp": 0.13
+  },
+  {
+   "strategy": "rsi_revert",
+   "symbol": "BINANCE:BTCUSDT",
+   "bars": 109,
+   "trades": 1,
+   "total_return_pct": -0.202,
+   "max_drawdown_pct": -0.12,
+   "sharpe": -137.849,
+   "win_rate_pct": 0.0,
+   "profit_factor": 0.0,
+   "start_equity": 1000000,
+   "end_equity": 997976.67,
+   "vs_buy_hold_pp": 0.137
+  },
+  {
+   "strategy": "bb_break",
+   "symbol": "BINANCE:BTCUSDT",
+   "bars": 109,
+   "trades": 1,
+   "total_return_pct": -0.251,
+   "max_drawdown_pct": -0.251,
+   "sharpe": -290.7,
+   "win_rate_pct": 0.0,
+   "profit_factor": 0.0,
+   "start_equity": 1000000,
+   "end_equity": 997493.2,
+   "vs_buy_hold_pp": 0.088
+  }
+ ],
+ "first_bar_ns": 1787766070000000000,
+ "last_bar_ns": 1787767150000000000,
+ "cross_check": {
+  "libraries": {
+   "pandas": true,
+   "numpy": true,
+   "vectorbt": false,
+   "backtesting": true,
+   "pandas_ta": false,
+   "talib": false
+  },
+  "indicators": {
+   "sma_max_abs_diff": 7.275957614183426e-11,
+   "bars": 109,
+   "rsi_max_abs_diff": 0.5938289994134109,
+   "rsi_source": "pandas(ewm) 재현"
+  },
+  "ours_as_reported": {
+   "strategy": "rsi_revert",
+   "symbol": "BINANCE:BTCUSDT",
+   "bars": 109,
+   "trades": 1,
+   "total_return_pct": -0.202,
+   "max_drawdown_pct": -0.12,
+   "sharpe": -137.849,
+   "win_rate_pct": 0.0,
+   "profit_factor": 0.0,
+   "start_equity": 1000000,
+   "end_equity": 997976.67,
+   "vs_buy_hold_pp": 0.137
+  },
+  "ours_matched_assumptions": {
+   "note": "비교용으로 슬리피지 0 · 수수료만 적용해 재실행한 결과",
+   "total_return_pct": -0.109,
+   "max_drawdown_pct": -0.121,
+   "trades": 1
+  },
+  "vectorbt": {
+   "skipped": "vectorbt 미설치 (pip install vectorbt)"
+  },
+  "backtesting_py": {
+   "total_return_pct": -0.10276032600000035,
+   "max_drawdown_pct": -0.11438269080298324,
+   "trades": 1,
+   "source": "backtesting.py"
+  },
+  "return_diff_pp_vs_matched": {
+   "backtesting_py": 0.0062
+  },
+  "verdict": "SMA 최대 절대오차 7.28e-11 (부동소수 오차 수준, 사실상 동일) / RSI 최대 절대오차 0.594 — 우리 구현은 Wilder 원 정의(첫 n개 평균으로 seeding)를 따르고 비교 대상은 첫 값부터 EWM 을 시작한다. seeding 방식 차이이며 tests/test_indicators.py 에서 Wilder 공식 예제와 소수 둘째 자리까지 일치를 확인했다 / 동일 가정에서 총수익률 최대 차이 0.006%p — 체결 규칙(부분청산·주문 단위) 차이로 설명되는 범위"
+ }
+}

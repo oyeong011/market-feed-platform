@@ -1,0 +1,82 @@
+name: Pages
+
+# docs/ 를 GitHub Pages 로 배포한다.
+# 대시보드가 읽는 지표 JSON 은 CI 가 매번 새로 만들어 넣는다 —
+# 사람이 수치를 옮겨 적으면 문서와 실제가 갈라지기 때문이다.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 21 * * *"    # 매일 06:00 KST 지표 갱신
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+
+      - name: 벤치마크 실행 → docs/data/bench.json
+        run: python bench/latency_bench.py --out docs/data/bench.json
+        env: { PYTHONPATH: src }
+
+      - name: 오프라인 리플레이로 파이프라인 검증 데이터 생성
+        run: |
+          mkdir -p data
+          MDFEED_ADAPTERS=replay MDFEED_REPLAY_SPEED=0 MDFEED_REPLAY_LOOP=0 \
+          MDFEED_RUN_DIR=/tmp/mdfeed MDFEED_BAR_INTERVAL_S=60 \
+          PYTHONPATH=src python -m mdfeed.cli up --only feedd writer > /tmp/s.log 2>&1 &
+          sleep 25
+          pkill -f "mdfeed.cli up" || true
+          sleep 8
+
+      - name: 백테스트 → docs/data/backtest.json
+        run: |
+          python quant/run_backtest.py --source replay \
+            --symbol BINANCE:BTCUSDT --interval 10 \
+            --out docs/data/backtest.json || echo "봉 부족 — 건너뜀"
+        env: { PYTHONPATH: src }
+
+      - name: 재무 팩터 스크리닝 → docs/data/factors.json
+        run: |
+          python quant/factor_screen.py --market dart --top 20 \
+            --out docs/data/factors.json || echo "참조 데이터 미확보 — 건너뜀"
+        env: { PYTHONPATH: src }
+
+      - name: 빌드 메타 기록
+        run: |
+          python - <<'PY'
+          import json, subprocess, time, os
+          os.makedirs("docs/data", exist_ok=True)
+          sha = subprocess.check_output(["git","rev-parse","--short","HEAD"]).decode().strip()
+          json.dump({"commit": sha,
+                     "built_at": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+                     "repo": os.getenv("GITHUB_REPOSITORY","")},
+                    open("docs/data/build.json","w"), ensure_ascii=False, indent=1)
+          PY
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: docs }
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

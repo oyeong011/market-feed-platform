@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MDFeed — 실시간 마켓데이터 FEED 플랫폼</title>
+<meta name="description" content="거래소 실시간 시세를 수집·정규화해 TCP/WebSocket/REST로 배포하는 마켓데이터 피드 서비스. 표준 라이브러리만으로 구현.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📈</text></svg>">
+<style>
+:root{
+  --bg:#0b0f14; --panel:#121820; --panel2:#161d27; --line:#222c38;
+  --fg:#e6edf3; --dim:#8b98a5; --dimmer:#5b6672;
+  --up:#26a69a; --down:#ef5350; --accent:#4c9aff; --warn:#f0b429;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Neo","Malgun Gothic",sans-serif;line-height:1.6;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1180px;margin:0 auto;padding:0 20px}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+code{font-family:var(--mono);font-size:.9em;background:#1c2430;padding:.15em .4em;border-radius:3px;color:#b7c5d3}
+
+/* header */
+header{border-bottom:1px solid var(--line);background:linear-gradient(180deg,#0e141b,#0b0f14);padding:48px 0 40px}
+.brand{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+h1{font-size:34px;font-weight:700;letter-spacing:-.5px}
+.tag{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--line);padding:3px 8px;border-radius:20px}
+.sub{color:var(--dim);margin-top:12px;font-size:16px;max-width:760px}
+.links{margin-top:22px;display:flex;gap:10px;flex-wrap:wrap}
+.btn{border:1px solid var(--line);background:var(--panel);padding:8px 15px;border-radius:6px;font-size:13px;color:var(--fg);display:inline-flex;align-items:center;gap:7px;transition:.15s}
+.btn:hover{border-color:var(--accent);text-decoration:none;background:var(--panel2)}
+.btn.primary{background:#1a3a5c;border-color:#2d5f8f}
+
+/* status pill */
+#modebar{margin-top:22px;display:flex;align-items:center;gap:10px;font-size:12px;font-family:var(--mono);color:var(--dim);flex-wrap:wrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--dimmer);display:inline-block}
+.dot.live{background:var(--up);box-shadow:0 0 0 0 rgba(38,166,154,.7);animation:pulse 2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(38,166,154,.6)}70%{box-shadow:0 0 0 7px rgba(38,166,154,0)}100%{box-shadow:0 0 0 0 rgba(38,166,154,0)}}
+
+section{padding:44px 0;border-bottom:1px solid var(--line)}
+h2{font-size:20px;margin-bottom:6px;display:flex;align-items:center;gap:10px}
+h2::before{content:"";width:3px;height:17px;background:var(--accent);border-radius:2px}
+.lede{color:var(--dim);font-size:14px;margin-bottom:22px;max-width:820px}
+h3{font-size:14px;color:var(--dim);margin:24px 0 10px;font-weight:600;text-transform:uppercase;letter-spacing:.6px}
+
+/* grid + cards */
+.grid{display:grid;gap:12px}
+.g4{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
+.g3{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+.g2{grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px 18px}
+.card .k{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.7px}
+.card .v{font-size:26px;font-weight:700;font-family:var(--mono);margin-top:6px;letter-spacing:-.5px}
+.card .n{font-size:11.5px;color:var(--dimmer);margin-top:5px;line-height:1.5}
+
+/* table */
+.tblwrap{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--panel)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:10px 14px;background:var(--panel2);color:var(--dim);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.6px;white-space:nowrap;border-bottom:1px solid var(--line)}
+td{padding:9px 14px;border-bottom:1px solid #1a222c;font-family:var(--mono);font-size:12.5px;white-space:nowrap}
+tr:last-child td{border-bottom:none}
+tbody tr:hover{background:#151d27}
+td.txt{font-family:inherit;white-space:normal}
+.num{text-align:right}
+.up{color:var(--up)} .down{color:var(--down)} .muted{color:var(--dim)}
+.flash-up{animation:fu .6s} .flash-down{animation:fd .6s}
+@keyframes fu{0%{background:rgba(38,166,154,.28)}100%{background:transparent}}
+@keyframes fd{0%{background:rgba(239,83,80,.28)}100%{background:transparent}}
+.badge{font-family:var(--mono);font-size:10.5px;padding:2px 7px;border-radius:4px;border:1px solid var(--line);color:var(--dim)}
+.badge.ok{color:var(--up);border-color:#1e4d47;background:#0f1f1d}
+.badge.warn{color:var(--warn);border-color:#4d4020;background:#1f1a0f}
+
+/* diagram */
+.diagram{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:22px;overflow-x:auto}
+.diagram svg{display:block;min-width:820px;margin:0 auto}
+
+/* pre */
+pre{background:#0d131a;border:1px solid var(--line);border-radius:8px;padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.65;color:#b7c5d3}
+pre .c{color:#5b6672}
+pre .p{color:var(--accent)}
+
+.note{font-size:12.5px;color:var(--dimmer);margin-top:14px;padding-left:12px;border-left:2px solid var(--line);line-height:1.7}
+footer{padding:36px 0 56px;color:var(--dimmer);font-size:12.5px}
+.hidden{display:none}
+@media(max-width:640px){h1{font-size:26px}.card .v{font-size:21px}section{padding:32px 0}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="brand">
+      <h1>MDFeed</h1>
+      <span class="tag">MDFP/1</span>
+      <span class="tag">Python 표준 라이브러리만</span>
+      <span class="tag">6 프로세스</span>
+    </div>
+    <p class="sub">
+      거래소 실시간 시세를 <strong>수집 → 정규화 → 멀티프로토콜 배포</strong>하는 마켓데이터 FEED 서비스.
+      WebSocket 클라이언트·서버, HTTP/1.1 서버, TCP 바이너리 프로토콜, 공유메모리 링버퍼를
+      외부 의존성 없이 직접 구현했습니다.
+    </p>
+    <div class="links">
+      <a class="btn primary" href="https://github.com/oyeong011/market-feed-platform">GitHub 저장소</a>
+      <a class="btn" href="#arch">아키텍처</a>
+      <a class="btn" href="#perf">성능</a>
+      <a class="btn" href="#ops">운영</a>
+      <a class="btn" href="#quant">퀀트</a>
+    </div>
+    <div id="modebar">
+      <span class="dot" id="dot"></span><span id="modetext">연결 확인 중…</span>
+      <span id="buildinfo"></span>
+    </div>
+  </div>
+</header>
+
+<!-- ─────────── 실시간 시세 ─────────── -->
+<section id="live">
+  <div class="wrap">
+    <h2>실시간 시세 보드</h2>
+    <p class="lede" id="livelede">
+      ws-gateway 가 초당 수백 틱을 100ms 주기로 병합해 보냅니다. 사람 눈은 초당 10프레임 이상을
+      구분하지 못하는데 원본 틱을 그대로 밀면 브라우저 렌더링이 못 따라가 탭이 멈추기 때문입니다.
+    </p>
+    <div class="tblwrap">
+      <table id="quotes">
+        <thead><tr>
+          <th>거래소</th><th>종목</th><th class="num">현재가</th><th class="num">매수호가</th>
+          <th class="num">매도호가</th><th class="num">스프레드</th><th class="num">체결수</th>
+          <th class="num">누적수량</th><th class="num">수집지연</th>
+        </tr></thead>
+        <tbody id="qbody"><tr><td colspan="9" class="txt muted">불러오는 중…</td></tr></tbody>
+      </table>
+    </div>
+    <p class="note" id="livenote"></p>
+  </div>
+</section>
+
+<!-- ─────────── 아키텍처 ─────────── -->
+<section id="arch">
+  <div class="wrap">
+    <h2>아키텍처</h2>
+    <p class="lede">
+      수집은 한 프로세스로 몰고 배포·적재·전략은 분리했습니다. 거래소 세션은 비싸고 끊기면 갭이
+      생기므로, 소비자가 각자 거래소에 붙으면 같은 데이터를 N번 받고 N배로 끊깁니다.
+      팬아웃은 로컬 IPC(Unix Domain Socket)로 합니다.
+    </p>
+    <div class="diagram">
+<svg viewBox="0 0 900 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MDFeed 아키텍처 다이어그램">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4c9aff"/>
+    </marker>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b6672"/>
+    </marker>
+    <style>
+      .bx{fill:#161d27;stroke:#2a3542;stroke-width:1.2;rx:6}
+      .bxa{fill:#14283d;stroke:#2d5f8f;stroke-width:1.4;rx:6}
+      .t{fill:#e6edf3;font:600 12px ui-monospace,monospace}
+      .s{fill:#8b98a5;font:10px ui-monospace,monospace}
+      .lb{fill:#5b6672;font:9.5px ui-monospace,monospace}
+      .ln{stroke:#4c9aff;stroke-width:1.4;fill:none;marker-end:url(#a)}
+      .lg{stroke:#5b6672;stroke-width:1.1;fill:none;marker-end:url(#ag);stroke-dasharray:3 3}
+      .grp{fill:none;stroke:#222c38;stroke-width:1;stroke-dasharray:4 4;rx:8}
+    </style>
+  </defs>
+
+  <!-- 업스트림 -->
+  <rect class="grp" x="8" y="18" width="150" height="200"/>
+  <text class="lb" x="16" y="34">UPSTREAM</text>
+  <rect class="bx" x="20" y="46" width="126" height="40"/>
+  <text class="t" x="32" y="64">Upbit</text><text class="s" x="32" y="78">WebSocket · KRW</text>
+  <rect class="bx" x="20" y="96" width="126" height="40"/>
+  <text class="t" x="32" y="114">Binance</text><text class="s" x="32" y="128">WebSocket · USDT</text>
+  <rect class="bx" x="20" y="146" width="126" height="40"/>
+  <text class="t" x="32" y="164">KIS</text><text class="s" x="32" y="178">국내주식 · 선택</text>
+
+  <!-- feedd -->
+  <rect class="bxa" x="196" y="72" width="152" height="112"/>
+  <text class="t" x="212" y="94">feedd</text>
+  <text class="s" x="212" y="112">정규화 · seq 부여</text>
+  <text class="s" x="212" y="128">MDFP 인코딩</text>
+  <text class="s" x="212" y="144">스냅샷 캐시</text>
+  <text class="s" x="212" y="160">시계 오프셋 보정</text>
+  <text class="s" x="212" y="176">:9100 /healthz</text>
+
+  <path class="ln" d="M148,66 C175,66 175,110 194,110"/>
+  <path class="ln" d="M148,116 L194,120"/>
+  <path class="lg" d="M148,166 C175,166 175,140 194,134"/>
+
+  <!-- bus -->
+  <rect class="bxa" x="392" y="96" width="104" height="64"/>
+  <text class="t" x="404" y="118">UDS BUS</text>
+  <text class="s" x="404" y="134">pub/sub</text>
+  <text class="s" x="404" y="148">백프레셔</text>
+  <path class="ln" d="M350,128 L390,128"/>
+
+  <!-- shm ring -->
+  <rect class="bx" x="392" y="196" width="104" height="52"/>
+  <text class="t" x="404" y="216">SHM RING</text>
+  <text class="s" x="404" y="232">1.5M msg/s</text>
+  <path class="ln" d="M272,186 C272,222 340,222 390,222"/>
+
+  <!-- 소비자 -->
+  <rect class="grp" x="530" y="18" width="360" height="330"/>
+  <text class="lb" x="538" y="34">DOWNSTREAM (별도 프로세스)</text>
+
+  <rect class="bx" x="546" y="46" width="150" height="44"/>
+  <text class="t" x="558" y="64">tcp-gateway</text><text class="s" x="558" y="79">:9101 MDFP 바이너리</text>
+  <rect class="bx" x="546" y="100" width="150" height="44"/>
+  <text class="t" x="558" y="118">ws-gateway</text><text class="s" x="558" y="133">:9102 WS + 대시보드</text>
+  <rect class="bx" x="546" y="154" width="150" height="44"/>
+  <text class="t" x="558" y="172">writer</text><text class="s" x="558" y="187">1분봉 · DB 적재</text>
+  <rect class="bx" x="546" y="208" width="150" height="44"/>
+  <text class="t" x="558" y="226">strategy</text><text class="s" x="558" y="241">지표 → SIGNAL</text>
+  <rect class="bx" x="546" y="262" width="150" height="44"/>
+  <text class="t" x="558" y="280">rest-api</text><text class="s" x="558" y="295">:9103 과거 조회</text>
+
+  <path class="ln" d="M498,120 C520,120 520,68 544,68"/>
+  <path class="ln" d="M498,124 L544,122"/>
+  <path class="ln" d="M498,132 C520,132 520,176 544,176"/>
+  <path class="ln" d="M498,140 C520,140 520,230 544,230"/>
+
+  <!-- 시그널 버스 -->
+  <path class="ln" d="M700,230 C730,230 730,300 730,300 L730,140 C730,120 715,122 700,122" stroke-dasharray="4 3"/>
+  <text class="lb" x="738" y="200">signals.sock</text>
+  <text class="lb" x="738" y="214">(2단 파이프라인)</text>
+
+  <!-- 저장소 -->
+  <rect class="bx" x="546" y="316" width="150" height="34"/>
+  <text class="t" x="558" y="337">PostgreSQL / SQLite</text>
+  <path class="ln" d="M621,200 L621,314"/>
+  <path class="lg" d="M660,306 L660,286"/>
+
+  <!-- 소비자 (외부) -->
+  <rect class="bx" x="762" y="46" width="122" height="44"/>
+  <text class="t" x="774" y="64">구독 클라이언트</text><text class="s" x="774" y="79">갭 탐지 · 재접속</text>
+  <path class="ln" d="M698,68 L760,68"/>
+  <rect class="bx" x="762" y="100" width="122" height="44"/>
+  <text class="t" x="774" y="118">브라우저</text><text class="s" x="774" y="133">틱 병합 100ms</text>
+  <path class="ln" d="M698,122 L760,122"/>
+</svg>
+    </div>
+    <div class="grid g4" style="margin-top:14px">
+      <div class="card"><div class="k">IPC</div><div class="v">UDS</div>
+        <div class="n">Unix Domain Socket pub/sub. 같은 호스트에서 TCP 루프백보다 빠르고, 파일시스템 권한으로 접근제어가 된다. 여러 호스트로 흩어지면 ZeroMQ 로 전환.</div></div>
+      <div class="card"><div class="k">백프레셔</div><div class="v">drop-oldest</div>
+        <div class="n">구독자별 유한 큐. 차면 오래된 것부터 버리고 카운트한다. 느린 구독자 하나가 전체 배포를 멈추게 두지 않는다.</div></div>
+      <div class="card"><div class="k">무결성</div><div class="v">seq + CRC32</div>
+        <div class="n">구독자별 연속 시퀀스로 갭을 탐지하고, CRC32 로 프레이밍 오류를 즉시 잡아 재동기화한다.</div></div>
+      <div class="card"><div class="k">복구</div><div class="v">snapshot+delta</div>
+        <div class="n">접속 즉시 최신값 스냅샷을 보내고 증분을 잇는다. 갭을 만나면 재접속으로 재동기화.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────── 성능 ─────────── -->
+<section id="perf">
+  <div class="wrap">
+    <h2>성능</h2>
+    <p class="lede">
+      아래 수치는 <code>bench/latency_bench.py</code> 가 CI에서 실행해 만든 JSON을 그대로 읽습니다.
+      사람이 옮겨 적지 않으므로 문서와 실제가 갈라지지 않습니다.
+    </p>
+    <div class="grid g4" id="perfcards"></div>
+    <h3>계층별 상세</h3>
+    <div class="tblwrap">
+      <table id="perftbl">
+        <thead><tr><th>계층</th><th class="num">처리량</th><th class="num">지연 p50</th><th class="num">지연 p99</th><th>비고</th></tr></thead>
+        <tbody id="perfbody"><tr><td colspan="5" class="txt muted">불러오는 중…</td></tr></tbody>
+      </table>
+    </div>
+    <p class="note" id="perfnote"></p>
+  </div>
+</section>
+
+<!-- ─────────── 운영 ─────────── -->
+<section id="ops">
+  <div class="wrap">
+    <h2>리눅스 운영</h2>
+    <p class="lede">
+      systemd 유닛 6종, 운영 스크립트, 워치독, 장애 런북을 포함합니다.
+      프로세스가 살아있어도 데이터가 안 오는 상태 — 실제 피드 장애의 대부분 —를 탐지하는 것이 핵심입니다.
+    </p>
+    <div class="grid g2">
+      <div>
+        <h3>서비스 점검</h3>
+<pre><span class="c"># 프로세스 + HTTP 헬스 + 포트를 한 번에</span>
+$ <span class="p">./ops/ops.sh status</span>
+SERVICE        PID      PROCESS   HTTP      요약
+feedd          1841     RUNNING   HEALTHY   seq=104707 symbols=11
+tcp-gateway    1849     RUNNING   HEALTHY   frames_in=104211 subscribers=2
+ws-gateway     1850     RUNNING   HEALTHY   ws_clients=1 symbols=11
+rest-api       1851     RUNNING   HEALTHY
+writer         1852     RUNNING   HEALTHY   rows_written=98442
+strategy       1853     RUNNING   HEALTHY   signals_emitted=7
+전체 정상
+
+<span class="c"># 장애 진단 원스톱 (업스트림·시퀀스·시계·디스크)</span>
+$ <span class="p">./ops/ops.sh diag</span></pre>
+      </div>
+      <div>
+        <h3>왜 워치독이 따로 필요한가</h3>
+<pre><span class="c"># systemd 의 Restart=on-failure 는</span>
+<span class="c"># "프로세스가 죽어야" 동작한다.</span>
+<span class="c"># 그런데 피드 장애는 대부분 이렇게 온다:</span>
+
+  · TCP half-open
+    소켓은 ESTABLISHED 인데 데이터가 없음
+  · 거래소가 구독을 조용히 해지
+    에러 없이 스트림만 멎음
+  · 이벤트 루프가 블로킹 호출에 물림
+
+<span class="c"># 전부 프로세스는 멀쩡하다.</span>
+<span class="c"># /healthz 로만 탐지되므로</span>
+<span class="c"># 헬스 판정 → 재시작 경로를 따로 뒀다.</span>
+
+$ <span class="p">python3 ops/healthcheck.py</span>
+[OK]   feedd: 정상
+[WARN] 시계 오프셋 BINANCE: 13ms — NTP 확인
+전체 판정: WARNING   <span class="c"># exit 1</span></pre>
+      </div>
+    </div>
+    <h3>운영에서 실제로 잡아낸 문제</h3>
+    <div class="tblwrap">
+      <table>
+        <thead><tr><th>증상</th><th>진짜 원인</th><th>조치</th></tr></thead>
+        <tbody>
+          <tr><td class="txt">구독자 데이터 무결성 48%</td>
+              <td class="txt">게이트웨이가 심볼 필터링을 하는데 seq는 전역 번호를 그대로 사용 → 걸러진 번호가 구독자에겐 전부 유실로 보임</td>
+              <td class="txt"><span class="badge ok">해결</span> 구독자별 시퀀스 재넘버링 → <strong>100.0000%</strong></td></tr>
+          <tr><td class="txt">DB 지연시간이 −30,825µs</td>
+              <td class="txt">거래소 시계가 로컬보다 앞섬. 음수 지연이 든 테이블은 어떤 SQL 집계도 결론이 틀림</td>
+              <td class="txt"><span class="badge ok">해결</span> 최소값 필터로 시계 오프셋 추정·보정 (NTP 방식)</td></tr>
+          <tr><td class="txt">SIGTERM 후 프로세스가 안 내려감</td>
+              <td class="txt">Python 3.12+ <code>Server.wait_closed()</code> 가 핸들러 종료를 기다리는데, 핸들러는 큐에서 영원히 대기</td>
+              <td class="txt"><span class="badge ok">해결</span> 리스너 닫기 전 연결 핸들러부터 취소</td></tr>
+          <tr><td class="txt">종료 중 세그폴트</td>
+              <td class="txt"><code>asyncio.to_thread</code> 는 await 를 취소해도 스레드가 안 멈춤. 그 스레드가 쓰는 중에 DB 커넥션을 닫아 use-after-free</td>
+              <td class="txt"><span class="badge ok">해결</span> DB 접근 경로 전체를 단일 락으로 직렬화</td></tr>
+          <tr><td class="txt">CRC 오류 후 세션 전체 정지</td>
+              <td class="txt">재동기화 직후 파서가 남은 버퍼를 더 안 읽고 반환</td>
+              <td class="txt"><span class="badge ok">해결</span> 재동기화 후 루프 계속 → 오염 프레임 1개만 폐기</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">
+      전부 개발 중 <strong>참조 클라이언트와 통합 테스트가 잡아낸</strong> 실제 결함입니다.
+      상세 재현 절차와 조치는 저장소의 <a href="https://github.com/oyeong011/market-feed-platform/blob/main/RUNBOOK.md">RUNBOOK.md</a>,
+      설계 판단 근거는 <a href="https://github.com/oyeong011/market-feed-platform/blob/main/DESIGN.md">DESIGN.md</a> 에 있습니다.
+    </p>
+  </div>
+</section>
+
+<!-- ─────────── 퀀트 ─────────── -->
+<section id="quant">
+  <div class="wrap">
+    <h2>퀀트 — 두 데이터 평면</h2>
+    <p class="lede">
+      실시간 평면(거래소 틱)과 참조 평면(SEC/DART 재무제표 487,434건)을 한 플랫폼에서 다룹니다.
+      조인 키는 <code>DART stock_code = KIS 종목코드</code> 입니다. 크립토 심볼은 대응하는 재무제표가
+      없으므로 억지로 붙이지 않습니다.
+    </p>
+
+    <h3>백테스트 — 실시간 엔진과 같은 전략 코드</h3>
+    <div class="tblwrap">
+      <table id="bttbl">
+        <thead><tr><th>전략</th><th class="num">거래</th><th class="num">수익률</th><th class="num">MDD</th>
+          <th class="num">샤프</th><th class="num">승률</th><th class="num">B&amp;H 대비</th></tr></thead>
+        <tbody id="btbody"><tr><td colspan="7" class="txt muted">불러오는 중…</td></tr></tbody>
+      </table>
+    </div>
+    <p class="note" id="btnote"></p>
+
+    <h3>오픈소스 라이브러리 교차검증</h3>
+    <p class="lede" style="margin-bottom:14px">
+      자체 백테스트 엔진의 가장 큰 위험은 <strong>조용히 틀리는 것</strong>입니다. 미래 참조가 한 줄
+      섞여 있어도 결과는 그럴듯하게 나옵니다. 그래서 널리 쓰이는 라이브러리로 같은 데이터를
+      다시 돌려 대조합니다.
+    </p>
+    <div class="grid g3" id="cccards"></div>
+    <p class="note" id="ccnote"></p>
+
+    <h3>재무 팩터 스크리닝 (DART)</h3>
+    <div class="tblwrap">
+      <table id="fctbl">
+        <thead><tr><th>#</th><th>종목</th><th class="txt">이름</th><th class="num">점수</th>
+          <th class="num">영업이익률</th><th class="num">ROE</th><th class="num">매출성장</th></tr></thead>
+        <tbody id="fcbody"><tr><td colspan="7" class="txt muted">불러오는 중…</td></tr></tbody>
+      </table>
+    </div>
+    <p class="note">
+      결측을 0으로 채우지 않습니다. 채우는 순간 "부채가 없는 회사"와 "부채 데이터가 없는 회사"가
+      같아져 스크리닝 결과가 조용히 오염됩니다. 각 팩터를 백분위로 정규화해 합산하며,
+      결측 종목은 그 팩터에서 중앙값을 받습니다.
+    </p>
+  </div>
+</section>
+
+<!-- ─────────── 직접 해보기 ─────────── -->
+<section id="try">
+  <div class="wrap">
+    <h2>직접 돌려보기</h2>
+    <p class="lede">외부 패키지 설치가 필요 없습니다. <code>python3</code> 와 <code>git</code> 만 있으면 됩니다.</p>
+<pre>$ <span class="p">git clone https://github.com/oyeong011/market-feed-platform</span>
+$ <span class="p">cd market-feed-platform</span>
+
+$ <span class="p">make demo</span>          <span class="c"># 6개 프로세스 기동 + 대시보드 안내</span>
+$ <span class="p">make status</span>        <span class="c"># 서비스 상태</span>
+$ <span class="p">make client</span>        <span class="c"># 참조 TCP 구독 클라이언트 (갭 탐지 포함)</span>
+$ <span class="p">make diag</span>          <span class="c"># 장애 진단 원스톱</span>
+$ <span class="p">make test</span>          <span class="c"># 109개 테스트 (네트워크 불필요)</span>
+
+<span class="c"># 인터넷 없이도 전 구간 재현 — 녹화 파일 리플레이</span>
+$ <span class="p">MDFEED_ADAPTERS=replay make demo</span>
+
+<span class="c"># 리눅스 서버 배포</span>
+$ <span class="p">sudo make install-systemd &amp;&amp; systemctl start mdfeed.target</span></pre>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p>MDFeed · <a href="https://github.com/oyeong011/market-feed-platform">github.com/oyeong011/market-feed-platform</a></p>
+    <p style="margin-top:6px">참조 데이터: <a href="https://github.com/oyeong011/financial-database">financial-database</a> (SEC EDGAR · OpenDART, 487,434건)</p>
+    <p style="margin-top:6px" id="footbuild"></p>
+  </div>
+</footer>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const fmt = (n, d=0) => (n===null||n===undefined||Number.isNaN(n)) ? "–"
+  : Number(n).toLocaleString("ko-KR",{minimumFractionDigits:d,maximumFractionDigits:d});
+const pct = v => (v===null||v===undefined) ? "–" : (v*100).toFixed(1)+"%";
+const esc = s => String(s??"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+/* ── 데이터 로딩 ───────────────────────────────────────────────── */
+async function loadJSON(p){ try{ const r = await fetch(p,{cache:"no-store"}); return r.ok ? await r.json() : null; }catch(e){ return null; } }
+
+/* ── 성능 ─────────────────────────────────────────────────────── */
+loadJSON("data/bench.json").then(d => {
+  if(!d){ $("#perfbody").innerHTML = '<tr><td colspan="5" class="txt muted">bench.json 없음 — <code>make bench</code> 로 생성됩니다.</td></tr>'; return; }
+  const p=d.protocol, r=d.ringbuffer, bl=d.bus_latency, bt=d.bus_throughput, h=d.http, pl=d.pipeline;
+  $("#perfcards").innerHTML = [
+    ["MDFP 인코딩", fmt(p.encode_msg_per_s)+" <span style='font-size:13px;color:var(--dim)'>msg/s</span>", `프레임 ${p.frame_bytes}B (페이로드 ${p.payload_bytes}B, 헤더+CRC 오버헤드 ${p.overhead_pct}%)`],
+    ["공유메모리 링", fmt(r.push_msg_per_s)+" <span style='font-size:13px;color:var(--dim)'>msg/s</span>", `push ${r.push_ns_per_msg}ns. 생산자는 절대 블로킹하지 않고, 추월당한 소비자는 스스로 감지한다`],
+    ["IPC 버스 지연", fmt(bl.latency_p50_us,1)+" <span style='font-size:13px;color:var(--dim)'>µs p50</span>", `p99 ${fmt(bl.latency_p99_us,1)}µs / max ${fmt(bl.latency_max_us,1)}µs. 큐를 비운 상태에서 측정`],
+    ["전체 파이프라인", (pl&&pl.throughput_msg_per_s?fmt(pl.throughput_msg_per_s):"–")+" <span style='font-size:13px;color:var(--dim)'>msg/s</span>", "수집→정규화→인코딩→버스+링 전 구간 (리플레이 최대속도)"],
+  ].map(([k,v,n]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div><div class="n">${n}</div></div>`).join("");
+
+  const rows = [
+    ["MDFP 인코딩", fmt(p.encode_msg_per_s)+" msg/s", p.encode_ns_per_msg+" ns", "–", "고정폭 struct + CRC32"],
+    ["MDFP 파싱", fmt(p.parse_msg_per_s)+" msg/s", p.parse_ns_per_msg+" ns", "–", "부분 수신·재동기화 처리 포함"],
+    ["공유메모리 링", fmt(r.push_msg_per_s)+" msg/s", r.push_ns_per_msg+" ns", "–", `찢긴 읽기 ${r.torn_reads}건 / 추월 ${fmt(r.skipped_by_lap)}건 감지`],
+    ["UDS 버스 (지연)", fmt(bl.pacing_hz)+" Hz 페이싱", fmt(bl.latency_p50_us,1)+" µs", fmt(bl.latency_p99_us,1)+" µs", "큐가 빈 상태 = 순수 IPC 비용"],
+    ["UDS 버스 (처리량)", fmt(bt.throughput_msg_per_s)+" msg/s", "–", "–", `버스트 발행, 드롭 ${fmt(bt.dropped)}건`],
+    ["HTTP/1.1 서버", fmt(h.req_per_s)+" req/s", fmt(h.latency_p50_us,1)+" µs", fmt(h.latency_p99_us,1)+" µs", "keep-alive, 직접 구현"],
+  ];
+  if(pl && pl.throughput_msg_per_s) rows.push(["전체 파이프라인", fmt(pl.throughput_msg_per_s)+" msg/s","–","–", `${fmt(pl.published)}건 / ${pl.elapsed_s}초`]);
+  $("#perfbody").innerHTML = rows.map(c =>
+    `<tr><td>${c[0]}</td><td class="num">${c[1]}</td><td class="num">${c[2]}</td><td class="num">${c[3]}</td><td class="txt muted">${c[4]}</td></tr>`).join("");
+  $("#perfnote").innerHTML = `측정 환경: ${esc(d.env.platform)} · Python ${esc(d.env.python)} · ${d.env.cpu_count}코어 · ${esc(d.generated_at)}<br>
+    절대 성능이 아니라 <strong>계층별 상대 비용</strong>과 이 구조가 견디는 규모를 보기 위한 수치입니다.`;
+});
+
+/* ── 백테스트 ─────────────────────────────────────────────────── */
+loadJSON("data/backtest.json").then(d => {
+  if(!d || !d.results){ $("#btbody").innerHTML = '<tr><td colspan="7" class="txt muted">backtest.json 없음 — <code>make backtest</code> 로 생성됩니다.</td></tr>'; return; }
+  const cls = v => v>0 ? "up" : (v<0 ? "down" : "");
+  $("#btbody").innerHTML = d.results.map(r =>
+    `<tr><td>${esc(r.strategy)}</td><td class="num">${r.trades}</td>
+     <td class="num ${cls(r.total_return_pct)}">${r.total_return_pct.toFixed(3)}%</td>
+     <td class="num down">${r.max_drawdown_pct.toFixed(2)}%</td>
+     <td class="num">${r.sharpe.toFixed(2)}</td>
+     <td class="num">${r.win_rate_pct.toFixed(0)}%</td>
+     <td class="num ${cls(r.vs_buy_hold_pp)}">${r.vs_buy_hold_pp>0?"+":""}${r.vs_buy_hold_pp.toFixed(3)}p</td></tr>`).join("")
+   + `<tr><td class="muted">buy &amp; hold</td><td class="num muted">1</td>
+      <td class="num ${cls(d.buy_hold_return_pct)}">${d.buy_hold_return_pct.toFixed(3)}%</td>
+      <td class="num muted">–</td><td class="num muted">–</td><td class="num muted">–</td><td class="num muted">–</td></tr>`;
+  const cc = d.cross_check;
+  if(cc){
+    const m = cc.ours_matched_assumptions || {}, bp = cc.backtesting_py || {}, vb = cc.vectorbt || {};
+    const ind = cc.indicators || {};
+    const diff = cc.return_diff_pp_vs_matched || {};
+    const cards = [];
+    if(ind.sma_max_abs_diff !== undefined)
+      cards.push(["SMA(30) vs pandas", ind.sma_max_abs_diff.toExponential(2),
+        "최대 절대오차. 부동소수 오차 수준으로, 사실상 동일한 계산입니다."]);
+    if(ind.rsi_max_abs_diff !== undefined)
+      cards.push(["RSI(14) 대조", ind.rsi_max_abs_diff.toFixed(3),
+        `기준: ${esc(ind.rsi_source||"")}. seeding 방식 차이이며, Wilder 공식 예제와는 소수 둘째 자리까지 일치합니다(테스트로 고정).`]);
+    if(bp.total_return_pct !== undefined)
+      cards.push(["백테스트 vs backtesting.py",
+        (diff.backtesting_py>=0?"+":"") + (diff.backtesting_py??0).toFixed(3) + "%p",
+        `동일 가정(슬리피지 0·수수료만)으로 맞춘 뒤 총수익률 차이. 우리 ${m.total_return_pct}% vs 상대 ${bp.total_return_pct.toFixed(3)}%.`]);
+    else if(bp.skipped)
+      cards.push(["backtesting.py", "미설치", esc(bp.skipped)]);
+    if(vb.total_return_pct !== undefined)
+      cards.push(["백테스트 vs vectorbt",
+        (diff.vectorbt>=0?"+":"") + (diff.vectorbt??0).toFixed(3) + "%p", "동일 가정 비교"]);
+    $("#cccards").innerHTML = cards.map(([k,v,n]) =>
+      `<div class="card"><div class="k">${k}</div><div class="v" style="font-size:20px">${v}</div><div class="n">${n}</div></div>`).join("");
+    $("#ccnote").innerHTML =
+      `<strong>비교는 사과 대 사과로 맞춰야 합니다.</strong> 처음엔 우리 결과(슬리피지 5bp 포함)를
+       backtesting.py(수수료만)와 그냥 비교해 0.21%p 차이를 봤습니다. 그게 엔진 버그인지 가정 차이인지
+       알 수 없었습니다. 가정을 맞추자 차이가 사라졌고, 남은 부분은 체결 규칙(부분청산·주문 단위)으로
+       설명됩니다.<br><span style="color:var(--dimmer)">${esc(cc.verdict||"")}</span>`;
+  }
+  $("#btnote").innerHTML =
+    `${esc(d.symbol)} · ${fmt(d.bars)}봉(${d.interval_s}초) · 틱 ${fmt(d.ticks)}건 · ${d.span_minutes}분 구간<br>
+     수수료 ${(d.fee_rate*100).toFixed(3)}%(편도) + 슬리피지 ${d.slippage_bp}bp 반영.
+     시그널은 <strong>t 봉 종가로 판단하고 t+1 봉 시가로 체결</strong>합니다 — 같은 봉 종가로 체결하면
+     "종가를 보고 종가에 산" 셈이 되어 성과가 부풀려지기 때문입니다.<br>
+     <strong>짧은 구간·단일 종목 결과는 통계적 유의성이 없습니다.</strong> 이 수치는 파이프라인이
+     끝까지 동작한다는 증거이지 전략의 우열이 아닙니다.`;
+});
+
+/* ── 팩터 ─────────────────────────────────────────────────────── */
+loadJSON("data/factors.json").then(d => {
+  if(!d || !d.items){ $("#fcbody").innerHTML = '<tr><td colspan="7" class="txt muted">factors.json 없음 — <code>make factor</code> 로 생성됩니다.</td></tr>'; return; }
+  $("#fcbody").innerHTML = d.items.slice(0,15).map((r,i) =>
+    `<tr><td class="muted">${i+1}</td><td>${esc(r.key)}</td><td class="txt">${esc(r.name)}</td>
+     <td class="num">${r.score.toFixed(3)}</td><td class="num">${pct(r.operating_margin)}</td>
+     <td class="num">${pct(r.roe)}</td><td class="num ${r.revenue_growth>0?"up":"down"}">${pct(r.revenue_growth)}</td></tr>`).join("");
+});
+
+/* ── 빌드 정보 ────────────────────────────────────────────────── */
+loadJSON("data/build.json").then(d => {
+  if(!d) return;
+  $("#buildinfo").textContent = `· build ${d.commit} · ${d.built_at}`;
+  $("#footbuild").textContent = `빌드 ${d.commit} · ${d.built_at} · GitHub Actions 가 자동 생성`;
+});
+
+/* ── 실시간 시세 ──────────────────────────────────────────────── */
+const qbody = $("#qbody"), rows = new Map();
+let prevPrice = new Map();
+
+function renderRow(it){
+  const key = it.venue + ":" + it.symbol;
+  let tr = rows.get(key);
+  if(!tr){
+    tr = document.createElement("tr");
+    rows.set(key, tr);
+    qbody.appendChild(tr);
+  }
+  const prev = prevPrice.get(key);
+  const dir = (prev === undefined || it.last === prev) ? 0 : (it.last > prev ? 1 : -1);
+  prevPrice.set(key, it.last);
+  const dec = it.last > 1000 ? 0 : (it.last > 1 ? 2 : 4);
+  tr.innerHTML =
+    `<td class="muted">${esc(it.venue)}</td><td>${esc(it.symbol)}</td>
+     <td class="num ${dir>0?"up":dir<0?"down":""}">${fmt(it.last, dec)}</td>
+     <td class="num muted">${it.bid?fmt(it.bid,dec):"–"}</td>
+     <td class="num muted">${it.ask?fmt(it.ask,dec):"–"}</td>
+     <td class="num muted">${it.spread_bp!==undefined?it.spread_bp.toFixed(2)+"bp":"–"}</td>
+     <td class="num">${fmt(it.trades)}</td>
+     <td class="num muted">${fmt(it.volume,3)}</td>
+     <td class="num muted">${it.latency_us!==undefined?fmt(it.latency_us/1000,1)+"ms":"–"}</td>`;
+  if(dir){ tr.className = dir>0 ? "flash-up" : "flash-down"; setTimeout(()=>tr.className="", 600); }
+}
+
+function sortRows(){
+  [...rows.entries()].sort((a,b)=>a[0].localeCompare(b[0])).forEach(([,tr])=>qbody.appendChild(tr));
+}
+
+function setMode(live, text){
+  $("#dot").className = live ? "dot live" : "dot";
+  $("#modetext").textContent = text;
+}
+
+/* 로컬에서 ws-gateway 가 이 페이지를 서빙하면 WebSocket 으로 실시간,
+   GitHub Pages 에서는 정적 스냅샷을 보여준다. 같은 페이지로 둘 다 처리한다. */
+function connectLive(){
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  let ws;
+  try{ ws = new WebSocket(`${proto}//${location.host}/ws`); }
+  catch(e){ return staticMode(); }
+
+  const timer = setTimeout(()=>{ try{ws.close();}catch(e){} staticMode(); }, 3000);
+
+  ws.onopen = () => { clearTimeout(timer); setMode(true, "LIVE — ws-gateway 연결됨 (100ms 병합 스트림)"); };
+  ws.onmessage = ev => {
+    const m = JSON.parse(ev.data);
+    if(m.type === "snapshot"){ qbody.innerHTML=""; rows.clear(); m.items.forEach(renderRow); sortRows(); }
+    else if(m.type === "tick"){ m.items.forEach(renderRow); }
+    else if(m.type === "signal"){ setMode(true, `LIVE — 시그널: ${m.symbol} ${m.action_name} @ ${m.ref_price}`); }
+  };
+  ws.onerror = () => { clearTimeout(timer); };
+  ws.onclose = () => { if($("#dot").className.includes("live")) setMode(false, "연결 끊김 — 재시도 중"); setTimeout(connectLive, 3000); };
+}
+
+function staticMode(){
+  setMode(false, "정적 모드 — 아래는 녹화 시점의 스냅샷입니다");
+  $("#livenote").innerHTML =
+    `이 페이지는 GitHub Pages 에서 정적으로 서빙되고 있습니다. <strong>실시간 시세를 보려면</strong>
+     저장소를 클론해 <code>make demo</code> 를 실행한 뒤 <code>http://localhost:9102/</code> 를 여세요 —
+     같은 페이지가 WebSocket 을 잡아 자동으로 LIVE 모드로 전환됩니다.`;
+  loadJSON("data/snapshot.json").then(d => {
+    if(!d || !d.items){ qbody.innerHTML = '<tr><td colspan="9" class="txt muted">스냅샷 데이터 없음</td></tr>'; return; }
+    qbody.innerHTML=""; rows.clear();
+    d.items.forEach(renderRow); sortRows();
+    $("#livelede").innerHTML += `<br><span style="color:var(--dimmer);font-size:13px">스냅샷 기준: ${esc(d.captured_at || "")}</span>`;
+  });
+}
+
+if(location.protocol === "file:") staticMode(); else connectLive();
+</script>
+</body>
+</html>

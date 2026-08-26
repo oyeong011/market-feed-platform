@@ -1,0 +1,62 @@
+[Unit]
+Description=MDFeed — 마켓데이터 수집 데몬
+Documentation=https://github.com/oyeong011/market-feed-platform
+After=network-online.target
+# feedd 가 UDS 버스 소켓을 만든 뒤에 소비자가 떠야 한다. 순서가 뒤집히면
+# 소비자는 재접속 백오프를 돌며 첫 수 초를 낭비한다(치명적이진 않지만 불필요하다).
+
+PartOf=mdfeed.target
+
+[Service]
+Type=simple
+User=mdfeed
+Group=mdfeed
+WorkingDirectory=/opt/mdfeed
+Environment=PYTHONPATH=/opt/mdfeed/src
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/mdfeed/mdfeed.env
+ExecStart=/usr/bin/python3 -m mdfeed.services.feedd
+
+# ── 재시작 정책 ───────────────────────────────────────────────────────────
+# on-failure: 정상 종료(SIGTERM)에는 재시작하지 않는다. always 로 두면
+# 수동 정지조차 되살아나 배포 중 혼란을 만든다.
+Restart=on-failure
+RestartSec=3
+# 60초 안에 5번 넘게 죽으면 멈춘다. 설정 오류로 무한 재시작 루프를 도는 대신
+# 실패 상태로 남겨 사람이 보게 한다.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# ── 종료 ──────────────────────────────────────────────────────────────────
+KillSignal=SIGTERM
+# 버퍼 flush와 DB 커밋에 필요한 시간. 짧게 잡으면 배포마다 데이터가 샌다.
+TimeoutStopSec=30
+KillMode=mixed
+
+# ── 로깅 ──────────────────────────────────────────────────────────────────
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mdfeed-feedd
+
+# ── 보안 강화 ─────────────────────────────────────────────────────────────
+# 시세 수집기는 아웃바운드 TCP와 자기 데이터 디렉터리 외에 아무것도 필요 없다.
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mdfeed /var/log/mdfeed /run/mdfeed
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+
+# ── 리소스 한계 ───────────────────────────────────────────────────────────
+# 구독자 수 × 소켓 + 업스트림 세션. 기본 1024는 배포단에서 금방 모자란다.
+LimitNOFILE=65536
+MemoryMax=1G
+
+
+[Install]
+WantedBy=multi-user.target

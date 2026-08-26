@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mdfeed"
+version = "1.0.0"
+description = "실시간 마켓데이터 FEED 플랫폼 — 수집·정규화·멀티프로토콜 배포·운영 자동화"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Gwon Oyeong" }]
+keywords = ["market-data", "feed-handler", "websocket", "tcp", "quant", "timeseries"]
+
+# 핵심 경로(수집→배포→적재)는 표준 라이브러리만 쓴다.
+# 어떤 리눅스 박스든 python3 만 있으면 돌아야 한다는 것이 이 프로젝트의 제약이다.
+dependencies = []
+
+[project.optional-dependencies]
+# 운영에서 PostgreSQL/TimescaleDB 를 쓸 때
+postgres = ["psycopg2-binary>=2.9"]
+# 여러 호스트로 흩어질 때 ZeroMQ 버스
+zmq = ["pyzmq>=25"]
+# 백테스트 교차검증용 (없으면 자체 엔진만 돈다)
+quant = ["pandas>=2.0", "numpy>=1.24", "vectorbt>=0.26", "backtesting>=0.3", "pandas-ta>=0.3"]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+mdfeed = "mdfeed.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/oyeong011/market-feed-platform"
+Documentation = "https://oyeong011.github.io/market-feed-platform/"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"mdfeed.storage" = ["*.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "quant"]
+filterwarnings = ["ignore::DeprecationWarning"]

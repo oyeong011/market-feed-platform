@@ -1,0 +1,10 @@
+[Unit]
+Description=MDFeed 마켓데이터 플랫폼 (전체)
+# 이 타깃 하나로 6개 서비스를 함께 켜고 끈다:
+#   systemctl start mdfeed.target / systemctl stop mdfeed.target
+Wants=mdfeed-feedd.service mdfeed-tcp-gateway.service mdfeed-ws-gateway.service
+Wants=mdfeed-rest-api.service mdfeed-writer.service mdfeed-strategy.service
+After=network-online.target
+
+[Install]
+WantedBy=multi-user.target

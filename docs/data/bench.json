@@ -1,0 +1,59 @@
+{
+ "env": {
+  "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+  "python": "3.14.6",
+  "cpu_count": 10,
+  "machine": "arm64"
+ },
+ "generated_at": "2026-08-27T03:00:27+0900",
+ "protocol": {
+  "encode_ns_per_msg": 434,
+  "encode_msg_per_s": 2305570,
+  "parse_ns_per_msg": 1316,
+  "parse_msg_per_s": 759786,
+  "unpack_ns_per_msg": 695,
+  "frame_bytes": 88,
+  "payload_bytes": 64,
+  "overhead_pct": 37.5
+ },
+ "ringbuffer": {
+  "push_ns_per_msg": 641,
+  "push_msg_per_s": 1560551,
+  "poll_msg_per_s": 1921825,
+  "capacity": 65536,
+  "consumed": 65536,
+  "skipped_by_lap": 234464,
+  "torn_reads": 0
+ },
+ "bus_latency": {
+  "sent": 2000,
+  "received": 2000,
+  "pacing_hz": 5000,
+  "latency_p50_us": 47.3,
+  "latency_p99_us": 105.9,
+  "latency_p999_us": 530.9,
+  "latency_max_us": 746.0,
+  "note": "큐가 비어 있는 상태에서의 순수 IPC 지연 (페이싱 적용)"
+ },
+ "bus_throughput": {
+  "sent": 50000,
+  "received": 50000,
+  "dropped": 0,
+  "throughput_msg_per_s": 97562,
+  "elapsed_s": 0.512,
+  "note": "버스트 발행. 큐잉 지연이 섞이므로 지연 지표로 쓰지 말 것"
+ },
+ "http": {
+  "requests": 3000,
+  "req_per_s": 15237,
+  "latency_p50_us": 62.2,
+  "latency_p99_us": 95.5,
+  "keep_alive": true
+ },
+ "pipeline": {
+  "published": 295515,
+  "elapsed_s": 6.0,
+  "throughput_msg_per_s": 49235,
+  "note": "리플레이 최대속도. 수집→정규화→인코딩→버스+링 전 구간 포함"
+ }
+}

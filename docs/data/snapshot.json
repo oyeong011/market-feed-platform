@@ -1,0 +1,141 @@
+{
+ "source": "녹화 리플레이 (sample.mdf)",
+ "items": [
+  {
+   "venue": "BINANCE",
+   "symbol": "BTCUSDT",
+   "trades": 37711,
+   "volume": 135.29821,
+   "last": 78414.0,
+   "qty": 7e-05,
+   "side": 2,
+   "latency_us": 15478.0
+  },
+  {
+   "venue": "BINANCE",
+   "symbol": "DOGEUSDT",
+   "trades": 5561,
+   "volume": 3403417.0,
+   "last": 0.08492,
+   "qty": 13.0,
+   "side": 2,
+   "latency_us": 13879.0
+  },
+  {
+   "venue": "BINANCE",
+   "symbol": "ETHUSDT",
+   "trades": 30542,
+   "volume": 2868.6629,
+   "last": 2460.14,
+   "qty": 0.0021,
+   "side": 2,
+   "latency_us": 15805.0
+  },
+  {
+   "venue": "BINANCE",
+   "symbol": "SOLUSDT",
+   "trades": 11854,
+   "volume": 26576.327,
+   "last": 96.91,
+   "qty": 0.523,
+   "side": 2,
+   "latency_us": 11157.0
+  },
+  {
+   "venue": "BINANCE",
+   "symbol": "XRPUSDT",
+   "trades": 15507,
+   "volume": 1817950.4,
+   "last": 1.3854,
+   "qty": 3.7,
+   "side": 2,
+   "latency_us": 11924.0
+  },
+  {
+   "venue": "UPBIT",
+   "symbol": "KRW-ADA",
+   "trades": 56,
+   "volume": 215800.72313018,
+   "last": 286.0,
+   "qty": 17.48601398,
+   "side": 1,
+   "latency_us": 27380.0,
+   "bid": 285.0,
+   "ask": 286.0,
+   "mid": 285.5,
+   "spread_bp": 35.026
+  },
+  {
+   "venue": "UPBIT",
+   "symbol": "KRW-BTC",
+   "trades": 907,
+   "volume": 2.453849,
+   "last": 109055000.0,
+   "qty": 0.01833077,
+   "side": 1,
+   "latency_us": 24041.0,
+   "bid": 109021000.0,
+   "ask": 109055000.0,
+   "mid": 109038000.0,
+   "spread_bp": 3.118
+  },
+  {
+   "venue": "UPBIT",
+   "symbol": "KRW-DOGE",
+   "trades": 26,
+   "volume": 153630.10131212,
+   "last": 119.0,
+   "qty": 479.91970401,
+   "side": 1,
+   "latency_us": 27197.0,
+   "bid": 118.0,
+   "ask": 119.0,
+   "mid": 118.5,
+   "spread_bp": 84.388
+  },
+  {
+   "venue": "UPBIT",
+   "symbol": "KRW-ETH",
+   "trades": 450,
+   "volume": 138.24990519,
+   "last": 3420000.0,
+   "qty": 0.03563019,
+   "side": 2,
+   "latency_us": 59206.0,
+   "bid": 3420000.0,
+   "ask": 3422000.0,
+   "mid": 3421000.0,
+   "spread_bp": 5.846
+  },
+  {
+   "venue": "UPBIT",
+   "symbol": "KRW-SOL",
+   "trades": 169,
+   "volume": 1504.99730555,
+   "last": 134800.0,
+   "qty": 14.39128938,
+   "side": 1,
+   "latency_us": 12190.0,
+   "bid": 134700.0,
+   "ask": 134800.0,
+   "mid": 134750.0,
+   "spread_bp": 7.421
+  },
+  {
+   "venue": "UPBIT",
+   "symbol": "KRW-XRP",
+   "trades": 1293,
+   "volume": 890303.30635252,
+   "last": 1925.0,
+   "qty": 405.93640795,
+   "side": 2,
+   "latency_us": 30026.0,
+   "bid": 1925.0,
+   "ask": 1926.0,
+   "mid": 1925.5,
+   "spread_bp": 5.193
+  }
+ ],
+ "captured_at": "2026-08-27 03:15:59 KST",
+ "count": 11
+}
