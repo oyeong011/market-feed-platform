@@ -83,7 +83,12 @@ def check() -> tuple[int, list[str]]:
                            f"(임계 {MAX_TICK_AGE_S:.0f}s) — 세션이 half-open 일 수 있음")
             if up.get("reconnects", 0) > 20:
                 bump(WARN, f"업스트림 {up['venue']}: 재접속 {up['reconnects']}회 — 회선/거래소 점검")
+        # 지연을 측정하지 않는 업스트림(리플레이 등)은 시계 검사 대상이 아니다
+        no_clock = {u["venue"].upper() for u in feed.get("upstreams", [])
+                    if not u.get("measures_latency", True)}
         for venue, c in (feed.get("clock") or {}).items():
+            if venue.upper() in no_clock:
+                continue
             skew_ms = abs(c.get("offset_us", 0)) / 1000.0
             if skew_ms > MAX_CLOCK_SKEW_MS:
                 bump(WARN, f"시계 오프셋 {venue}: {skew_ms:.0f}ms — "

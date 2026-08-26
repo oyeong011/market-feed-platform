@@ -50,6 +50,8 @@ class Config:
     replay_file: str = field(default_factory=lambda: _env("REPLAY_FILE", "data/replay/sample.mdf"))
     replay_speed: float = field(default_factory=lambda: float(_env("REPLAY_SPEED", "1.0")))
     replay_loop: bool = field(default_factory=lambda: _bool("REPLAY_LOOP", True))
+    # 재생 시 체결 시각을 현재 기준으로 평행이동한다. 장애 재현에는 0 으로 끈다.
+    replay_restamp: bool = field(default_factory=lambda: _bool("REPLAY_RESTAMP", True))
 
     # ── IPC ────────────────────────────────────────────────────────────────
     bus_backend: str = field(default_factory=lambda: _env("BUS_BACKEND", "uds"))  # uds|zmq

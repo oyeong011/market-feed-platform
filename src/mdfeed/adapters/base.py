@@ -35,6 +35,13 @@ class Adapter(abc.ABC):
     stale_after_s: float = 60.0
     ping_interval_s: float = 30.0
 
+    # 이 업스트림의 지연시간과 시계 오프셋을 측정할 가치가 있는가.
+    # 실시간 거래소는 True. 리플레이는 False — 녹화 시각과 현재 시각의 차이는
+    # 시계 오차도 네트워크 지연도 아니라 그냥 "언제 녹화했는가"일 뿐인데,
+    # 이걸 지연 지표에 넣으면 시계 오프셋이 수천 초로 나와 알람이 거짓으로 울린다.
+    # (CI 에서 실제로 "시계 오프셋 2,343,288ms" 경고가 떴다)
+    measures_latency: bool = True
+
     def __init__(self, cfg, emit: Callable, registry=None):
         self.cfg = cfg
         self.emit = emit                # emit(msg) — Trade | BookTop
@@ -64,7 +71,7 @@ class Adapter(abc.ABC):
         if self.registry:
             venue = self.name.upper()
             self.registry.counter("ticks_total", venue=venue)
-            if hasattr(msg, "latency_us"):
+            if self.measures_latency and hasattr(msg, "latency_us"):
                 raw = msg.latency_us
                 # 원시값과 시계 보정값을 둘 다 남긴다. 보정 로직이 틀렸을 때
                 # 원시값이 없으면 그 사실조차 알 수 없다.
@@ -116,6 +123,7 @@ class Adapter(abc.ABC):
             "errors": self.errors,
             "last_msg_age_s": round(age, 1) if age is not None else None,
             "stale": self.is_stale,
+            "measures_latency": self.measures_latency,
         }
 
 

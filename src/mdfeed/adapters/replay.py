@@ -10,6 +10,18 @@
 파일 형식은 MDFP/1 프레임을 그대로 이어붙인 것이다. 별도 포맷을 만들지 않으면
 녹화기는 "버스에서 받은 바이트를 파일에 쓰기"만 하면 되고, 리플레이는 게이트웨이와
 똑같은 파서를 쓴다. 포맷이 하나면 버그도 한 군데서만 난다.
+
+시각 재기준(re-stamping)
+------------------------
+실시간 배속(speed > 0)으로 재생할 때는 체결 시각을 **현재 시각 기준으로 평행이동**한다.
+안 그러면 몇 시간 전 타임스탬프로 봉이 만들어져 대시보드와 REST 조회에 과거 시각이 뜬다.
+평행이동이므로 틱 사이 간격은 그대로 보존된다.
+
+최대속도(speed = 0)에서는 재기준하지 않는다. 18분 데이터를 20초에 쏟아내므로
+첫 프레임 기준으로 옮기면 뒷부분이 **미래 시각**이 되어 더 이상해진다.
+부하시험·CI 용도라 시각의 절대값이 의미 없기도 하다.
+
+장애 재현(forensics)에는 원본 시각이 필요하므로 MDFEED_REPLAY_RESTAMP=0 으로 끈다.
 """
 
 from __future__ import annotations
@@ -28,12 +40,16 @@ log = logging.getLogger("mdfeed.adapter.replay")
 class ReplayAdapter(Adapter):
     name = "replay"
     stale_after_s = 1e9         # 리플레이는 정체 개념이 없다
+    # 녹화 시각과 현재 시각의 차이는 지연이 아니다. 측정하지 않는다.
+    measures_latency = False
 
     def __init__(self, cfg, emit, registry=None):
         super().__init__(cfg, emit, registry)
         self.path = cfg.replay_file
         self.speed = max(cfg.replay_speed, 0.0)   # 0 = 최대 속도(부하시험)
         self.loop = cfg.replay_loop
+        # 최대속도에서는 재기준이 오히려 미래 시각을 만든다 (docstring 참고)
+        self.restamp = cfg.replay_restamp and self.speed > 0
         self.laps = 0
 
     def enabled(self) -> bool:
@@ -55,6 +71,7 @@ class ReplayAdapter(Adapter):
     async def _play_once(self) -> None:
         parser = FrameParser()
         prev_event_ns: int | None = None
+        shift_ns: int | None = None      # 첫 프레임에서 정해지는 평행이동량
         with open(self.path, "rb") as fh:
             while True:
                 chunk = fh.read(65536)
@@ -70,8 +87,10 @@ class ReplayAdapter(Adapter):
                         if 0 < gap < 5.0:      # 5초 넘는 공백은 건너뛴다
                             await asyncio.sleep(gap)
                     prev_event_ns = msg.ts_event_ns
-                    # 수신시각은 지금으로 다시 찍는다. 그래야 다운스트림의
-                    # 지연시간 지표가 "리플레이 파이프라인의 지연"을 재게 된다
+                    if self.restamp:
+                        if shift_ns is None:
+                            shift_ns = now_ns() - msg.ts_event_ns
+                        msg.ts_event_ns += shift_ns
                     msg.ts_recv_ns = now_ns()
                     self._mark(msg)
                 if self.speed == 0:

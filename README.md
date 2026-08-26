@@ -4,7 +4,7 @@
 [![Pages](https://github.com/oyeong011/market-feed-platform/actions/workflows/pages.yml/badge.svg)](https://oyeong011.github.io/market-feed-platform/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![deps](https://img.shields.io/badge/핵심%20의존성-0-brightgreen)
-![tests](https://img.shields.io/badge/tests-109%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-111%20passing-brightgreen)
 
 거래소 실시간 시세를 **수집 → 정규화 → 멀티프로토콜 배포**하는 마켓데이터 피드 서비스와
 그것을 리눅스에서 운영하기 위한 자동화 스택.
@@ -58,7 +58,7 @@ make demo        # 6개 프로세스 기동 + 대시보드 안내
 make status      # 서비스 상태 (프로세스 + HTTP 헬스 + 포트)
 make client      # 참조 TCP 구독 클라이언트 (갭 탐지 포함)
 make diag        # 장애 진단 원스톱
-make test        # 109개 테스트 — 네트워크 불필요
+make test        # 111개 테스트 — 네트워크 불필요
 ```
 
 인터넷이 없어도 됩니다. 저장소에 든 녹화 파일로 전 구간을 재현합니다:
@@ -106,6 +106,8 @@ MDFEED_ADAPTERS=replay make demo
 | 4 | 종료 중 **세그폴트** | `asyncio.to_thread` 는 await 를 취소해도 스레드가 안 멈춤. 그 스레드가 `executemany` 중일 때 DB 커넥션을 닫아 use-after-free | DB 접근 경로 전체를 단일 락으로 직렬화 |
 | 5 | CRC 오류 후 세션 전체 정지 | 재동기화 직후 파서가 남은 버퍼를 더 안 읽고 반환 → 한 번 깨지면 영구히 멎음 | 재동기화 후 루프 계속 → 오염 프레임 **1개만** 폐기하고 나머지 복원 |
 | 6 | UDS 소켓 연결 실패가 재시도 루프에 묻힘 | `sockaddr_un.sun_path` 104바이트 제한 초과 | 기동 시점에 검사해 조치 방법과 함께 즉시 실패 |
+| 7 | CI에서 "시계 오프셋 **2,343,288 ms**" 거짓 알람 | 리플레이 데이터의 "녹화 시각 − 현재 시각"을 지연으로 계산. 그건 시계 오차도 네트워크 지연도 아니라 **언제 녹화했는가**일 뿐 | 어댑터에 `measures_latency` 플래그 추가. 실시간 배속 재생 시에는 체결 시각을 현재 기준으로 평행이동 |
+| 8 | `make demo` 안내대로 열면 대시보드 대신 JSON | `health_routes` 의 `GET /` 가 정적 파일보다 우선 | 루트에 정적 마운트하면 그쪽이 이기도록. `/healthz`·`/metrics` 는 유지 |
 
 ---
 
@@ -233,7 +235,7 @@ src/mdfeed/
 
 ops/     systemd 유닛 6종 · ops.sh · watchdog.sh · healthcheck.py · logrotate
 quant/   backtest.py · run_backtest.py · integrations.py · factor_screen.py
-tests/   109개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E)
+tests/   111개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E)
 bench/   계층별 성능 측정 → docs/data/bench.json
 docs/    GitHub Pages 대시보드 (정적/실시간 겸용)
 ```

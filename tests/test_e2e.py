@@ -231,3 +231,34 @@ def test_graceful_shutdown_flushes_pending_rows(tmp_path):
     n = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
     conn.close()
     assert n >= pending, f"종료 flush 누락: 대기 {pending}행 중 {n}행만 저장"
+
+
+def test_replay_does_not_pollute_latency_metrics(tmp_path):
+    """리플레이는 지연·시계 지표에 끼어들면 안 된다.
+
+    녹화 시각과 현재 시각의 차이는 시계 오차도 네트워크 지연도 아니다.
+    CI 에서 실제로 "시계 오프셋 2,343,288ms" 경고가 떠 빌드가 실패했다.
+    """
+    from mdfeed.adapters import build
+    from mdfeed.adapters.base import CLOCK
+    from mdfeed.adapters.replay import ReplayAdapter
+    from mdfeed.metrics import Registry
+
+    cfg = make_cfg(tmp_path)
+    make_replay_file(cfg.replay_file)
+    reg = Registry("t")
+    before = set(CLOCK.report())
+
+    (adapter,), _ = build(["replay"], cfg, lambda m: None, reg)
+    assert isinstance(adapter, ReplayAdapter)
+    assert adapter.measures_latency is False
+
+    t = Trade("TEST", "SYNTH", BASE_NS, BASE_NS + 10 ** 15, 1.0, 1.0)
+    adapter._mark(t)
+
+    # 시계 감시기에 REPLAY 항목이 새로 생기지 않아야 한다
+    assert set(CLOCK.report()) == before
+    # 틱 카운터는 정상 증가
+    assert reg.snapshot()["counters"].get('ticks_total{venue="REPLAY"}') == 1
+    # 지연 히스토그램에는 기록되지 않아야 한다
+    assert "ingest_latency" not in reg.snapshot()["histograms"]

@@ -362,7 +362,7 @@ ORDER BY avg_spread_bp DESC LIMIT 20;
 ### 배포 전
 
 ```bash
-make ci                              # lint + 109개 테스트
+make ci                              # lint + 111개 테스트
 make bench                           # 성능 회귀 확인
 MDFEED_ADAPTERS=replay make demo     # 오프라인 전 구간 재현
 ```
