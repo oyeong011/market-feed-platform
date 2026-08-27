@@ -136,3 +136,100 @@ def test_adapter_disabled_without_credentials():
     a = KISAdapter(cfg, lambda m: None)
     assert a.enabled() is False
     assert "KIS_APP_KEY" in a.disabled_reason()
+
+
+class TestAdaptiveRateLimiter:
+    """유량 제한기는 서버가 알려주지 않는 한도를 스스로 찾아야 한다."""
+
+    def test_backs_off_on_rate_limit(self):
+        from mdfeed.adapters.kis_rest import AdaptiveRateLimiter
+        r = AdaptiveRateLimiter(3.0)
+        before = r.interval
+        r.on_rate_limited()
+        assert r.interval > before
+        assert r.backoffs == 1
+
+    def test_recovers_after_sustained_success(self):
+        from mdfeed.adapters.kis_rest import AdaptiveRateLimiter
+        r = AdaptiveRateLimiter(3.0)
+        r.on_rate_limited()
+        slowed = r.interval
+        for _ in range(40):
+            r.on_success()
+        assert r.interval < slowed
+
+    def test_never_faster_than_configured_base(self):
+        """회복이 설정값을 넘어 가속하면 결국 다시 거절당한다."""
+        from mdfeed.adapters.kis_rest import AdaptiveRateLimiter
+        r = AdaptiveRateLimiter(3.0)
+        for _ in range(500):
+            r.on_success()
+        assert r.interval >= r.base_interval - 1e-12
+        assert r.current_rate <= 3.0 + 1e-9
+
+    def test_backoff_is_capped(self):
+        """연속 거절에도 무한히 느려지면 안 된다."""
+        from mdfeed.adapters.kis_rest import AdaptiveRateLimiter
+        r = AdaptiveRateLimiter(3.0, max_interval=2.0)
+        for _ in range(200):
+            r.on_rate_limited()
+        assert r.interval <= 2.0
+
+
+class TestBreadthAdapter:
+    def test_synthetic_trade_only_on_volume_increase(self):
+        """REST 응답은 체결이 아니라 스냅샷이다. 누적거래량이 늘었을 때만
+        그 증가분을 합성 체결로 내보낸다. 안 그러면 없는 체결을 만들어낸다."""
+        from mdfeed.adapters.kis_rest import KISRestAdapter
+        from mdfeed.config import Config
+        from mdfeed.models import Trade
+
+        cfg = Config()
+        cfg.kis_app_key, cfg.kis_app_secret = "x", "y"
+        got = []
+        a = KISRestAdapter(cfg, got.append)
+
+        a._publish_quote("005930", 70000.0, 1000.0)   # 첫 관측 → 기준선만
+        assert got == []
+        a._publish_quote("005930", 70100.0, 1000.0)   # 변화 없음
+        assert got == []
+        a._publish_quote("005930", 70200.0, 1500.0)   # +500주
+        assert len(got) == 1
+        t = got[0]
+        assert isinstance(t, Trade) and t.qty == 500.0 and t.price == 70200.0
+
+    def test_venue_is_separate_from_tick_feed(self):
+        """웹소켓의 진짜 체결(KIS)과 스냅샷 합성(KRX)이 섞이면 안 된다."""
+        from mdfeed.adapters.kis_rest import KISRestAdapter
+        from mdfeed.config import Config
+        cfg = Config()
+        cfg.kis_app_key, cfg.kis_app_secret = "x", "y"
+        got = []
+        a = KISRestAdapter(cfg, got.append)
+        a._publish_quote("005930", 70000.0, 100.0)
+        a._publish_quote("005930", 70000.0, 200.0)
+        assert got[0].venue == "KRX"
+
+    def test_latency_not_measured_for_snapshots(self):
+        """폴링 주기가 곧 지연이라 네트워크 지연을 재는 의미가 없다."""
+        from mdfeed.adapters.kis_rest import KISRestAdapter
+        assert KISRestAdapter.measures_latency is False
+
+    def test_disabled_without_universe(self, tmp_path):
+        from mdfeed.adapters.kis_rest import KISRestAdapter
+        from mdfeed.config import Config
+        cfg = Config()
+        cfg.kis_app_key, cfg.kis_app_secret = "x", "y"
+        cfg.krx_universe_path = str(tmp_path / "없음.csv")
+        a = KISRestAdapter(cfg, lambda m: None)
+        assert a.enabled() is False
+        assert "fetch_krx_symbols" in a.disabled_reason()
+
+    def test_universe_loads_and_filters_market(self, tmp_path):
+        from mdfeed.adapters.kis_rest import load_universe
+        p = tmp_path / "u.csv"
+        p.write_text("market,code,name\nKOSPI,005930,삼성전자\nKOSDAQ,900110,딥커머스\n",
+                     encoding="utf-8")
+        assert load_universe(str(p), {"KOSPI"}, 0) == [("005930", "삼성전자")]
+        assert len(load_universe(str(p), {"KOSPI", "KOSDAQ"}, 0)) == 2
+        assert len(load_universe(str(p), {"KOSPI", "KOSDAQ"}, 1)) == 1

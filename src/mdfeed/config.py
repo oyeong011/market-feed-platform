@@ -75,6 +75,17 @@ class Config:
     kis_app_secret: str = field(default_factory=lambda: os.getenv("KIS_APP_SECRET", ""))
     # real = 실전투자, vts = 모의투자. 실시간 시세는 실전 계좌 키를 쓴다.
     kis_env: str = field(default_factory=lambda: _env("KIS_ENV", "real"))
+    # KRX 광역 스냅샷 (웹소켓 종목 한도를 REST 로 우회)
+    krx_universe_path: str = field(
+        default_factory=lambda: _env("KRX_UNIVERSE", "data/reference/krx_symbols.csv"))
+    krx_markets: list[str] = field(default_factory=lambda: _list("KRX_MARKETS", "KOSPI"))
+    krx_universe_limit: int = field(default_factory=lambda: _int("KRX_UNIVERSE_LIMIT", 0))
+    # 실측 한도는 초당 5건. 4건에서도 실패가 나와 3건으로 둔다.
+    kis_rest_rate: float = field(default_factory=lambda: float(_env("KIS_REST_RATE", "3.0")))
+    kis_rank_interval_s: float = field(
+        default_factory=lambda: float(_env("KIS_RANK_INTERVAL_S", "10")))
+    kis_token_cache: str = field(
+        default_factory=lambda: _env("KIS_TOKEN_CACHE", "~/.mdfeed/kis_token.json"))
     replay_file: str = field(default_factory=lambda: _env("REPLAY_FILE", "data/replay/sample.mdf"))
     replay_speed: float = field(default_factory=lambda: float(_env("REPLAY_SPEED", "1.0")))
     replay_loop: bool = field(default_factory=lambda: _bool("REPLAY_LOOP", True))

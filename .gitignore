@@ -8,7 +8,10 @@ dist/
 
 # 런타임 산출물
 data/mdfeed.db*
-data/reference/          # financial-database 캐시 (원본은 별도 레포)
+data/reference/*
+# 종목 마스터는 커밋한다 — 없으면 광역 어댑터가 못 뜨고 데모가 반쪽이 된다.
+# 상장/폐지로 바뀌므로 scripts/fetch_krx_symbols.py 로 갱신한다.
+!data/reference/krx_symbols.csv
 /tmp/
 *.log
 .DS_Store
