@@ -50,7 +50,7 @@ jobs:
       - name: 백테스트 → docs/data/backtest.json
         run: |
           python quant/run_backtest.py --source replay \
-            --symbol BINANCE:BTCUSDT --interval 10 --cross-check \
+            --symbol KIS:005930 --interval 10 --cross-check \
             --out docs/data/backtest.json || echo "봉 부족 — 건너뜀"
         env: { PYTHONPATH: src }
 

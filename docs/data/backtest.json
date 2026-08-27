@@ -1,9 +1,9 @@
 {
  "symbol": "KIS:005930",
  "source": "data/replay/sample.mdf (녹화 리플레이)",
- "bars": 39,
- "interval_s": 60,
- "span_minutes": 38.0,
+ "bars": 231,
+ "interval_s": 10,
+ "span_minutes": 38.3,
  "ticks": 11071,
  "fee_rate": 0.0005,
  "slippage_bp": 5.0,
@@ -12,21 +12,21 @@
   {
    "strategy": "sma_cross",
    "symbol": "KIS:005930",
-   "bars": 39,
-   "trades": 0,
-   "total_return_pct": 0.0,
-   "max_drawdown_pct": 0.0,
-   "sharpe": 0.0,
+   "bars": 231,
+   "trades": 5,
+   "total_return_pct": -1.272,
+   "max_drawdown_pct": -1.258,
+   "sharpe": -158.069,
    "win_rate_pct": 0.0,
    "profit_factor": 0.0,
    "start_equity": 1000000,
-   "end_equity": 1000000,
-   "vs_buy_hold_pp": 0.379
+   "end_equity": 987280.89,
+   "vs_buy_hold_pp": -0.893
   },
   {
    "strategy": "rsi_revert",
    "symbol": "KIS:005930",
-   "bars": 39,
+   "bars": 231,
    "trades": 0,
    "total_return_pct": 0.0,
    "max_drawdown_pct": 0.0,
@@ -40,20 +40,20 @@
   {
    "strategy": "bb_break",
    "symbol": "KIS:005930",
-   "bars": 39,
-   "trades": 0,
-   "total_return_pct": 0.0,
-   "max_drawdown_pct": 0.0,
-   "sharpe": 0.0,
+   "bars": 231,
+   "trades": 3,
+   "total_return_pct": -0.783,
+   "max_drawdown_pct": -0.777,
+   "sharpe": -87.486,
    "win_rate_pct": 0.0,
    "profit_factor": 0.0,
    "start_equity": 1000000,
-   "end_equity": 1000000,
-   "vs_buy_hold_pp": 0.379
+   "end_equity": 992167.77,
+   "vs_buy_hold_pp": -0.404
   }
  ],
- "first_bar_ns": 1787799240000000000,
- "last_bar_ns": 1787801520000000000,
+ "first_bar_ns": 1787799260000000000,
+ "last_bar_ns": 1787801560000000000,
  "cross_check": {
   "libraries": {
    "pandas": true,
@@ -65,14 +65,14 @@
   },
   "indicators": {
    "sma_max_abs_diff": 0.0,
-   "bars": 39,
-   "rsi_max_abs_diff": 0.0,
+   "bars": 231,
+   "rsi_max_abs_diff": 0.9180554946756487,
    "rsi_source": "pandas(ewm) 재현"
   },
   "ours_as_reported": {
-   "strategy": "sma_cross",
+   "strategy": "rsi_revert",
    "symbol": "KIS:005930",
-   "bars": 39,
+   "bars": 231,
    "trades": 0,
    "total_return_pct": 0.0,
    "max_drawdown_pct": 0.0,
@@ -85,22 +85,22 @@
   },
   "ours_matched_assumptions": {
    "note": "비교용으로 슬리피지 0 · 수수료만 적용해 재실행한 결과",
-   "total_return_pct": 0.0,
-   "max_drawdown_pct": 0.0,
-   "trades": 0
+   "total_return_pct": -0.777,
+   "max_drawdown_pct": -0.862,
+   "trades": 5
   },
   "vectorbt": {
    "skipped": "vectorbt 미설치 (pip install vectorbt)"
   },
   "backtesting_py": {
-   "total_return_pct": 0.0,
-   "max_drawdown_pct": -0.0,
-   "trades": 0,
+   "total_return_pct": -0.345675,
+   "max_drawdown_pct": -0.5993423715827784,
+   "trades": 1,
    "source": "backtesting.py"
   },
   "return_diff_pp_vs_matched": {
-   "backtesting_py": 0.0
+   "backtesting_py": 0.4313
   },
-  "verdict": "SMA 최대 절대오차 0.00e+00 (부동소수 오차 수준, 사실상 동일) / RSI 최대 절대오차 0.000 — 우리 구현은 Wilder 원 정의(첫 n개 평균으로 seeding)를 따르고 비교 대상은 첫 값부터 EWM 을 시작한다. seeding 방식 차이이며 tests/test_indicators.py 에서 Wilder 공식 예제와 소수 둘째 자리까지 일치를 확인했다 / 동일 가정에서 총수익률 최대 차이 0.000%p — 체결 규칙(부분청산·주문 단위) 차이로 설명되는 범위"
+  "verdict": "SMA 최대 절대오차 0.00e+00 (부동소수 오차 수준, 사실상 동일) / RSI 최대 절대오차 0.918 — 우리 구현은 Wilder 원 정의(첫 n개 평균으로 seeding)를 따르고 비교 대상은 첫 값부터 EWM 을 시작한다. seeding 방식 차이이며 tests/test_indicators.py 에서 Wilder 공식 예제와 소수 둘째 자리까지 일치를 확인했다 / 동일 가정에서 총수익률 최대 차이 0.431%p — 조사 필요"
  }
 }
