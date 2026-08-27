@@ -269,6 +269,16 @@ class Crossover:
 
     '지금 a > b' 가 아니라 '직전엔 아니었는데 지금 그렇다' 를 봐야 한다.
     전자로 짜면 조건이 유지되는 내내 매 틱 시그널이 쏟아진다.
+
+    **동률(a == b)은 교차가 아니다.**
+    처음엔 `a > b` 하나로 판정했는데, 그러면 두 값이 정확히 같아지는 순간을
+    "아래로 내려갔다"로 오인한다. 실제로 삼성전자 10초봉에서 교차 지점이
+    pandas 계산과 3곳이나 1봉씩 어긋났다 — 국내 주식은 호가 단위가 커서
+    두 이동평균이 정확히 일치하는 일이 생기지만, 크립토 float 에서는 거의
+    일어나지 않아 오랫동안 드러나지 않았다.
+
+    동률일 때는 판정을 보류하고 직전 상태를 유지한다. 값이 실제로 한쪽으로
+    갈라진 뒤에야 교차로 인정한다.
     """
 
     __slots__ = ("_prev",)
@@ -277,6 +287,8 @@ class Crossover:
         self._prev: bool | None = None
 
     def update(self, a: float, b: float) -> int:
+        if a == b:
+            return 0            # 접촉은 교차가 아니다. 상태를 그대로 둔다
         cur = a > b
         prev, self._prev = self._prev, cur
         if prev is None or prev == cur:

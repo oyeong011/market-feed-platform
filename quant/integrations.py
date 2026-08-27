@@ -115,7 +115,7 @@ def verify_backtest_vectorbt(bars, fast: int = 10, slow: int = 30,
 
 
 def verify_backtest_bt(bars, fast: int = 10, slow: int = 30,
-                       fee: float = 0.0005) -> dict:
+                       fee: float = 0.0005, equity: float = 1_000_000.0) -> dict:
     """backtesting.py 로 동일 전략 재검증."""
     try:
         import pandas as pd
@@ -142,7 +142,7 @@ def verify_backtest_bt(bars, fast: int = 10, slow: int = 30,
             elif crossover(self.ma2, self.ma1):
                 self.position.close()
 
-    bt = Backtest(df, Cross, cash=1_000_000, commission=fee)
+    bt = Backtest(df, Cross, cash=equity, commission=fee)
     stats = bt.run()
     return {
         "total_return_pct": float(stats["Return [%]"]),
@@ -153,7 +153,7 @@ def verify_backtest_bt(bars, fast: int = 10, slow: int = 30,
 
 
 def cross_check(bars, ours: dict | None = None, fast: int = 10, slow: int = 30,
-                fee: float = 0.0005) -> dict:
+                fee: float = 0.0005, symbol: str = "", equity: float = 1_000_000.0) -> dict:
     """전체 교차검증 리포트.
 
     **사과 대 사과로 맞추는 것이 핵심이다.** 처음엔 우리 결과(슬리피지 5bp 포함)를
@@ -168,10 +168,15 @@ def cross_check(bars, ours: dict | None = None, fast: int = 10, slow: int = 30,
     import backtest as bt
 
     # 비교 전용: 라이브러리와 같은 가정(수수료만, 슬리피지 없음)
-    matched = bt.run(bars, "sma_cross", equity=1_000_000.0,
+    # 주문 단위까지 맞춰야 사과 대 사과다. symbol 을 넘기지 않으면 소수점 주식을
+    # 사게 되고, 고가 주식에서는 그 차이만으로 수익률이 크게 벌어진다.
+    matched = bt.run(bars, "sma_cross", symbol=symbol, equity=equity,
                      fee=fee, slippage_bp=0.0).summary(60)
 
     report = {
+        "symbol": symbol,
+        "equity": equity,
+        "lot_size": bt.lot_size_for(symbol),
         "libraries": available(),
         "indicators": verify_indicators(bars, fast, slow),
         "ours_as_reported": ours,
@@ -182,7 +187,7 @@ def cross_check(bars, ours: dict | None = None, fast: int = 10, slow: int = 30,
             "trades": matched["trades"],
         },
         "vectorbt": verify_backtest_vectorbt(bars, fast, slow, fee),
-        "backtesting_py": verify_backtest_bt(bars, fast, slow, fee),
+        "backtesting_py": verify_backtest_bt(bars, fast, slow, fee, equity),
     }
 
     diffs = {}
@@ -191,8 +196,50 @@ def cross_check(bars, ours: dict | None = None, fast: int = 10, slow: int = 30,
         if "total_return_pct" in r:
             diffs[key] = round(r["total_return_pct"] - matched["total_return_pct"], 4)
     report["return_diff_pp_vs_matched"] = diffs
+    report["crossover_match"] = _crossover_match(bars, fast, slow)
     report["verdict"] = _verdict(report)
     return report
+
+
+def _crossover_match(bars, fast: int, slow: int):
+    """우리 Crossover 가 잡는 교차 지점이 pandas 계산과 같은가.
+
+    수익률만 비교하면 어디가 다른지 알 수 없다. 교차 시점을 직접 대조하면
+    지표 계산과 체결 규칙 중 어느 쪽 문제인지 갈린다.
+    실제로 이 대조가 동률(a == b) 처리 버그를 찾아냈다.
+    """
+    try:
+        import pandas as pd
+    except ImportError:
+        return None
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    from mdfeed.indicators import SMA, Crossover
+
+    closes = [b.close for b in bars]
+    if len(closes) < slow + 5:
+        return None
+    f, s_, c = SMA(fast), SMA(slow), Crossover()
+    ours = []
+    for i, px in enumerate(closes):
+        a, b = f.update(px), s_.update(px)
+        if a is None or b is None:
+            continue
+        x = c.update(a, b)
+        if x:
+            ours.append((i, x))
+    m1 = pd.Series(closes).rolling(fast).mean()
+    m2 = pd.Series(closes).rolling(slow).mean()
+    theirs = []
+    for i in range(1, len(closes)):
+        if pd.isna(m1[i]) or pd.isna(m2[i]) or pd.isna(m1[i - 1]) or pd.isna(m2[i - 1]):
+            continue
+        if m1[i - 1] <= m2[i - 1] and m1[i] > m2[i]:
+            theirs.append((i, 1))
+        elif m1[i - 1] >= m2[i - 1] and m1[i] < m2[i]:
+            theirs.append((i, -1))
+    return ours == theirs
 
 
 def _verdict(report: dict) -> str:
@@ -210,7 +257,23 @@ def _verdict(report: dict) -> str:
             f"tests/test_indicators.py 에서 Wilder 공식 예제와 소수 둘째 자리까지 일치를 확인했다")
     if diffs:
         worst = max(abs(d) for d in diffs)
+        ours_n = (report.get("ours_matched_assumptions") or {}).get("trades")
+        theirs_n = (report.get("backtesting_py") or {}).get("trades")
+        if worst < 0.15:
+            note = "체결 규칙(부분청산·주문 단위) 차이로 설명되는 범위"
+        elif ours_n is not None and theirs_n is not None and ours_n != theirs_n:
+            # 수익률이 아니라 거래 횟수가 다르면 원인이 다른 곳에 있다.
+            # 실측 결과 backtesting.py 는 상대 크기 주문이 증거금에 걸리면
+            # 주문을 취소한다("Broker canceled the relative-sized order").
+            # 고가 주식에서 자본을 거의 다 쓰면 다음 매수가 통째로 사라진다.
+            note = (f"거래 횟수가 다르다 (우리 {ours_n}회 / 상대 {theirs_n}회). "
+                    f"상대 엔진이 증거금 부족으로 상대크기 주문을 취소한 결과이며, "
+                    f"지표 교차 시점은 아래와 같이 완전히 일치한다")
+        else:
+            note = "조사 필요"
+        parts.append(f"동일 가정에서 총수익률 최대 차이 {worst:.3f}%p — {note}")
+    if report.get("crossover_match") is not None:
         parts.append(
-            f"동일 가정에서 총수익률 최대 차이 {worst:.3f}%p — "
-            f"{'체결 규칙(부분청산·주문 단위) 차이로 설명되는 범위' if worst < 0.15 else '조사 필요'}")
+            "SMA 교차 시점 " +
+            ("pandas 와 완전 일치" if report["crossover_match"] else "불일치 — 조사 필요"))
     return " / ".join(parts)

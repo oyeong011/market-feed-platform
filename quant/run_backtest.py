@@ -92,7 +92,7 @@ def main() -> int:
         import integrations
         best = max(results, key=lambda r: r["total_return_pct"]) if results else {}
         print("\n=== 오픈소스 라이브러리 교차검증 ===")
-        cc = integrations.cross_check(bars, best)
+        cc = integrations.cross_check(bars, best, symbol=args.symbol, equity=args.equity)
         payload["cross_check"] = cc
         print(json.dumps(cc, ensure_ascii=False, indent=1, default=str))
 

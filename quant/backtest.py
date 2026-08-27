@@ -10,9 +10,14 @@
    백테스트가 실전보다 좋게 나오는 가장 흔한 원인이다.
 2. **수수료 + 슬리피지**: 왕복 비용을 빼지 않은 수익률은 의미가 없다. 기본값은
    업비트 원화마켓 수수료(0.05%)와 슬리피지 5bp.
-3. **전량 매수/매도만**: 부분 체결·레버리지·증거금을 모델링하지 않는다. 못 하는 걸
+3. **주문 단위(lot)**: 주식은 1주 단위로만 살 수 있다. 크립토는 소수점이 된다.
+   처음엔 전부 소수점으로 계산했는데, 삼성전자(267,750원)를 자본 100만원으로
+   백테스트하니 3.73주를 사는 결과가 나왔다. `backtesting.py` 와 대조했을 때
+   크립토에서 0.006%p 였던 차이가 여기서는 **0.431%p** 로 벌어졌고, 그 차이가
+   전부 이 반올림에서 왔다. venue 로 판별해 주식은 정수 주로 체결한다.
+4. **전량 매수/매도만**: 부분 체결·레버리지·증거금을 모델링하지 않는다. 못 하는 걸
    한 척하느니 범위를 좁히고 그 사실을 적는다.
-4. **결과는 있는 그대로**: 손실이 나면 손실로 보고한다. 파라미터를 성과가 나올
+5. **결과는 있는 그대로**: 손실이 나면 손실로 보고한다. 파라미터를 성과가 나올
    때까지 돌려 고르는 것(과최적화)이 백테스트를 쓸모없게 만드는 주범이다.
 
 성과 지표
@@ -34,6 +39,15 @@ from mdfeed.strategies import BUY, HOLD, SELL, REGISTRY  # noqa: E402
 
 FEE_RATE = 0.0005          # 편도 0.05%
 SLIPPAGE_BP = 5.0          # 5bp
+
+# 주문 단위. 국내 주식은 1주, 크립토는 소수점 허용.
+EQUITY_VENUES = {"KIS", "KRX"}
+
+
+def lot_size_for(symbol: str) -> float:
+    """VENUE:SYMBOL 에서 최소 주문 단위를 정한다. 0 이면 소수점 허용."""
+    venue = symbol.split(":", 1)[0].upper() if ":" in symbol else ""
+    return 1.0 if venue in EQUITY_VENUES else 0.0
 
 
 @dataclass
@@ -147,11 +161,15 @@ class Result:
 
 def run(bars: list[BarRow], strategy_name: str, symbol: str = "",
         equity: float = 1_000_000.0, fee: float = FEE_RATE,
-        slippage_bp: float = SLIPPAGE_BP, **params) -> Result:
+        slippage_bp: float = SLIPPAGE_BP, lot: float | None = None,
+        **params) -> Result:
     """봉 리스트에 전략 하나를 돌린다.
 
     체결 규칙: t 봉 종가로 판단 → **t+1 봉 시가**로 체결.
+    lot 을 주지 않으면 symbol 의 venue 로 자동 판별한다 (주식 1주, 크립토 소수점).
     """
+    if lot is None:
+        lot = lot_size_for(symbol)
     cls = REGISTRY.get(strategy_name)
     if cls is None:
         raise ValueError(f"알 수 없는 전략: {strategy_name}")
@@ -167,6 +185,12 @@ def run(bars: list[BarRow], strategy_name: str, symbol: str = "",
         if pending == BUY and position == 0.0:
             px = bar.open * (1 + slip)              # 매수는 불리한 쪽으로 밀린다
             qty = cash / (px * (1 + fee))
+            if lot > 0:
+                qty = math.floor(qty / lot) * lot   # 주식은 정수 주 단위
+            if qty <= 0:
+                pending = HOLD
+                res.equity_curve.append((bar.bucket_ns, cash + position * bar.close))
+                continue
             cost = qty * px
             f = cost * fee
             cash -= cost + f

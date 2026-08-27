@@ -14,14 +14,14 @@
    "symbol": "KIS:005930",
    "bars": 231,
    "trades": 5,
-   "total_return_pct": -1.272,
-   "max_drawdown_pct": -1.258,
-   "sharpe": -158.069,
+   "total_return_pct": -1.264,
+   "max_drawdown_pct": -1.252,
+   "sharpe": -154.743,
    "win_rate_pct": 0.0,
    "profit_factor": 0.0,
-   "start_equity": 1000000,
-   "end_equity": 987280.89,
-   "vs_buy_hold_pp": -0.893
+   "start_equity": 10000000.0,
+   "end_equity": 9873634.74,
+   "vs_buy_hold_pp": -0.885
   },
   {
    "strategy": "rsi_revert",
@@ -33,8 +33,8 @@
    "sharpe": 0.0,
    "win_rate_pct": 0.0,
    "profit_factor": 0.0,
-   "start_equity": 1000000,
-   "end_equity": 1000000,
+   "start_equity": 10000000.0,
+   "end_equity": 10000000.0,
    "vs_buy_hold_pp": 0.379
   },
   {
@@ -42,19 +42,22 @@
    "symbol": "KIS:005930",
    "bars": 231,
    "trades": 3,
-   "total_return_pct": -0.783,
-   "max_drawdown_pct": -0.777,
-   "sharpe": -87.486,
+   "total_return_pct": -0.78,
+   "max_drawdown_pct": -0.774,
+   "sharpe": -87.377,
    "win_rate_pct": 0.0,
    "profit_factor": 0.0,
-   "start_equity": 1000000,
-   "end_equity": 992167.77,
-   "vs_buy_hold_pp": -0.404
+   "start_equity": 10000000.0,
+   "end_equity": 9921967.0,
+   "vs_buy_hold_pp": -0.401
   }
  ],
  "first_bar_ns": 1787799260000000000,
  "last_bar_ns": 1787801560000000000,
  "cross_check": {
+  "symbol": "KIS:005930",
+  "equity": 10000000.0,
+  "lot_size": 1.0,
   "libraries": {
    "pandas": true,
    "numpy": true,
@@ -79,28 +82,29 @@
    "sharpe": 0.0,
    "win_rate_pct": 0.0,
    "profit_factor": 0.0,
-   "start_equity": 1000000,
-   "end_equity": 1000000,
+   "start_equity": 10000000.0,
+   "end_equity": 10000000.0,
    "vs_buy_hold_pp": 0.379
   },
   "ours_matched_assumptions": {
    "note": "비교용으로 슬리피지 0 · 수수료만 적용해 재실행한 결과",
-   "total_return_pct": -0.777,
-   "max_drawdown_pct": -0.862,
+   "total_return_pct": -0.773,
+   "max_drawdown_pct": -0.858,
    "trades": 5
   },
   "vectorbt": {
    "skipped": "vectorbt 미설치 (pip install vectorbt)"
   },
   "backtesting_py": {
-   "total_return_pct": -0.345675,
-   "max_drawdown_pct": -0.5993423715827784,
+   "total_return_pct": -0.4263325,
+   "max_drawdown_pct": -0.7389999298699101,
    "trades": 1,
    "source": "backtesting.py"
   },
   "return_diff_pp_vs_matched": {
-   "backtesting_py": 0.4313
+   "backtesting_py": 0.3467
   },
-  "verdict": "SMA 최대 절대오차 0.00e+00 (부동소수 오차 수준, 사실상 동일) / RSI 최대 절대오차 0.918 — 우리 구현은 Wilder 원 정의(첫 n개 평균으로 seeding)를 따르고 비교 대상은 첫 값부터 EWM 을 시작한다. seeding 방식 차이이며 tests/test_indicators.py 에서 Wilder 공식 예제와 소수 둘째 자리까지 일치를 확인했다 / 동일 가정에서 총수익률 최대 차이 0.431%p — 조사 필요"
+  "crossover_match": true,
+  "verdict": "SMA 최대 절대오차 0.00e+00 (부동소수 오차 수준, 사실상 동일) / RSI 최대 절대오차 0.918 — 우리 구현은 Wilder 원 정의(첫 n개 평균으로 seeding)를 따르고 비교 대상은 첫 값부터 EWM 을 시작한다. seeding 방식 차이이며 tests/test_indicators.py 에서 Wilder 공식 예제와 소수 둘째 자리까지 일치를 확인했다 / 동일 가정에서 총수익률 최대 차이 0.347%p — 거래 횟수가 다르다 (우리 5회 / 상대 1회). 상대 엔진이 증거금 부족으로 상대크기 주문을 취소한 결과이며, 지표 교차 시점은 아래와 같이 완전히 일치한다 / SMA 교차 시점 pandas 와 완전 일치"
  }
 }

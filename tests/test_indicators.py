@@ -149,3 +149,36 @@ class TestCrossover:
 
     def test_first_observation_never_signals(self):
         assert Crossover().update(10, 1) == 0
+
+
+class TestCrossoverEquality:
+    """동률(a == b)은 교차가 아니다.
+
+    처음엔 `a > b` 하나로 판정했다. 그러면 두 값이 정확히 같아지는 순간을
+    "아래로 내려갔다"로 오인한다. 삼성전자 10초봉에서 교차 지점이 pandas 계산과
+    3곳이나 1봉씩 어긋났다 — 국내 주식은 호가 단위가 커서 두 이동평균이 정확히
+    일치하는 일이 생기지만, 크립토 float 에서는 거의 없어 오래 안 드러났다.
+    """
+
+    def test_touch_is_not_a_cross(self):
+        c = Crossover()
+        assert c.update(10, 5) == 0        # 첫 관측
+        assert c.update(5, 5) == 0         # 동률 — 교차 아님
+        assert c.update(10, 5) == 0        # 다시 위 — 상태 유지였으므로 변화 없음
+
+    def test_cross_confirmed_after_touch(self):
+        c = Crossover()
+        c.update(10, 5)                    # 위
+        assert c.update(5, 5) == 0         # 접촉
+        assert c.update(4, 5) == -1        # 실제로 아래로 갈라짐 → 하향돌파
+
+    def test_matches_pandas_convention_on_ties(self):
+        """pandas 관례: ma1[i-1] >= ma2[i-1] and ma1[i] < ma2[i] 를 하향돌파로 본다."""
+        seq = [(10, 5), (5, 5), (4, 5), (5, 5), (6, 5)]
+        c = Crossover()
+        assert [c.update(a, b) for a, b in seq] == [0, 0, -1, 0, 1]
+
+    def test_repeated_ties_do_not_emit(self):
+        c = Crossover()
+        c.update(10, 5)
+        assert [c.update(5, 5) for _ in range(20)] == [0] * 20

@@ -4,7 +4,7 @@
 [![Pages](https://github.com/oyeong011/market-feed-platform/actions/workflows/pages.yml/badge.svg)](https://oyeong011.github.io/market-feed-platform/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![deps](https://img.shields.io/badge/핵심%20의존성-0-brightgreen)
-![tests](https://img.shields.io/badge/tests-142%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-146%20passing-brightgreen)
 ![venues](https://img.shields.io/badge/거래소-3곳%20실연결-blue)
 
 거래소 실시간 시세를 **수집 → 정규화 → 멀티프로토콜 배포**하는 마켓데이터 피드 서비스와
@@ -62,7 +62,7 @@ make demo        # 6개 프로세스 기동 + 대시보드 안내
 make status      # 서비스 상태 (프로세스 + HTTP 헬스 + 포트)
 make client      # 참조 TCP 구독 클라이언트 (갭 탐지 포함)
 make diag        # 장애 진단 원스톱
-make test        # 142개 테스트 — 네트워크 불필요
+make test        # 146개 테스트 — 네트워크 불필요
 ```
 
 인터넷이 없어도 됩니다. 저장소에 든 녹화 파일로 전 구간을 재현합니다:
@@ -173,6 +173,8 @@ MDFEED_ENV_FILE=~/.mdfeed/kis.env MDFEED_ADAPTERS=upbit,binance,kis make up
 | 14 | **`DATABASE_URL` 을 줬는데 조용히 SQLite 로 동작** | 컨테이너 이미지에 psycopg2 가 없었다. 폴백 자체는 의도한 동작이지만 **설정 오류와 DB 장애를 구분하지 않아** 한참 뒤에야 발견했다 | 이미지에 드라이버 설치. 드라이버 없음은 `ImportError` 로 따로 잡아 조치 방법과 함께 error 로그 |
 | 15 | 컨테이너 5개가 영구 `unhealthy` | Dockerfile `HEALTHCHECK` 이 포트 9100 고정. tcp-gateway 컨테이너엔 9100 이 없어 영원히 실패 | `MDFEED_HEALTH_PORT` 로 서비스마다 지정, compose 에서 주입 |
 | 16 | **feedd 재시작이 소비자 전체를 끌고 내려감** | systemd `Requires=` 는 재시작을 전파한다. 버스 구독자에 지수 백오프 자동 재접속을 넣어둔 이유가 무력화되고, 소비자의 배치 버퍼도 함께 날아간다 | `Wants=` + `After=` 로 변경 — 순서만 보장하고 재시작은 전파하지 않는다. 실측: feedd PID 427→460, 소비자 3개 PID 유지 |
+| 18 | **이동평균이 정확히 같아지는 순간을 교차로 오인** | `a > b` 하나로 판정해 동률을 "아래로 내려감"으로 처리. 국내 주식은 호가 단위가 커서 두 SMA 가 정확히 일치하는 일이 생기는데, 크립토 float 에서는 거의 없어 오래 안 드러났다. 삼성전자 10초봉에서 교차 지점이 pandas 와 3곳 어긋남 | 동률은 판정 보류·상태 유지. 수정 후 교차 지점 9곳이 pandas 와 **완전 일치** |
+| 19 | 백테스트가 소수점 주식을 매수 | 삼성전자를 0.73주 단위로 사고 있었다. 주식은 1주 단위다 | venue 로 판별해 주식은 정수 주 체결 (`lot_size_for`) |
 | 17 | Postgres 조회 시각이 UTC | 국내 장 시간 09:00~15:30 이 00:00~06:30 으로 보인다. 장 시작 전인지 마감 후인지 눈으로 판단 불가 | 스키마에서 DB 기본 시간대를 `Asia/Seoul` 로 설정 (저장 값은 그대로, 표시만) |
 
 ---
@@ -231,14 +233,20 @@ make factor    # DART 재무 팩터 스크리닝 (영업이익률·ROE·매출�
 교차검증 실측:
 
 ```
-SMA(30)   우리 구현 vs pandas rolling   최대 절대오차 7.28e-11   (부동소수 오차 수준)
-RSI(14)   우리 구현 vs Wilder 공식 예제  소수 둘째 자리까지 일치   (tests/test_indicators.py)
-백테스트  우리 엔진 vs backtesting.py    차이 0.012 %p           (동일 가정으로 맞춘 뒤)
+SMA(30)      우리 구현 vs pandas rolling    최대 절대오차 0.00e+00
+SMA 교차시점  우리 Crossover vs pandas      9곳 완전 일치
+RSI(14)      우리 구현 vs Wilder 공식 예제   소수 둘째 자리까지 일치
 ```
 
-> 처음 비교했을 땐 0.21%p가 벌어졌습니다. 우리는 슬리피지 5bp를 넣었고 상대는 수수료만
-> 반영했기 때문이었습니다. **가정을 맞추자 0.012%p로 줄었습니다.** 사과 대 사과로 맞추기 전의
-> 비교는 아무것도 검증하지 못합니다.
+**이 대조가 우리 쪽 버그를 하나 찾아냈습니다.** 삼성전자 10초봉에서 교차 지점이
+pandas 와 3곳 어긋났는데, 원인은 두 이동평균이 **정확히 같아지는 순간**을 "아래로 내려감"
+으로 오인한 것이었습니다. 국내 주식은 호가 단위가 커서 실제로 일어나지만, 크립토 float
+에서는 거의 없어 오래 드러나지 않았습니다.
+
+> **수익률만 비교하면 어디가 다른지 모릅니다.** 처음엔 0.21%p 차이를 보고 "체결 규칙 차이"로
+> 넘겼습니다. 교차 시점을 직접 대조하고 나서야 지표 계산 쪽 문제라는 게 드러났습니다.
+> 남은 0.35%p 는 상대 엔진이 증거금 부족으로 주문을 취소한 것으로 규명됐습니다
+> (`Broker canceled the relative-sized order`).
 
 ```bash
 make backtest    # → docs/data/backtest.json (대시보드가 읽음)
@@ -321,7 +329,7 @@ src/mdfeed/
 
 ops/     systemd 유닛 6종 · ops.sh · watchdog.sh · healthcheck.py · logrotate
 quant/   backtest.py · run_backtest.py · integrations.py · factor_screen.py
-tests/   142개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E)
+tests/   146개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E)
 bench/   계층별 성능 측정 → docs/data/bench.json
 docs/    GitHub Pages 대시보드 (정적/실시간 겸용)
 ```

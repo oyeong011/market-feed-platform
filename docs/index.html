@@ -499,6 +499,9 @@ loadJSON("data/backtest.json").then(d => {
     if(ind.sma_max_abs_diff !== undefined)
       cards.push(["SMA(30) vs pandas", ind.sma_max_abs_diff.toExponential(2),
         "최대 절대오차. 부동소수 오차 수준으로, 사실상 동일한 계산입니다."]);
+    if(cc.crossover_match !== undefined && cc.crossover_match !== null)
+      cards.push(["SMA 교차 시점 대조", cc.crossover_match ? "완전 일치" : "불일치",
+        "수익률만 비교하면 어디가 다른지 모릅니다. 교차 시점을 직접 대조해 지표 계산과 체결 규칙 중 어느 쪽 문제인지 갈랐고, 실제로 동률 처리 버그를 이 대조가 찾아냈습니다."]);
     if(ind.rsi_max_abs_diff !== undefined)
       cards.push(["RSI(14) 대조", ind.rsi_max_abs_diff.toFixed(3),
         `기준: ${esc(ind.rsi_source||"")}. seeding 방식 차이이며, Wilder 공식 예제와는 소수 둘째 자리까지 일치합니다(테스트로 고정).`]);
@@ -514,10 +517,12 @@ loadJSON("data/backtest.json").then(d => {
     $("#cccards").innerHTML = cards.map(([k,v,n]) =>
       `<div class="card"><div class="k">${k}</div><div class="v" style="font-size:20px">${v}</div><div class="n">${n}</div></div>`).join("");
     $("#ccnote").innerHTML =
-      `<strong>비교는 사과 대 사과로 맞춰야 합니다.</strong> 처음엔 우리 결과(슬리피지 5bp 포함)를
-       backtesting.py(수수료만)와 그냥 비교해 0.21%p 차이를 봤습니다. 그게 엔진 버그인지 가정 차이인지
-       알 수 없었습니다. 가정을 맞추자 차이가 사라졌고, 남은 부분은 체결 규칙(부분청산·주문 단위)으로
-       설명됩니다.<br><span style="color:var(--dimmer)">${esc(cc.verdict||"")}</span>`;
+      `<strong>비교는 사과 대 사과로 맞춰야 하고, 남은 차이는 끝까지 규명해야 합니다.</strong>
+       슬리피지 가정을 맞추고, 주문 단위(주식 1주 / 크립토 소수점)를 맞추고, 그래도 남은
+       0.35%p 를 따라가 보니 상대 엔진이 증거금 부족으로 주문을 취소한 것이었습니다.
+       그 과정에서 <strong>우리 쪽 버그도 하나 나왔습니다</strong> — 두 이동평균이 정확히 같아지는
+       순간을 교차로 오인하고 있었고, 국내 주식처럼 호가 단위가 큰 종목에서만 드러났습니다.
+       <br><span style="color:var(--dimmer)">${esc(cc.verdict||"")}</span>`;
   }
   $("#btnote").innerHTML =
     `${esc(d.symbol)} · ${fmt(d.bars)}봉(${d.interval_s}초) · 틱 ${fmt(d.ticks)}건 · ${d.span_minutes}분 구간<br>
