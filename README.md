@@ -5,6 +5,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![deps](https://img.shields.io/badge/핵심%20의존성-0-brightgreen)
 ![tests](https://img.shields.io/badge/tests-133%20passing-brightgreen)
+![venues](https://img.shields.io/badge/거래소-3곳%20실연결-blue)
 
 거래소 실시간 시세를 **수집 → 정규화 → 멀티프로토콜 배포**하는 마켓데이터 피드 서비스와
 그것을 리눅스에서 운영하기 위한 자동화 스택.
