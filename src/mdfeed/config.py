@@ -6,8 +6,34 @@ systemd unit / docker-compose / CI 가 전부 같은 환경변수를 쓰므로,
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field, asdict
+
+
+def load_env_file(path: str) -> int:
+    """KEY="value" 형식 파일을 환경변수로 올린다 (이미 있는 값은 덮지 않는다).
+
+    자격증명을 리포지터리 밖에 두기 위한 최소 장치다. docker 의 --env-file 과
+    같은 역할이고, systemd 배포에서는 EnvironmentFile= 이 같은 일을 한다.
+    값은 어디에도 로그로 남기지 않는다.
+    """
+    n = 0
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and v and k not in os.environ:
+                    os.environ[k] = v
+                    n += 1
+    except FileNotFoundError:
+        return 0
+    return n
 
 
 def _env(key: str, default: str) -> str:
@@ -47,6 +73,8 @@ class Config:
         default_factory=lambda: _list("KIS_SYMBOLS", "005930,000660,373220"))
     kis_app_key: str = field(default_factory=lambda: os.getenv("KIS_APP_KEY", ""))
     kis_app_secret: str = field(default_factory=lambda: os.getenv("KIS_APP_SECRET", ""))
+    # real = 실전투자, vts = 모의투자. 실시간 시세는 실전 계좌 키를 쓴다.
+    kis_env: str = field(default_factory=lambda: _env("KIS_ENV", "real"))
     replay_file: str = field(default_factory=lambda: _env("REPLAY_FILE", "data/replay/sample.mdf"))
     replay_speed: float = field(default_factory=lambda: float(_env("REPLAY_SPEED", "1.0")))
     replay_loop: bool = field(default_factory=lambda: _bool("REPLAY_LOOP", True))
@@ -103,6 +131,13 @@ class Config:
 
 
 def load() -> Config:
+    # MDFEED_ENV_FILE 이 지정돼 있으면 먼저 읽어 환경변수로 올린다.
+    # Config 필드가 os.getenv 를 default_factory 에서 읽으므로 순서가 중요하다.
+    env_file = os.getenv("MDFEED_ENV_FILE")
+    if env_file:
+        n = load_env_file(env_file)
+        logging.getLogger("mdfeed.config").info(
+            "환경파일에서 %d개 변수 로드: %s", n, env_file)
     cfg = Config()
     os.makedirs(cfg.run_dir, exist_ok=True)
     return cfg

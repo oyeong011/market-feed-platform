@@ -224,6 +224,19 @@ class WSClient:
         self.writer.write(encode_frame(OP_PING, data, mask=True))
         await self.writer.drain()
 
+    async def pong(self, data: bytes = b"") -> None:
+        """PONG 제어 프레임을 보낸다.
+
+        서버가 보낸 PING 에 대한 응답은 recv() 안에서 자동으로 나가지만,
+        **애플리케이션 레벨 하트비트**(KIS 의 PINGPONG 처럼 텍스트 메시지로 오는 것)에
+        PONG 으로 답해야 하는 경우가 있어 밖으로 열어 둔다.
+
+        제어 프레임은 125바이트를 넘을 수 없다(RFC 6455 §5.5). 넘으면 잘라 보낸다 —
+        하트비트 응답은 페이로드보다 '왔다는 사실'이 중요하다.
+        """
+        self.writer.write(encode_frame(OP_PONG, data[:125], mask=True))
+        await self.writer.drain()
+
     async def recv(self, timeout: float | None = None) -> tuple[int, bytes]:
         """데이터 메시지 하나. ping 은 내부에서 pong 으로 응답하고 넘어간다."""
         while True:
