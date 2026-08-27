@@ -1,4 +1,13 @@
-"""백테스트 실행기 — DB 또는 녹화 파일에서 봉을 읽어 전 전략을 돌리고 JSON 을 낸다.
+"""백테스트 실행기 — 성과 판정은 오픈소스(backtesting.py)에 맡긴다.
+
+두 경로를 나란히 돌린다.
+
+    기준   backtesting.py    성과 수치는 이쪽을 인용한다
+    대조   자체 최소 실행기   실시간 전략 코드가 같은 신호를 내는지 확인만 한다
+
+검증된 백테스터가 있는데 새로 만들 이유는 없다. 다만 실시간 엔진이 쓰는 전략
+클래스를 오픈소스 API 로 옮겨 적으면 "같은 코드"라는 보장이 깨지므로,
+그 클래스를 그대로 먹이는 최소 실행기를 따로 두고 **두 결과를 대조**한다.
 
 산출 JSON 은 GitHub Pages 대시보드가 그대로 읽는다. 결과를 손으로 옮겨 적지 않는
 것이 중요하다 — 사람이 옮기는 순간 문서와 실제가 갈라진다.
@@ -33,8 +42,10 @@ def main() -> int:
     ap.add_argument("--fee", type=float, default=bt.FEE_RATE)
     ap.add_argument("--slippage-bp", type=float, default=bt.SLIPPAGE_BP)
     ap.add_argument("--strategies", nargs="*", default=list(REGISTRY))
-    ap.add_argument("--cross-check", action="store_true",
-                    help="vectorbt / backtesting.py 로 교차검증")
+    ap.add_argument("--cross-check", action="store_true", default=True,
+                    help="기준 엔진(backtesting.py)과 지표를 대조 (기본 켜짐)")
+    ap.add_argument("--no-cross-check", dest="cross_check", action="store_false",
+                    help="오픈소스 없이 대조용 실행기만 돌린다")
     ap.add_argument("--out", default="")
     args = ap.parse_args()
 
@@ -60,6 +71,8 @@ def main() -> int:
     bh_equity = bt.buy_and_hold(bars, args.equity, args.fee)
     bh_ret = (bh_equity / args.equity - 1) * 100
 
+    print("[대조용] 실시간 전략 클래스를 그대로 과거 봉에 먹인 결과")
+    print("         성과 판정 기준은 아래 backtesting.py 쪽입니다\n")
     print(f"{'전략':<14} {'거래':>5} {'수익률':>9} {'MDD':>8} {'샤프':>8} "
           f"{'승률':>7} {'손익비':>7} {'B&H대비':>9}")
     print("-" * 76)
@@ -91,7 +104,7 @@ def main() -> int:
     if args.cross_check:
         import integrations
         best = max(results, key=lambda r: r["total_return_pct"]) if results else {}
-        print("\n=== 오픈소스 라이브러리 교차검증 ===")
+        print("\n=== 기준 엔진(backtesting.py) 및 지표 대조 ===")
         cc = integrations.cross_check(bars, best, symbol=args.symbol, equity=args.equity)
         payload["cross_check"] = cc
         print(json.dumps(cc, ensure_ascii=False, indent=1, default=str))

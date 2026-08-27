@@ -1,7 +1,21 @@
-"""백테스트 엔진 — 수집한 피드 데이터로 전략을 검증한다.
+"""전략 코드 동등성 확인용 최소 실행기 — **백테스트 엔진이 아니다.**
 
-실시간 엔진과 **같은 전략 클래스**(src/mdfeed/strategies.py)를 쓴다. 백테스트만
-따로 구현하면 두 코드가 미묘하게 갈리고, 그 차이는 실거래에서만 드러난다.
+성과 판정의 기준은 `backtesting.py` 다(quant/run_backtest.py 참고).
+검증된 오픈소스가 있는데 백테스트 엔진을 새로 만들 이유는 없다.
+
+그럼 이건 왜 있나
+-----------------
+`src/mdfeed/strategies.py` 의 전략 클래스는 **실시간 엔진이 그대로 쓰는 코드**다.
+그 코드가 과거 봉에 대해서도 같은 시점에 같은 신호를 내는지 확인해야 한다.
+오픈소스 백테스터에 넣으려면 전략을 그쪽 API 로 다시 써야 하는데, 그 순간
+"실시간과 같은 코드"라는 보장이 깨진다.
+
+그래서 이 파일은 **실시간 전략 클래스를 과거 봉에 그대로 먹이는 최소 실행기**다.
+여기서 나온 결과를 backtesting.py 결과와 대조해, 두 경로가 같은 신호를 내는지 본다.
+차이가 나면 전략 코드나 지표에 문제가 있다는 뜻이고, 실제로 이 대조가
+이동평균 동률 처리 버그를 찾아냈다.
+
+성과 수치를 인용할 때는 backtesting.py 쪽을 쓴다.
 
 정직하게 만들려고 넣은 장치들
 -----------------------------
@@ -162,11 +176,12 @@ class Result:
 def run(bars: list[BarRow], strategy_name: str, symbol: str = "",
         equity: float = 1_000_000.0, fee: float = FEE_RATE,
         slippage_bp: float = SLIPPAGE_BP, lot: float | None = None,
-        **params) -> Result:
+        cash_fraction: float = 1.0, **params) -> Result:
     """봉 리스트에 전략 하나를 돌린다.
 
     체결 규칙: t 봉 종가로 판단 → **t+1 봉 시가**로 체결.
     lot 을 주지 않으면 symbol 의 venue 로 자동 판별한다 (주식 1주, 크립토 소수점).
+    cash_fraction 은 매수 시 투입할 현금 비율. 기준 엔진과 조건을 맞출 때 쓴다.
     """
     if lot is None:
         lot = lot_size_for(symbol)
@@ -184,7 +199,7 @@ def run(bars: list[BarRow], strategy_name: str, symbol: str = "",
         # ── 직전 봉에서 나온 시그널을 이번 봉 시가로 체결 ────────────────
         if pending == BUY and position == 0.0:
             px = bar.open * (1 + slip)              # 매수는 불리한 쪽으로 밀린다
-            qty = cash / (px * (1 + fee))
+            qty = cash * cash_fraction / (px * (1 + fee))
             if lot > 0:
                 qty = math.floor(qty / lot) * lot   # 주식은 정수 주 단위
             if qty <= 0:

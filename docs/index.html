@@ -374,7 +374,12 @@ $ <span class="p">python3 ops/healthcheck.py</span>
       없으므로 억지로 붙이지 않습니다.
     </p>
 
-    <h3>백테스트 — 실시간 엔진과 같은 전략 코드</h3>
+    <h3>백테스트 — 성과 판정은 오픈소스(backtesting.py)에 맡깁니다</h3>
+    <p class="lede" style="margin-bottom:14px">
+      검증된 백테스터가 있는데 새로 만들 이유는 없습니다. 아래 표는 <strong>대조용 실행기</strong>의
+      결과입니다 — 실시간 엔진이 쓰는 전략 클래스를 과거 봉에 그대로 먹여, 두 경로가 같은 신호를
+      내는지 확인하는 용도입니다. 성과 수치는 backtesting.py 쪽을 인용합니다.
+    </p>
     <div class="tblwrap">
       <table id="bttbl">
         <thead><tr><th>전략</th><th class="num">거래</th><th class="num">수익률</th><th class="num">MDD</th>
@@ -384,11 +389,10 @@ $ <span class="p">python3 ops/healthcheck.py</span>
     </div>
     <p class="note" id="btnote"></p>
 
-    <h3>오픈소스 라이브러리 교차검증</h3>
+    <h3>기준 엔진 및 지표 대조</h3>
     <p class="lede" style="margin-bottom:14px">
-      자체 백테스트 엔진의 가장 큰 위험은 <strong>조용히 틀리는 것</strong>입니다. 미래 참조가 한 줄
-      섞여 있어도 결과는 그럴듯하게 나옵니다. 그래서 널리 쓰이는 라이브러리로 같은 데이터를
-      다시 돌려 대조합니다.
+      수익률만 비교하면 어디가 다른지 모릅니다. <strong>교차 시점 자체를 대조</strong>해야
+      지표 계산과 체결 규칙 중 어느 쪽 문제인지 갈립니다. 실제로 이 대조가 우리 쪽 버그를 찾아냈습니다.
     </p>
     <div class="grid g3" id="cccards"></div>
     <p class="note" id="ccnote"></p>

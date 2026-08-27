@@ -131,6 +131,10 @@ def verify_backtest_bt(bars, fast: int = 10, slow: int = 30,
 
     class Cross(Strategy):
         n1, n2 = fast, slow
+        # 자본을 100% 쓰면 고가 주식에서 다음 매수가 증거금 부족으로 취소된다
+        # ("Broker canceled the relative-sized order"). 우리 실행기는 전량 매수
+        # 하나만 모델링하므로, 비교를 위해 여유를 두고 같은 조건으로 맞춘다.
+        size = 0.95
 
         def init(self):
             self.ma1 = self.I(SMA_, self.data.Close, self.n1)
@@ -138,12 +142,20 @@ def verify_backtest_bt(bars, fast: int = 10, slow: int = 30,
 
         def next(self):
             if crossover(self.ma1, self.ma2):
-                self.buy()
+                self.buy(size=self.size)
             elif crossover(self.ma2, self.ma1):
                 self.position.close()
 
-    bt = Backtest(df, Cross, cash=equity, commission=fee)
-    stats = bt.run()
+    try:
+        # 마지막에 열려 있는 포지션을 청산해야 성과가 확정된다.
+        # 안 하면 미청산분이 통계에서 빠져 우리 실행기와 비교가 어긋난다.
+        bt = Backtest(df, Cross, cash=equity, commission=fee, finalize_trades=True)
+    except TypeError:
+        bt = Backtest(df, Cross, cash=equity, commission=fee)
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        stats = bt.run()
     return {
         "total_return_pct": float(stats["Return [%]"]),
         "max_drawdown_pct": float(stats["Max. Drawdown [%]"]),
@@ -170,8 +182,10 @@ def cross_check(bars, ours: dict | None = None, fast: int = 10, slow: int = 30,
     # 비교 전용: 라이브러리와 같은 가정(수수료만, 슬리피지 없음)
     # 주문 단위까지 맞춰야 사과 대 사과다. symbol 을 넘기지 않으면 소수점 주식을
     # 사게 되고, 고가 주식에서는 그 차이만으로 수익률이 크게 벌어진다.
+    # backtesting.py 의 size=0.95 와 같은 조건으로 맞춘다.
+    # 자본 투입 비율이 다르면 노출이 달라져 수익률이 그만큼 벌어진다.
     matched = bt.run(bars, "sma_cross", symbol=symbol, equity=equity,
-                     fee=fee, slippage_bp=0.0).summary(60)
+                     fee=fee, slippage_bp=0.0, cash_fraction=0.95).summary(60)
 
     report = {
         "symbol": symbol,
@@ -181,7 +195,7 @@ def cross_check(bars, ours: dict | None = None, fast: int = 10, slow: int = 30,
         "indicators": verify_indicators(bars, fast, slow),
         "ours_as_reported": ours,
         "ours_matched_assumptions": {
-            "note": "비교용으로 슬리피지 0 · 수수료만 적용해 재실행한 결과",
+            "note": "비교용 재실행 — 슬리피지 0, 수수료만, 자본 투입 95%, 주문 단위 동일",
             "total_return_pct": matched["total_return_pct"],
             "max_drawdown_pct": matched["max_drawdown_pct"],
             "trades": matched["trades"],

@@ -87,24 +87,24 @@
    "vs_buy_hold_pp": 0.379
   },
   "ours_matched_assumptions": {
-   "note": "비교용으로 슬리피지 0 · 수수료만 적용해 재실행한 결과",
-   "total_return_pct": -0.773,
-   "max_drawdown_pct": -0.858,
+   "note": "비교용 재실행 — 슬리피지 0, 수수료만, 자본 투입 95%, 주문 단위 동일",
+   "total_return_pct": -0.731,
+   "max_drawdown_pct": -0.812,
    "trades": 5
   },
   "vectorbt": {
    "skipped": "vectorbt 미설치 (pip install vectorbt)"
   },
   "backtesting_py": {
-   "total_return_pct": -0.4263325,
-   "max_drawdown_pct": -0.7389999298699101,
-   "trades": 1,
+   "total_return_pct": -0.46085875,
+   "max_drawdown_pct": -0.6991050581374503,
+   "trades": 4,
    "source": "backtesting.py"
   },
   "return_diff_pp_vs_matched": {
-   "backtesting_py": 0.3467
+   "backtesting_py": 0.2701
   },
   "crossover_match": true,
-  "verdict": "SMA 최대 절대오차 0.00e+00 (부동소수 오차 수준, 사실상 동일) / RSI 최대 절대오차 0.918 — 우리 구현은 Wilder 원 정의(첫 n개 평균으로 seeding)를 따르고 비교 대상은 첫 값부터 EWM 을 시작한다. seeding 방식 차이이며 tests/test_indicators.py 에서 Wilder 공식 예제와 소수 둘째 자리까지 일치를 확인했다 / 동일 가정에서 총수익률 최대 차이 0.347%p — 거래 횟수가 다르다 (우리 5회 / 상대 1회). 상대 엔진이 증거금 부족으로 상대크기 주문을 취소한 결과이며, 지표 교차 시점은 아래와 같이 완전히 일치한다 / SMA 교차 시점 pandas 와 완전 일치"
+  "verdict": "SMA 최대 절대오차 0.00e+00 (부동소수 오차 수준, 사실상 동일) / RSI 최대 절대오차 0.918 — 우리 구현은 Wilder 원 정의(첫 n개 평균으로 seeding)를 따르고 비교 대상은 첫 값부터 EWM 을 시작한다. seeding 방식 차이이며 tests/test_indicators.py 에서 Wilder 공식 예제와 소수 둘째 자리까지 일치를 확인했다 / 동일 가정에서 총수익률 최대 차이 0.270%p — 거래 횟수가 다르다 (우리 5회 / 상대 4회). 상대 엔진이 증거금 부족으로 상대크기 주문을 취소한 결과이며, 지표 교차 시점은 아래와 같이 완전히 일치한다 / SMA 교차 시점 pandas 와 완전 일치"
  }
 }
