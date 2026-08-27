@@ -49,6 +49,14 @@ bench: venv  ## 성능 벤치마크 → docs/data/bench.json
 up:  ## 전체 스택 기동 (6개 프로세스, 포그라운드 감독)
 	$(PY) -m mdfeed.cli up
 
+up-shards:  ## feedd 를 venue 그룹별로 쪼개 기동 (단일 장애점 제거)
+	$(PY) -m mdfeed.cli up --shards
+
+load:  venv  ## 배포단 부하 시험 → docs/data/load.json
+	@echo "리플레이를 고정 속도로 돌린 뒤 실행하세요: MDFEED_ADAPTERS=replay make up"
+	$(BIN)/python bench/load_test.py --subscribers 1 10 25 50 100 \
+	  --seconds 10 --out docs/data/load.json
+
 up-bg:  ## 전체 스택 백그라운드 기동
 	@$(PY) -m mdfeed.cli up > /tmp/mdfeed-stack.log 2>&1 & \
 	 echo "기동 중... (로그: /tmp/mdfeed-stack.log)"; sleep 8; $(MAKE) status

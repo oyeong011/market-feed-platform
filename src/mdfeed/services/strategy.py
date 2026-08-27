@@ -109,7 +109,11 @@ class StrategyEngine:
         log.info("SIGNAL %s %s %s @ %s", sig.venue, sig.symbol, d["action_name"], bar.close)
 
     async def _consume(self, stop: asyncio.Event) -> None:
-        sub = UDSSubscriber(self.cfg.bus_path)
+        paths = self.cfg.bus_paths or [self.cfg.bus_path]
+        await asyncio.gather(*(self._consume_one(p, stop) for p in paths))
+
+    async def _consume_one(self, path: str, stop: asyncio.Event) -> None:
+        sub = UDSSubscriber(path)
         async for frame in sub.frames():
             if stop.is_set():
                 return

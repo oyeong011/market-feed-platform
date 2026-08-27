@@ -262,3 +262,57 @@ def test_replay_does_not_pollute_latency_metrics(tmp_path):
     assert reg.snapshot()["counters"].get('ticks_total{venue="REPLAY"}') == 1
     # 지연 히스토그램에는 기록되지 않아야 한다
     assert "ingest_latency" not in reg.snapshot()["histograms"]
+
+
+class TestSharding:
+    """feedd 하나가 모든 업스트림을 들면 단일 장애점이 된다."""
+
+    def test_shard_gets_own_bus_path(self):
+        from mdfeed.config import shard_bus_path
+        assert shard_bus_path("/run/mdfeed/bus.sock", "krx") == "/run/mdfeed/bus-krx.sock"
+        assert shard_bus_path("/run/mdfeed/bus.sock", "") == "/run/mdfeed/bus.sock"
+
+    def test_shard_offsets_admin_ports(self, monkeypatch):
+        """샤드마다 관리 포트가 달라야 어느 샤드가 아픈지 구분된다."""
+        from mdfeed import config
+        monkeypatch.setenv("MDFEED_SHARD", "krx")
+        monkeypatch.setenv("MDFEED_SHARD_PORT_OFFSET", "100")
+        monkeypatch.setenv("MDFEED_RUN_DIR", "/tmp/mdfeed")
+        cfg = config.load()
+        assert cfg.feedd_admin_port == 9200
+        assert cfg.bus_path.endswith("bus-krx.sock")
+        assert cfg.ring_name.endswith("_krx")
+
+    def test_consumers_default_to_single_bus(self, monkeypatch):
+        from mdfeed import config
+        monkeypatch.setenv("MDFEED_RUN_DIR", "/tmp/mdfeed")
+        cfg = config.load()
+        assert cfg.bus_paths == [cfg.bus_path]
+
+    def test_writer_tracks_sequence_per_source(self, tmp_path):
+        """샤드마다 seq 공간이 독립이다. 하나로 추적하면 샤드가 바뀔 때마다
+        거짓 갭이 잡힌다 — 구독자별 재넘버링 때와 같은 실수다."""
+        from mdfeed.services.writer import Writer
+        from mdfeed.protocol import Frame
+        from mdfeed.models import MSG_HEARTBEAT
+
+        cfg = make_cfg(tmp_path)
+        w = Writer(cfg)
+        for seq in (0, 1, 2):
+            w._ingest(Frame(MSG_HEARTBEAT, seq, 0, b""), source="bus-crypto")
+        for seq in (0, 1, 2):
+            w._ingest(Frame(MSG_HEARTBEAT, seq, 0, b""), source="bus-krx")
+        stats = {k: v.stats() for k, v in w.seqtracks.items()}
+        assert set(stats) == {"bus-crypto", "bus-krx"}
+        for s in stats.values():
+            assert s["gap_count"] == 0, "샤드별 추적이 안 되면 거짓 갭이 잡힌다"
+
+    def test_single_tracker_would_report_false_gaps(self, tmp_path):
+        """왜 소스별로 나눠야 하는지 — 하나로 추적하면 이렇게 된다."""
+        from mdfeed.protocol import SequenceTracker
+        t = SequenceTracker()
+        for seq in (0, 1, 2):
+            t.observe(seq)
+        # 다른 샤드의 seq 0 이 도착하면 중복으로 잡힌다
+        t.observe(0)
+        assert t.stats()["duplicate_count"] == 1

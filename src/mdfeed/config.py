@@ -96,8 +96,21 @@ class Config:
 
     # ── IPC ────────────────────────────────────────────────────────────────
     bus_backend: str = field(default_factory=lambda: _env("BUS_BACKEND", "uds"))  # uds|zmq
+    # ── 샤딩 ──────────────────────────────────────────────────────────────
+    # feedd 하나가 모든 업스트림을 들면 단일 장애점이 된다. 거래소 하나가
+    # 프로토콜을 바꾸거나 어댑터가 죽으면 나머지 전부가 함께 내려간다.
+    # 샤드 이름을 주면 그 샤드 전용 버스 소켓·관리 포트를 쓴다.
+    #
+    #   MDFEED_SHARD=crypto  MDFEED_ADAPTERS=upbit,binance
+    #   MDFEED_SHARD=krx     MDFEED_ADAPTERS=kis,kis_rest,kis_macro
+    #
+    # 소비자는 MDFEED_BUS_PATHS 로 여러 샤드를 한꺼번에 구독한다.
+    shard: str = field(default_factory=lambda: _env("SHARD", ""))
     bus_path: str = field(default_factory=lambda: _env("BUS_PATH", "/tmp/mdfeed/bus.sock"))
     bus_zmq_endpoint: str = field(default_factory=lambda: _env("BUS_ZMQ", "tcp://127.0.0.1:5599"))
+    # 소비자가 구독할 버스 소켓 목록 (샤드 여러 개를 한꺼번에)
+    bus_paths: list[str] = field(default_factory=lambda: _list("BUS_PATHS", ""))
+    shard_port_offset: int = field(default_factory=lambda: _int("SHARD_PORT_OFFSET", 0))
     bus_queue_size: int = field(default_factory=lambda: _int("BUS_QUEUE", 4096))
     ring_name: str = field(default_factory=lambda: _env("RING_NAME", "mdfeed_ring"))
     ring_capacity: int = field(default_factory=lambda: _int("RING_CAPACITY", 65536))
@@ -143,6 +156,15 @@ class Config:
         return d
 
 
+def shard_bus_path(base: str, shard: str) -> str:
+    """샤드 이름을 소켓 경로에 끼워 넣는다. `/run/mdfeed/bus.sock` → `bus-krx.sock`"""
+    if not shard:
+        return base
+    d, name = os.path.split(base)
+    stem, _, ext = name.rpartition(".")
+    return os.path.join(d, f"{stem or name}-{shard}" + (f".{ext}" if stem else ""))
+
+
 def load() -> Config:
     # MDFEED_ENV_FILE 이 지정돼 있으면 먼저 읽어 환경변수로 올린다.
     # Config 필드가 os.getenv 를 default_factory 에서 읽으므로 순서가 중요하다.
@@ -153,4 +175,19 @@ def load() -> Config:
             "환경파일에서 %d개 변수 로드: %s", n, env_file)
     cfg = Config()
     os.makedirs(cfg.run_dir, exist_ok=True)
+
+    if cfg.shard:
+        # 발행자는 자기 샤드 소켓에만 쓴다
+        cfg.bus_path = shard_bus_path(cfg.bus_path, cfg.shard)
+        # 샤드마다 관리 포트가 달라야 어느 샤드가 아픈지 구분된다
+        off = cfg.shard_port_offset
+        for f in ("feedd_admin_port", "tcp_admin_port", "writer_admin_port",
+                  "strategy_admin_port", "tcp_port", "ws_port", "http_port"):
+            setattr(cfg, f, getattr(cfg, f) + off)
+        if not os.getenv("MDFEED_RING_NAME"):
+            cfg.ring_name = f"{cfg.ring_name}_{cfg.shard}"
+
+    # 소비자가 구독할 버스 목록. 지정이 없으면 자기 bus_path 하나.
+    if not cfg.bus_paths:
+        cfg.bus_paths = [cfg.bus_path]
     return cfg

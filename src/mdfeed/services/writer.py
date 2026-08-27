@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import threading
 import time
 
@@ -57,7 +58,9 @@ class Writer:
         self.cfg = cfg
         self.registry = Registry(SERVICE)
         self.storage = None
-        self.seqtrack = SequenceTracker()
+        # 샤드마다 seq 공간이 독립이다. 하나로 추적하면 샤드 전환마다
+        # 거짓 갭이 잡힌다 — 구독자별 재넘버링 때 겪은 것과 같은 문제다.
+        self.seqtracks: dict[str, SequenceTracker] = {}
         self._trades: list[tuple] = []
         self._books: list[tuple] = []
         self._signals: list[tuple] = []
@@ -75,14 +78,18 @@ class Writer:
         self._started = time.time()
 
     # ── 수신 ──────────────────────────────────────────────────────────────
-    def _ingest(self, frame) -> None:
+    def _ingest(self, frame, source: str = "-") -> None:
         self.frames_in += 1
         self.last_frame_at = time.time()
         self.upstream_ok = True
-        lost = self.seqtrack.observe(frame.seq)
+        tracker = self.seqtracks.get(source)
+        if tracker is None:
+            tracker = self.seqtracks[source] = SequenceTracker()
+        lost = tracker.observe(frame.seq)
         if lost:
             self.registry.counter("gap_messages_total", lost)
-            log.warning("시퀀스 갭 %d건 (seq=%d). 그 구간 데이터는 영구 유실", lost, frame.seq)
+            log.warning("시퀀스 갭 %d건 (%s seq=%d). 그 구간 데이터는 영구 유실",
+                        lost, source, frame.seq)
 
         mt = frame.msg_type
         if mt == MSG_TRADE and len(frame.payload) >= Trade.SIZE:
@@ -169,7 +176,7 @@ class Writer:
         async for frame in sub.frames():
             if stop.is_set():
                 return
-            self._ingest(frame)
+            self._ingest(frame, path)
             # 배치가 다 차면 주기를 기다리지 않고 바로 민다
             if len(self._trades) >= self.cfg.write_batch:
                 await self._flush()
@@ -196,7 +203,7 @@ class Writer:
             "pending_rows": len(self._trades) + len(self._books),
             "open_bars": len(self._bars),
             "db_errors": self.db_errors,
-            "sequence": self.seqtrack.stats(),
+            "sequence": {k: v.stats() for k, v in self.seqtracks.items()},
             "clock": self.clock.report(),
         }
 
@@ -210,9 +217,10 @@ class Writer:
         http.route("GET", "/counts", lambda r: Response.json(self.storage.counts()))
         await http.start()
 
-        tasks = [
-            asyncio.create_task(self._consume(cfg.bus_path, stop)),
-            asyncio.create_task(self._consume(cfg.signal_bus_path, stop)),
+        sources = list(cfg.bus_paths or [cfg.bus_path]) + [cfg.signal_bus_path]
+        log.info("구독 대상 %d개: %s", len(sources),
+                 ", ".join(os.path.basename(p) for p in sources))
+        tasks = [asyncio.create_task(self._consume(p, stop)) for p in sources] + [
             asyncio.create_task(self._flush_loop(stop)),
         ]
         await stop.wait()

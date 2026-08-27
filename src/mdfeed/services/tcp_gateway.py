@@ -99,7 +99,19 @@ class TCPGateway:
 
     # ── 업스트림(버스) ────────────────────────────────────────────────────
     async def _consume_bus(self, stop: asyncio.Event) -> None:
-        sub = UDSSubscriber(self.cfg.bus_path)
+        """샤드가 여러 개면 전부 구독해 하나로 합친다.
+
+        샤드마다 seq 공간이 독립이므로 여기서 합치면 순서가 뒤섞인다.
+        어차피 구독자별로 seq 를 다시 매기므로(§구독자별 시퀀스) 문제가 없다.
+        """
+        paths = self.cfg.bus_paths or [self.cfg.bus_path]
+        if len(paths) > 1:
+            await asyncio.gather(*(self._consume_one(p, stop) for p in paths))
+        else:
+            await self._consume_one(paths[0], stop)
+
+    async def _consume_one(self, path: str, stop: asyncio.Event) -> None:
+        sub = UDSSubscriber(path)
         async for frame in sub.frames():
             if stop.is_set():
                 return

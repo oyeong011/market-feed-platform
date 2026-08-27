@@ -81,7 +81,8 @@ class WSGateway:
 
     # ── 업스트림 ──────────────────────────────────────────────────────────
     async def _consume(self, stop: asyncio.Event) -> None:
-        for path in (self.cfg.bus_path, self.cfg.signal_bus_path):
+        paths = list(self.cfg.bus_paths or [self.cfg.bus_path]) + [self.cfg.signal_bus_path]
+        for path in paths:
             asyncio.create_task(self._consume_one(path, stop))
         await stop.wait()
 

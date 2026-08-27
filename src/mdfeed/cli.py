@@ -47,6 +47,14 @@ def _get(url: str, timeout: float = 3.0):
         return None, {"error": str(e)}
 
 
+# 샤드 구성. feedd 하나가 모든 업스트림을 들면 단일 장애점이 된다.
+# 거래소 하나가 프로토콜을 바꾸거나 어댑터가 죽으면 나머지도 함께 내려간다.
+SHARDS = [
+    ("crypto", "upbit,binance", 0),
+    ("krx", "kis,kis_rest,kis_macro", 100),
+]
+
+
 def cmd_up(args) -> int:
     """모든 서비스를 자식 프로세스로 띄우고 감독한다."""
     env = dict(os.environ)
@@ -54,12 +62,14 @@ def cmd_up(args) -> int:
     env.setdefault("PYTHONUNBUFFERED", "1")
 
     procs: dict[str, subprocess.Popen] = {}
+    shard_env: dict[str, dict] = {}
     restarts: dict[str, int] = {}
     last_start: dict[str, float] = {}
     stopping = False
 
     def spawn(name: str, module: str) -> None:
-        p = subprocess.Popen([sys.executable, "-m", module], env=env)
+        p = subprocess.Popen([sys.executable, "-m", module],
+                             env=shard_env.get(name, env))
         procs[name] = p
         last_start[name] = time.time()
         print(f"[supervisor] {name} 기동 pid={p.pid}", flush=True)
@@ -88,16 +98,42 @@ def cmd_up(args) -> int:
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
-    selected = [s for s in SERVICES if not args.only or s[0] in args.only]
-    for i, (name, module, _port) in enumerate(selected):
-        spawn(name, module)
-        if i == 0:
-            time.sleep(1.5)      # feedd 가 버스 소켓을 만들 시간을 준다
+    if args.shards:
+        # 샤드 모드: feedd 를 venue 그룹별로 쪼개 띄우고, 소비자는 전부 구독한다
+        run_dir = env.get("MDFEED_RUN_DIR", "/tmp/mdfeed")
+        bus_paths = []
+        for shard, adapters, offset in SHARDS:
+            senv = dict(env)
+            senv["MDFEED_SHARD"] = shard
+            senv["MDFEED_SHARD_PORT_OFFSET"] = str(offset)
+            senv["MDFEED_ADAPTERS"] = adapters
+            path = os.path.join(run_dir, f"bus-{shard}.sock")
+            bus_paths.append(path)
+            p = subprocess.Popen([sys.executable, "-m", "mdfeed.services.feedd"], env=senv)
+            procs[f"feedd:{shard}"] = p
+            last_start[f"feedd:{shard}"] = time.time()
+            shard_env[f"feedd:{shard}"] = senv
+            print(f"[supervisor] feedd:{shard} 기동 pid={p.pid} "
+                  f"어댑터={adapters} 포트={9100 + offset}", flush=True)
+        env["MDFEED_BUS_PATHS"] = ",".join(bus_paths)
+        time.sleep(2.0)
+        selected = [s for s in SERVICES if s[0] != "feedd"
+                    and (not args.only or s[0] in args.only)]
+        for name, module, _port in selected:
+            spawn(name, module)
+    else:
+        selected = [s for s in SERVICES if not args.only or s[0] in args.only]
+        for i, (name, module, _port) in enumerate(selected):
+            spawn(name, module)
+            if i == 0:
+                time.sleep(1.5)      # feedd 가 버스 소켓을 만들 시간을 준다
 
+    watch = [(n, "mdfeed.services.feedd") for n in shard_env] + \
+            [(n, m) for n, m, _ in selected]
     try:
         while not stopping:
             time.sleep(1.0)
-            for name, module, _ in selected:
+            for name, module in watch:
                 p = procs.get(name)
                 if p is None or p.poll() is None:
                     continue
@@ -174,6 +210,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     up = sub.add_parser("up", help="모든 서비스를 띄우고 감독")
     up.add_argument("--only", nargs="*", help="일부 서비스만")
+    up.add_argument("--shards", action="store_true",
+                    help="feedd 를 venue 그룹별로 쪼개 띄운다 (단일 장애점 제거)")
     up.set_defaults(fn=cmd_up)
 
     st = sub.add_parser("status", help="서비스 상태 한눈에 보기")
