@@ -52,6 +52,25 @@ up:  ## 전체 스택 기동 (6개 프로세스, 포그라운드 감독)
 up-shards:  ## feedd 를 venue 그룹별로 쪼개 기동 (단일 장애점 제거)
 	$(PY) -m mdfeed.cli up --shards
 
+MINUTES ?= 60
+soak: venv  ## 장시간 감시 (MINUTES=60) → 누수 임계 초과 시 실패
+	$(BIN)/python bench/soak.py --minutes $(MINUTES) --interval 30 \
+	  --out docs/data/soak.json
+
+chaos:  ## 장애 주입 — 복구 경로가 실제로 도는지 확인
+	@bash ops/chaos.sh all
+
+obs-up:  ## Prometheus + Grafana 기동
+	docker compose -f docker-compose.observability.yml up -d
+	@echo "  Prometheus http://localhost:9090"
+	@echo "  Grafana    http://localhost:3000 (admin/admin)"
+
+obs-down:  ## 관측 스택 종료
+	docker compose -f docker-compose.observability.yml down
+
+verify-alerts:  ## 알람이 실재하는 지표를 참조하는지 검증
+	$(PY) scripts/verify_alerts.py
+
 load:  venv  ## 배포단 부하 시험 → docs/data/load.json
 	@echo "리플레이를 고정 속도로 돌린 뒤 실행하세요: MDFEED_ADAPTERS=replay make up"
 	$(BIN)/python bench/load_test.py --subscribers 1 10 25 50 100 \

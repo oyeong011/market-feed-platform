@@ -68,6 +68,8 @@ class WSGateway:
     def __init__(self, cfg, static_dir: str | None = None):
         self.cfg = cfg
         self.registry = Registry(SERVICE)
+        self.registry.declare_counters(
+            "dropped_total", "connections_total", "coalesced_batches_total")
         self.clients: dict[int, WSClientConn] = {}
         self._next_id = 0
         self.snapshot: dict[str, dict] = {}
@@ -75,6 +77,8 @@ class WSGateway:
         self.frames_in = 0
         self.last_frame_at = 0.0
         self.upstream_ok = False
+        from ..runtime import make_tracker
+        self.tracker = make_tracker()
         self._started = time.time()
         self.static_dir = static_dir
         self.clock = ClockMonitor()
@@ -84,7 +88,10 @@ class WSGateway:
         paths = list(self.cfg.bus_paths or [self.cfg.bus_path]) + [self.cfg.signal_bus_path]
         for path in paths:
             asyncio.create_task(self._consume_one(path, stop))
+        from ..runtime import sample_resources
+        res_task = asyncio.create_task(sample_resources(self.tracker, stop))
         await stop.wait()
+        res_task.cancel()
 
     async def _consume_one(self, path: str, stop: asyncio.Event) -> None:
         sub = UDSSubscriber(path)
@@ -267,7 +274,7 @@ class WSGateway:
     async def run(self, stop: asyncio.Event) -> None:
         cfg = self.cfg
         http = HTTPServer(cfg.ws_host, cfg.ws_port, SERVICE, self.registry)
-        health_routes(http, self.health)
+        health_routes(http, self.health, tracker=self.tracker)
         http.websocket("/ws", self._ws_handler)
         http.route("GET", "/api/snapshot", lambda r: Response.json(
             {"ts": time.time(), "items": sorted(self.snapshot.values(),

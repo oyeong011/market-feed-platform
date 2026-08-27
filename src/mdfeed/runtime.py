@@ -24,6 +24,23 @@ import time
 _START = time.time()
 
 
+def make_tracker():
+    """서비스마다 하나씩. httpd.health_routes 에 넘기면 /healthz·/metrics 에 실린다."""
+    from .procstat import ResourceTracker
+    return ResourceTracker()
+
+
+async def sample_resources(tracker, stop, interval_s: float = 30.0) -> None:
+    """자원 표본화 루프. 누수는 표본이 쌓여야 기울기가 나온다."""
+    import asyncio
+    while not stop.is_set():
+        tracker.sample()
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval_s)
+        except asyncio.TimeoutError:
+            continue
+
+
 class JSONFormatter(logging.Formatter):
     def __init__(self, service: str):
         super().__init__()

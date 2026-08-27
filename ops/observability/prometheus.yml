@@ -1,0 +1,39 @@
+# Prometheus 수집 설정.
+#
+# 서비스마다 자기 /metrics 를 따로 노출한다. 하나로 모으지 않는 이유는
+# "어느 프로세스가 아픈지" 를 구분하기 위해서다 — 합쳐 놓으면 지표가 튈 때
+# 어디서 튀는지 알 수 없다.
+#
+# 샤드도 따로 잡는다. feedd:crypto 와 feedd:krx 는 다른 프로세스이고
+# 다른 이유로 아플 수 있다.
+
+global:
+  scrape_interval: 10s
+  scrape_timeout: 5s
+  evaluation_interval: 15s
+  external_labels:
+    platform: mdfeed
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: mdfeed
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:9100"]
+        labels: { service: feedd, shard: crypto }
+      - targets: ["host.docker.internal:9200"]
+        labels: { service: feedd, shard: krx }
+      - targets: ["host.docker.internal:9111"]
+        labels: { service: tcp-gateway }
+      - targets: ["host.docker.internal:9102"]
+        labels: { service: ws-gateway }
+      - targets: ["host.docker.internal:9103"]
+        labels: { service: rest-api }
+      - targets: ["host.docker.internal:9104"]
+        labels: { service: writer }
+      - targets: ["host.docker.internal:9105"]
+        labels: { service: strategy }
+      - targets: ["host.docker.internal:9106"]
+        labels: { service: quality }

@@ -39,6 +39,8 @@ class StrategyEngine:
     def __init__(self, cfg):
         self.cfg = cfg
         self.registry = Registry(SERVICE)
+        self.registry.declare_counters(
+            "bars_closed_total", "signals_suppressed_total")
         self.pub = UDSPublisher(cfg.signal_bus_path, cfg.bus_queue_size)
         self.seq = 0
         self._bars: dict[str, Bar] = {}                 # key → 진행 중인 봉
@@ -50,6 +52,8 @@ class StrategyEngine:
         self.last_frame_at = 0.0
         self.upstream_ok = False
         self.recent: list[dict] = []
+        from ..runtime import make_tracker
+        self.tracker = make_tracker()
         self._started = time.time()
 
     def _strategies_for(self, key: str) -> dict:
@@ -160,7 +164,7 @@ class StrategyEngine:
         cfg = self.cfg
         await self.pub.start()
         http = HTTPServer(cfg.http_host, cfg.strategy_admin_port, SERVICE, self.registry)
-        health_routes(http, self.health)
+        health_routes(http, self.health, tracker=self.tracker)
         http.route("GET", "/signals", lambda r: Response.json(
             {"count": self.signals_emitted, "recent": list(reversed(self.recent))}))
         http.route("GET", "/state", lambda r: Response.json(
@@ -169,7 +173,10 @@ class StrategyEngine:
 
         tasks = [asyncio.create_task(self._consume(stop)),
                  asyncio.create_task(self._sweep(stop))]
+        from ..runtime import sample_resources
+        res_task = asyncio.create_task(sample_resources(self.tracker, stop))
         await stop.wait()
+        res_task.cancel()
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

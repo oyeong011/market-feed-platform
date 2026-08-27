@@ -57,6 +57,8 @@ class Writer:
     def __init__(self, cfg):
         self.cfg = cfg
         self.registry = Registry(SERVICE)
+        self.registry.declare_counters(
+            "gap_messages_total", "rows_written_total", "bars_written_total", "db_errors_total")
         self.storage = None
         # 샤드마다 seq 공간이 독립이다. 하나로 추적하면 샤드 전환마다
         # 거짓 갭이 잡힌다 — 구독자별 재넘버링 때 겪은 것과 같은 문제다.
@@ -75,6 +77,8 @@ class Writer:
         self.clock = ClockMonitor()
         # DB 를 만지는 모든 스레드가 이 락을 통과한다 (위 주석 참고)
         self._db_lock = threading.Lock()
+        from ..runtime import make_tracker
+        self.tracker = make_tracker()
         self._started = time.time()
 
     # ── 수신 ──────────────────────────────────────────────────────────────
@@ -213,7 +217,7 @@ class Writer:
         log.info("저장소 백엔드: %s", self.storage.kind)
 
         http = HTTPServer(cfg.http_host, cfg.writer_admin_port, SERVICE, self.registry)
-        health_routes(http, self.health)
+        health_routes(http, self.health, tracker=self.tracker)
         http.route("GET", "/counts", lambda r: Response.json(self.storage.counts()))
         await http.start()
 
@@ -223,7 +227,10 @@ class Writer:
         tasks = [asyncio.create_task(self._consume(p, stop)) for p in sources] + [
             asyncio.create_task(self._flush_loop(stop)),
         ]
+        from ..runtime import sample_resources
+        res_task = asyncio.create_task(sample_resources(self.tracker, stop))
         await stop.wait()
+        res_task.cancel()
 
         for t in tasks:
             t.cancel()

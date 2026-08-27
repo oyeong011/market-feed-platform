@@ -276,7 +276,8 @@ def _parse_request(raw: bytes) -> Request | None:
         return None
 
 
-def health_routes(server: HTTPServer, health_fn, ready_fn=None) -> None:
+def health_routes(server: HTTPServer, health_fn, ready_fn=None,
+                  tracker=None) -> None:
     """모든 서비스가 동일한 점검 규약을 갖도록 강제하는 헬퍼.
 
     /healthz : 프로세스가 살아있는가 (liveness)  → 실패하면 재시작해야 한다
@@ -286,6 +287,10 @@ def health_routes(server: HTTPServer, health_fn, ready_fn=None) -> None:
     """
     def _health(_req):
         d = health_fn()
+        if tracker is not None:
+            # 자원 사용은 모든 서비스가 같은 자리에 보고해야 비교가 된다.
+            # 서비스마다 따로 넣으면 어디는 있고 어디는 없게 된다.
+            d["resources"] = tracker.report()
         return Response.json(d, 200 if d.get("healthy", True) else 503)
 
     def _ready(_req):
@@ -295,8 +300,22 @@ def health_routes(server: HTTPServer, health_fn, ready_fn=None) -> None:
     def _metrics(_req):
         if not server.registry:
             return Response(503, "no registry")
-        return Response(200, server.registry.prometheus(),
-                        "text/plain; version=0.0.4; charset=utf-8")
+        body = server.registry.prometheus()
+        if tracker is not None:
+            # 자원 지표도 Prometheus 로 내보낸다. 누수는 그래프로 봐야 보인다.
+            r = tracker.report()
+            svc = server.name
+            lines = [f'mdfeed_process_rss_bytes{{service="{svc}"}} {r["rss_mb"] * 1e6:.0f}',
+                     f'mdfeed_process_fd_open{{service="{svc}"}} {r["fd_open"]}',
+                     f'mdfeed_process_fd_limit{{service="{svc}"}} {r["fd_limit"]}',
+                     f'mdfeed_process_threads{{service="{svc}"}} {r["threads"]}']
+            # 표본이 부족해도(=0) 내보낸다. 지표가 없으면 알람이 평가되지 않는다.
+            lines.append(f'mdfeed_process_rss_growth_mb_per_hour{{service="{svc}"}} '
+                         f'{r.get("rss_growth_mb_per_hour", 0.0):g}')
+            lines.append(f'mdfeed_process_fd_growth_per_hour{{service="{svc}"}} '
+                         f'{r.get("fd_growth_per_hour", 0.0):g}')
+            body += "\n".join(lines) + "\n"
+        return Response(200, body, "text/plain; version=0.0.4; charset=utf-8")
 
     server.route("GET", "/healthz", _health)
     server.route("GET", "/readyz", _ready)

@@ -33,6 +33,8 @@ class RestAPI:
         # 조회 스레드가 DB 를 읽는 중에 종료가 커넥션을 닫으면 세그폴트가 난다.
         # writer 와 같은 이유로 직렬화한다.
         self._db_lock = threading.Lock()
+        from ..runtime import make_tracker
+        self.tracker = make_tracker()
         self._started = time.time()
 
     def _call_locked(self, fn, *a, **kw):
@@ -107,7 +109,7 @@ class RestAPI:
         cfg = self.cfg
         self.storage = await asyncio.to_thread(open_storage, cfg)
         http = HTTPServer(cfg.http_host, cfg.http_port, SERVICE, self.registry)
-        health_routes(http, self.health)
+        health_routes(http, self.health, tracker=self.tracker)
         http.route("GET", "/api/v1/symbols", self.symbols)
         http.route("GET", "/api/v1/quotes", self.quotes)
         http.route("GET", "/api/v1/bars", self.bars)
@@ -125,7 +127,10 @@ class RestAPI:
                 "GET /api/v1/stats": "적재 통계",
             }}))
         await http.start()
+        from ..runtime import sample_resources
+        res_task = asyncio.create_task(sample_resources(self.tracker, stop))
         await stop.wait()
+        res_task.cancel()
         await http.close()
         await asyncio.to_thread(self._call_locked, self.storage.close)
 

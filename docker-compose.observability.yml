@@ -1,0 +1,48 @@
+# Prometheus + Grafana 관측 스택.
+#
+# 본 스택과 분리한 이유: 관측 도구가 죽어도 피드는 돌아야 한다.
+# 반대로 피드를 재배포할 때 대시보드 이력이 날아가서도 안 된다.
+#
+#   docker compose -f docker-compose.observability.yml up -d
+#   Prometheus  http://localhost:9090
+#   Grafana     http://localhost:3000  (admin / admin)
+#
+# 호스트에서 직접 돌리는 서비스를 긁으므로 host.docker.internal 을 쓴다.
+# 리눅스에서는 extra_hosts 로 매핑한다.
+
+name: mdfeed-obs
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    volumes:
+      - ./ops/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - promdata:/prometheus
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports: ["9090:9090"]
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"      # 데모용. 운영에서는 끈다
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./ops/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    ports: ["3000:3000"]
+    depends_on: [prometheus]
+
+volumes:
+  promdata:
+  grafanadata:

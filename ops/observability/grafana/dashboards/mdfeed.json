@@ -1,0 +1,398 @@
+{
+ "uid": "mdfeed-main",
+ "title": "MDFeed — 마켓데이터 피드",
+ "tags": [
+  "mdfeed"
+ ],
+ "timezone": "Asia/Seoul",
+ "schemaVersion": 39,
+ "refresh": "10s",
+ "time": {
+  "from": "now-1h",
+  "to": "now"
+ },
+ "panels": [
+  {
+   "id": 1,
+   "title": "발행 처리량",
+   "description": "모든 샤드의 초당 발행 프레임. 0 이면 수집이 멈춘 것이다(장 시간 확인 후 판단)",
+   "type": "stat",
+   "gridPos": {
+    "h": 4,
+    "w": 6,
+    "x": 0,
+    "y": 0
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    }
+   },
+   "targets": [
+    {
+     "expr": "sum(rate(mdfeed_published_total[1m]))",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "title": "품질 CRITICAL",
+   "description": "이 값을 쓰면 안 된다는 판정. 0 이 정상",
+   "type": "stat",
+   "gridPos": {
+    "h": 4,
+    "w": 6,
+    "x": 6,
+    "y": 0
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "red",
+        "value": 1
+       }
+      ]
+     }
+    }
+   },
+   "targets": [
+    {
+     "expr": "sum(increase(mdfeed_quality_events_total{severity=\"CRITICAL\"}[1h]))",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "title": "시퀀스 유실 (1h)",
+   "description": "유실된 구간은 영구히 복구되지 않는다",
+   "type": "stat",
+   "gridPos": {
+    "h": 4,
+    "w": 6,
+    "x": 12,
+    "y": 0
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "red",
+        "value": 1
+       }
+      ]
+     }
+    }
+   },
+   "targets": [
+    {
+     "expr": "sum(increase(mdfeed_gap_messages_total[1h]))",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "title": "구독자 드롭 (1h)",
+   "description": "느린 구독자 격리가 동작한 횟수. 0 이 아니면 어느 구독자인지 확인",
+   "type": "stat",
+   "gridPos": {
+    "h": 4,
+    "w": 6,
+    "x": 18,
+    "y": 0
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "red",
+        "value": 1
+       }
+      ]
+     }
+    }
+   },
+   "targets": [
+    {
+     "expr": "sum(increase(mdfeed_dropped_total[1h]))",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 10,
+   "title": "수집 지연 (p50 / p99)",
+   "description": "거래소 체결시각 → 수신시각. 시계 오프셋 보정 후 값이다",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 0,
+    "y": 4
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "µs",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "mdfeed_ingest_latency_microseconds{quantile=\"p50\"}",
+     "legendFormat": "{{service}} p50",
+     "refId": "A"
+    },
+    {
+     "expr": "mdfeed_ingest_latency_microseconds{quantile=\"p99\"}",
+     "legendFormat": "{{service}} p99",
+     "refId": "B"
+    }
+   ]
+  },
+  {
+   "id": 11,
+   "title": "venue 별 틱 유입",
+   "description": "거래소별 초당 틱. 특정 venue 만 0 이면 그 어댑터 문제",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 12,
+    "y": 4
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "rate(mdfeed_ticks_total[1m])",
+     "legendFormat": "{{venue}}",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 20,
+   "title": "프로세스 메모리 (RSS)",
+   "description": "누수는 천천히 자란다. 절대값보다 기울기를 본다",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 0,
+    "y": 11
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "bytes",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "mdfeed_process_rss_bytes",
+     "legendFormat": "{{service}}",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 21,
+   "title": "파일 디스크립터",
+   "description": "소켓 close 누락은 여기 먼저 나타난다",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 12,
+    "y": 11
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "mdfeed_process_fd_open",
+     "legendFormat": "{{service}} open",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 30,
+   "title": "메모리 증가율 (MB/시간)",
+   "description": "5MB/h 를 넘으면 알람. 하루면 120MB, 한 주면 컨테이너 한도를 넘는다",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 0,
+    "y": 18
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "mdfeed_process_rss_growth_mb_per_hour",
+     "legendFormat": "{{service}}",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 31,
+   "title": "시계 오프셋",
+   "description": "거래소 시계와의 차이. 크면 지연 지표 전체를 믿을 수 없다",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 12,
+    "y": 18
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "µs",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "mdfeed_clock_offset_us",
+     "legendFormat": "{{venue}}",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 40,
+   "title": "구독자 수",
+   "description": "배포단이 몇 명을 물고 있는가",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 0,
+    "y": 25
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "mdfeed_subscribers",
+     "legendFormat": "{{service}} TCP",
+     "refId": "A"
+    },
+    {
+     "expr": "mdfeed_ws_clients",
+     "legendFormat": "{{service}} WS",
+     "refId": "B"
+    }
+   ]
+  },
+  {
+   "id": 41,
+   "title": "업스트림 정체",
+   "description": "1 이면 연결은 살아 있는데 데이터가 안 온다는 뜻. systemd 가 못 잡는 장애",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 12,
+    "y": 25
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "mdfeed_upstream_stale",
+     "legendFormat": "{{venue}}",
+     "refId": "A"
+    }
+   ]
+  }
+ ]
+}

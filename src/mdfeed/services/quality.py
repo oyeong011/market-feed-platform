@@ -41,12 +41,19 @@ class QualityService:
     def __init__(self, cfg):
         self.cfg = cfg
         self.registry = Registry(SERVICE)
+        self.registry.declare_counters(quality_events_total=[
+            {"check": c, "severity": s}
+            for c in ("price_jump", "quote_sanity", "stale_value",
+                      "bar_integrity", "cross_venue")
+            for s in ("CRITICAL", "WARNING")])
         self.monitor = QualityMonitor(cfg)
         self.frames_in = 0
         self.last_frame_at = 0.0
         self.upstream_ok = False
         self.storage = None
         self._pending: list[tuple] = []
+        from ..runtime import make_tracker
+        self.tracker = make_tracker()
         self._started = time.time()
 
     # ── 수신 ──────────────────────────────────────────────────────────────
@@ -125,7 +132,7 @@ class QualityService:
         await asyncio.to_thread(self._ensure_table)
 
         http = HTTPServer(cfg.http_host, cfg.quality_admin_port, SERVICE, self.registry)
-        health_routes(http, self.health)
+        health_routes(http, self.health, tracker=self.tracker)
         http.route("GET", "/events", lambda r: Response.json(self.monitor.report()))
         http.route("GET", "/fx", lambda r: Response.json({
             "implied_krw_per_usd": self.monitor.cross.implied_fx(),
@@ -137,7 +144,10 @@ class QualityService:
         log.info("품질 검사 시작 — 구독 %d개", len(sources))
         tasks = [asyncio.create_task(self._consume(p, stop)) for p in sources]
         tasks.append(asyncio.create_task(self._flush_loop(stop)))
+        from ..runtime import sample_resources
+        res_task = asyncio.create_task(sample_resources(self.tracker, stop))
         await stop.wait()
+        res_task.cancel()
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

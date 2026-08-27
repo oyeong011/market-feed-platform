@@ -1,0 +1,125 @@
+# 알람 규칙.
+#
+# 규칙을 쓸 때 지킨 원칙 두 가지.
+#
+# 1. **울리면 사람이 할 일이 있어야 한다.** 보고 넘길 알람은 알람이 아니라
+#    대시보드 항목이다. 그래서 각 규칙에 무엇을 하라는 문장을 붙였다.
+# 2. **for 를 넉넉히 준다.** 순간적인 튐으로 울리면 사람이 알람을 무시하게 되고,
+#    그러면 진짜가 왔을 때도 무시한다. 품질 검사기의 오탐 문제와 같다.
+
+groups:
+  - name: mdfeed-availability
+    rules:
+      - alert: ServiceDown
+        expr: up{job="mdfeed"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.service }} 응답 없음"
+          action: "systemctl status mdfeed-{{ $labels.service }} · journalctl -u 로 원인 확인"
+
+      - alert: UpstreamStale
+        # 프로세스는 멀쩡한데 데이터만 안 오는 상태. systemd 가 못 잡는 종류다.
+        expr: mdfeed_upstream_stale > 0
+        for: 3m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.venue }} 업스트림 정체 3분 이상"
+          action: "RUNBOOK 증상 1. 어댑터가 스스로 재접속할 시간을 준 뒤에도 지속되면 재시작"
+
+      # 크립토는 24시간 돌아간다. 여기서 0 이면 무조건 이상이다.
+      - alert: CryptoFeedThroughputZero
+        expr: rate(mdfeed_published_total{shard="crypto"}[5m]) == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "크립토 발행량 0 (5분)"
+          action: "24시간 시장이므로 정상 사유가 없다. RUNBOOK 증상 1"
+
+      # 국내 시장은 장 마감 후 발행량이 0 인 것이 정상이다.
+      # 이 조건을 안 넣으면 매일 밤 알람이 울리고, 그러면 사람이 이 알람을
+      # 무시하게 되어 진짜 장애가 나도 못 본다.
+      - alert: KrxFeedThroughputZeroDuringMarketHours
+        expr: |
+          rate(mdfeed_published_total{shard="krx"}[5m]) == 0
+          and on() (max(mdfeed_market_open) == 1)
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "장중인데 국내 발행량 0 (5분)"
+          action: "휴장일 캘린더 확인 후 RUNBOOK 증상 1"
+
+  - name: mdfeed-quality
+    rules:
+      - alert: DataQualityCritical
+        # 이 값을 쓰면 안 된다는 판정. 조용히 틀린 값이 나가는 것을 막는 마지막 선.
+        expr: increase(mdfeed_quality_events_total{severity="CRITICAL"}[10m]) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.check }} CRITICAL 탐지"
+          action: "curl :9106/events 로 상세 확인. 파싱 오류면 해당 어댑터 즉시 점검"
+
+      - alert: SequenceGaps
+        expr: increase(mdfeed_gap_messages_total[10m]) > 100
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "10분간 시퀀스 유실 {{ $value }}건"
+          action: "RUNBOOK 증상 2. 특정 구독자만인지 전체인지 :9111/subscribers 로 확인"
+
+      - alert: ClockSkewHigh
+        # 시계가 어긋나면 지연 지표 전체를 믿을 수 없게 된다
+        expr: abs(mdfeed_clock_offset_us) > 100000
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.venue }} 시계 오프셋 {{ $value }}µs"
+          action: "timedatectl status 로 NTP 동기화 확인. 서비스는 계속 동작하나 지연 지표 신뢰도 저하"
+
+  - name: mdfeed-resources
+    rules:
+      - alert: MemoryLeak
+        # 누수는 천천히 자라다가 새벽에 터진다. 기울기로 미리 잡는다.
+        # 프로세스가 15분 미만이면 기울기를 0 으로 보고하므로(procstat.MIN_TRACK_S)
+        # 기동 직후 노이즈로 울리지 않는다.
+        expr: mdfeed_process_rss_growth_mb_per_hour > 5
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.service }} RSS {{ $value }}MB/h 증가"
+          action: "하루면 120MB. 심볼 캐시·구독자 큐가 안 줄어드는지 확인"
+
+      - alert: FdLeak
+        expr: mdfeed_process_fd_growth_per_hour > 1
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.service }} fd {{ $value }}개/h 증가"
+          action: "소켓 close 누락 의심. 결국 EMFILE 로 죽는다"
+
+      - alert: FdNearLimit
+        expr: mdfeed_process_fd_open / mdfeed_process_fd_limit > 0.8
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.service }} fd 한도 80% 도달"
+          action: "LimitNOFILE 상향 또는 구독자 수 제한"
+
+  - name: mdfeed-distribution
+    rules:
+      - alert: SubscriberDrops
+        expr: increase(mdfeed_dropped_total[5m]) > 1000
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "구독자 드롭 {{ $value }}건 (5분)"
+          action: "느린 구독자 격리가 동작 중. :9111/subscribers 에서 어느 구독자인지 확인"
+
+      - alert: IngestLatencyHigh
+        expr: mdfeed_ingest_latency_microseconds{quantile="p99"} > 1000000
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.service }} 수집 지연 p99 {{ $value }}µs"
+          action: "거래소 쪽 혼잡인지 우리 쪽인지 venue 별로 비교"

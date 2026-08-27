@@ -76,6 +76,14 @@ jobs:
           grep -q "데이터 무결성: 100" /tmp/client.log || {
             echo "::error::구독자 데이터 무결성 100% 미달"; cat /tmp/client.log; exit 1; }
 
+      - name: 알람이 실재하는 지표를 참조하는지 검증
+        # 존재하지 않는 지표를 참조하는 알람은 영원히 울리지 않는데
+        # Prometheus 는 오류를 내지 않는다. 여기서 잡는다.
+        run: PYTHONPATH=src python scripts/verify_alerts.py
+
+      - name: 장애 주입 — 복구 경로 검증
+        run: bash ops/chaos.sh corrupt
+
       - name: REST API 확인
         run: |
           curl -sf localhost:9103/api/v1/stats | python3 -m json.tool

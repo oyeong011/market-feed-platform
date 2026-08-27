@@ -88,6 +88,9 @@ class TCPGateway:
     def __init__(self, cfg):
         self.cfg = cfg
         self.registry = Registry(SERVICE)
+        # 사건이 나기 전에도 지표가 존재해야 알람이 평가된다
+        self.registry.declare_counters(
+            "dropped_total", "sent_total", "frames_in_total", "connections_total")
         self.subs: dict[int, Subscriber] = {}
         self._next_id = 0
         self.last: dict[str, bytes] = {}          # "VENUE:SYMBOL" → 최신 프레임 페이로드
@@ -95,6 +98,8 @@ class TCPGateway:
         self.frames_in = 0
         self.upstream_ok = False
         self.last_frame_at = 0.0
+        from ..runtime import make_tracker
+        self.tracker = make_tracker()
         self._started = time.time()
 
     # ── 업스트림(버스) ────────────────────────────────────────────────────
@@ -243,14 +248,17 @@ class TCPGateway:
         log.info("MDFP/1 배포 서버 listening on %s:%d", cfg.tcp_host, cfg.tcp_port)
 
         http = HTTPServer(cfg.http_host, cfg.tcp_admin_port, SERVICE, self.registry)
-        health_routes(http, self.health)
+        health_routes(http, self.health, tracker=self.tracker)
         http.route("GET", "/subscribers", lambda r: Response.json(
             {"count": len(self.subs), "items": [s.info() for s in self.subs.values()]}))
         await http.start()
 
         bus_task = asyncio.create_task(self._consume_bus(stop))
         gauge_task = asyncio.create_task(self._gauges(stop))
+        from ..runtime import sample_resources
+        res_task = asyncio.create_task(sample_resources(self.tracker, stop))
         await stop.wait()
+        res_task.cancel()
 
         for t in (bus_task, gauge_task):
             t.cancel()

@@ -43,6 +43,8 @@ class FeedDaemon:
     def __init__(self, cfg):
         self.cfg = cfg
         self.registry = Registry(SERVICE)
+        self.registry.declare_counters(
+            "published_total", "bus_drops_total", "ring_oversize_total")
         self.bus = UDSPublisher(cfg.bus_path, cfg.bus_queue_size,
                                 on_drop=lambda: self.registry.counter("bus_drops_total"))
         self.ring: RingBuffer | None = None
@@ -51,6 +53,8 @@ class FeedDaemon:
         self.adapters: list = []
         self.inactive: list = []
         self._recorder = None
+        from ..runtime import make_tracker
+        self.tracker = make_tracker()
         self._started = time.time()
         self.first_tick_at: float | None = None
 
@@ -146,7 +150,7 @@ class FeedDaemon:
             log.warning("업스트림 비활성 [%s]: %s", item["venue"], item["reason"])
 
         http = HTTPServer(cfg.http_host, cfg.feedd_admin_port, SERVICE, self.registry)
-        health_routes(http, self.health, self.ready)
+        health_routes(http, self.health, self.ready, self.tracker)
         http.route("GET", "/snapshot", lambda r: Response.json({
             "ts": time.time(), "count": len(self.snapshot),
             "items": sorted(self.snapshot.values(),
@@ -159,7 +163,10 @@ class FeedDaemon:
         tasks.append(asyncio.create_task(self._heartbeat(stop), name="heartbeat"))
         tasks.append(asyncio.create_task(self._gauges(stop), name="gauges"))
 
+        from ..runtime import sample_resources
+        res_task = asyncio.create_task(sample_resources(self.tracker, stop))
         await stop.wait()
+        res_task.cancel()
         log.info("종료 신호. 어댑터 정리 중...")
         for a in self.adapters:
             a.stop()
@@ -193,6 +200,17 @@ class FeedDaemon:
             for a in self.adapters:
                 self.registry.gauge("upstream_stale", 1 if a.is_stale else 0,
                                     venue=a.name.upper())
+            # 시계 오프셋을 지표로도 내보낸다. /healthz 에만 있으면 사람이 볼 때만
+            # 보이고, 알람은 걸 수 없다.
+            for venue, c in CLOCK.report().items():
+                self.registry.gauge("clock_offset_us", c["offset_us"], venue=venue)
+            # 장 시간을 지표로 내보낸다. 이게 없으면 "발행량 0" 알람이 국내 시장
+            # 마감 후 매일 밤 울리고, 사람이 그 알람을 무시하게 된다.
+            for a in self.adapters:
+                mo = a.health().get("market_open")
+                if mo is not None:
+                    self.registry.gauge("market_open", 1 if mo else 0,
+                                        venue=a.name.upper())
 
 
 def main() -> int:

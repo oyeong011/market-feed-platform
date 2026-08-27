@@ -114,6 +114,28 @@ class Registry:
         self._hists: dict[str, Histogram] = {}
         self._lock = threading.Lock()
 
+    def declare_counters(self, *names: str, **labeled) -> None:
+        """카운터를 0으로 미리 만들어 둔다.
+
+        **초기화하지 않으면 첫 사건이 날 때까지 지표 자체가 존재하지 않는다.**
+        Prometheus 는 없는 지표에 대해 오류를 내지 않고 조용히 no data 를 준다.
+        그래서 `increase(mdfeed_dropped_total[5m]) > 1000` 같은 알람이
+        **영원히 울리지 않는다.** 설정은 완벽해 보이고 아무도 이상을 못 느낀다.
+
+        드롭이 한 번도 없는 것과 드롭 지표가 없는 것은 다르다. 전자는 좋은 소식이고
+        후자는 계측이 안 되고 있다는 뜻인데, 초기화를 안 하면 둘이 구분되지 않는다.
+
+        `scripts/verify_alerts.py` 가 이 누락을 잡아 준다.
+        """
+        for n in names:
+            with self._lock:
+                self._counters.setdefault(n, 0.0)
+        for n, label_sets in labeled.items():
+            for labels in label_sets:
+                key = _key(n, labels)
+                with self._lock:
+                    self._counters.setdefault(key, 0.0)
+
     def counter(self, name: str, value: float = 1.0, **labels) -> None:
         key = _key(name, labels)
         with self._lock:
