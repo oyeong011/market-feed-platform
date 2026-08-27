@@ -233,3 +233,81 @@ class TestBreadthAdapter:
         assert load_universe(str(p), {"KOSPI"}, 0) == [("005930", "삼성전자")]
         assert len(load_universe(str(p), {"KOSPI", "KOSDAQ"}, 0)) == 2
         assert len(load_universe(str(p), {"KOSPI", "KOSDAQ"}, 1)) == 1
+
+
+class TestMacroAdapter:
+    """금리·지수 어댑터 — 신뢰할 수 없는 응답을 다루는 규칙."""
+
+    def test_domestic_rates_are_not_published(self):
+        """`comp-interest` 의 output2 는 키·값 대응이 어긋나고 일부 종목명이
+        서버 쪽에서 U+FFFD 로 이미 손상돼 온다. 짝짓기를 신뢰할 수 없다.
+
+        그럴듯한 숫자를 내보내는 것이 안 내보내는 것보다 나쁘다.
+        발행 경로에 output2 가 들어가면 이 테스트가 실패해야 한다.
+        """
+        import inspect
+        from mdfeed.adapters import kis_macro
+        src = inspect.getsource(kis_macro.KISMacroAdapter._rate_loop)
+        assert "output1" in src
+        # output2 를 _emit_value 로 흘리는 코드가 없어야 한다
+        after = src.split("output2", 1)[1] if "output2" in src else ""
+        assert "_emit_value" not in after, "국내 금리가 발행 경로에 들어갔다"
+
+    def test_corruption_is_counted_not_hidden(self):
+        from mdfeed.adapters.kis_macro import KISMacroAdapter
+        from mdfeed.config import Config
+        cfg = Config(); cfg.kis_app_key = cfg.kis_app_secret = "x"
+        h = KISMacroAdapter(cfg, lambda m: None).health()
+        assert h["domestic_rates_published"] is False
+        assert "domestic_rate_rows_corrupt" in h
+        assert "손상" in h["domestic_rates_reason"]
+
+    def test_shape_based_parser_recovers_shifted_keys(self):
+        """계측용 파서. 키가 밀려 있어도 값의 모양으로 이름·금리를 찾는다."""
+        from mdfeed.adapters.kis_macro import parse_rate_rows
+        rows = [
+            {"a": "Y0101", "b": "Y0109", "c": "Y0117",
+             "prdy_vrss_sign": "국고채 30년", "d": "4.5950"},
+            {"a": "Y0103", "b": "CD AAA 3개월(13주)", "c": "3.1200"},
+        ]
+        pairs, failed = parse_rate_rows(rows)
+        assert ("국고채 30년", 4.595) in pairs
+        assert failed == 0
+
+    def test_corrupted_name_counts_as_failure(self):
+        """U+FFFD 로 깨진 이름은 복원 불가. 조용히 넘기지 않고 센다."""
+        from mdfeed.adapters.kis_macro import parse_rate_rows
+        rows = [{"a": "Y0108", "b": "����ä 20��", "c": "4.5420"}]
+        pairs, failed = parse_rate_rows(rows)
+        assert pairs == [] and failed == 1
+
+    def test_rate_range_guard(self):
+        """금리는 퍼센트 범위다. 100 을 넘는 값은 다른 필드를 잘못 잡은 것이다."""
+        from mdfeed.adapters.kis_macro import parse_rate_rows
+        pairs, failed = parse_rate_rows([{"a": "국고채 30년", "b": "218.3372"}])
+        assert pairs == [] and failed == 1
+
+    def test_only_emits_on_change(self):
+        """지수·금리는 같은 값이 계속 반복된다. 바뀔 때만 내보낸다."""
+        from mdfeed.adapters.kis_macro import KISMacroAdapter
+        from mdfeed.config import Config
+        cfg = Config(); cfg.kis_app_key = cfg.kis_app_secret = "x"
+        got = []
+        a = KISMacroAdapter(cfg, got.append)
+        a._emit_value("KRX-IDX", "코스피", 2500.0)
+        a._emit_value("KRX-IDX", "코스피", 2500.0)
+        a._emit_value("KRX-IDX", "코스피", 2501.0)
+        assert [m.price for m in got] == [2500.0, 2501.0]
+
+    def test_holiday_calendar_overrides_weekday_check(self):
+        """요일·시각만 보면 공휴일에 '데이터가 안 온다'를 장애로 오인한다."""
+        import datetime as dt
+        from mdfeed.adapters.kis_macro import KISMacroAdapter
+        from mdfeed.adapters.kis import KST
+        from mdfeed.config import Config
+        cfg = Config(); cfg.kis_app_key = cfg.kis_app_secret = "x"
+        a = KISMacroAdapter(cfg, lambda m: None)
+        today = dt.datetime.now(KST).strftime("%Y%m%d")
+        a.holidays = {today: False}
+        assert a.is_market_open() is False
+        assert a.is_stale is False      # 휴장일엔 정체로 판정하지 않는다

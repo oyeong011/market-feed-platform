@@ -84,6 +84,8 @@ class Config:
     kis_rest_rate: float = field(default_factory=lambda: float(_env("KIS_REST_RATE", "3.0")))
     kis_rank_interval_s: float = field(
         default_factory=lambda: float(_env("KIS_RANK_INTERVAL_S", "10")))
+    kis_index_interval_s: float = field(default_factory=lambda: float(_env("KIS_INDEX_INTERVAL_S", "10")))
+    kis_rate_interval_s: float = field(default_factory=lambda: float(_env("KIS_RATE_INTERVAL_S", "300")))
     kis_token_cache: str = field(
         default_factory=lambda: _env("KIS_TOKEN_CACHE", "~/.mdfeed/kis_token.json"))
     replay_file: str = field(default_factory=lambda: _env("REPLAY_FILE", "data/replay/sample.mdf"))

@@ -3,6 +3,7 @@
 from .base import Adapter
 from .binance import BinanceAdapter
 from .kis import KISAdapter
+from .kis_macro import KISMacroAdapter
 from .kis_rest import KISRestAdapter
 from .replay import ReplayAdapter
 from .upbit import UpbitAdapter
@@ -12,6 +13,7 @@ REGISTRY = {
     "binance": BinanceAdapter,
     "kis": KISAdapter,
     "kis_rest": KISRestAdapter,
+    "kis_macro": KISMacroAdapter,
     "replay": ReplayAdapter,
 }
 
@@ -35,4 +37,4 @@ def build(names, cfg, emit, registry=None):
 
 
 __all__ = ["Adapter", "REGISTRY", "build",
-           "UpbitAdapter", "BinanceAdapter", "KISAdapter", "KISRestAdapter", "ReplayAdapter"]
+           "UpbitAdapter", "BinanceAdapter", "KISAdapter", "KISRestAdapter", "KISMacroAdapter", "ReplayAdapter"]
