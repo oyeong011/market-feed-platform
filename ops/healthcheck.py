@@ -30,6 +30,7 @@ SERVICES = [
     ("rest-api", 9103, False),
     ("writer", 9104, True),
     ("strategy", 9105, False),
+    ("quality", 9106, False),
 ]
 
 # 피드 품질 임계치

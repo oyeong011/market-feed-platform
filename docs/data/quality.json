@@ -1,0 +1,198 @@
+{
+ "checked": 108156,
+ "critical": 0,
+ "warning": 92,
+ "by_check": {
+  "price_jump:WARNING": 81,
+  "stale_value:WARNING": 11
+ },
+ "implied_fx": {
+  "BTC": 1386.7,
+  "ETH": 1386.2,
+  "SOL": 1386.0
+ },
+ "recent": [
+  {
+   "ts_ns": 1787801562751739000,
+   "check": "price_jump",
+   "severity": "WARNING",
+   "venue": "KRX",
+   "symbol": "187660",
+   "detail": "0.955% 이동 — 평소 중앙값 0.119% 의 8배",
+   "value": 0.9546539379474941
+  },
+  {
+   "ts_ns": 1787801561394266000,
+   "check": "stale_value",
+   "severity": "WARNING",
+   "venue": "KRX",
+   "symbol": "252670",
+   "detail": "138초 동안 20건이 모두 같은 값 74 — 업스트림 캐시 의심",
+   "value": 137.9817762374878
+  },
+  {
+   "ts_ns": 1787801554226307000,
+   "check": "price_jump",
+   "severity": "WARNING",
+   "venue": "KRX",
+   "symbol": "223310",
+   "detail": "1.916% 이동 — 평소 중앙값 0.192% 의 10배",
+   "value": 1.9157088122605364
+  },
+  {
+   "ts_ns": 1787801553134831000,
+   "check": "price_jump",
+   "severity": "WARNING",
+   "venue": "KRX",
+   "symbol": "368600",
+   "detail": "0.861% 이동 — 평소 중앙값 0.085% 의 10배",
+   "value": 0.8613264427217916
+  },
+  {
+   "ts_ns": 1787801548808563000,
+   "check": "stale_value",
+   "severity": "WARNING",
+   "venue": "KRX",
+   "symbol": "379800",
+   "detail": "128초 동안 20건이 모두 같은 값 2.403e+04 — 업스트림 캐시 의심",
+   "value": 128.17062902450562
+  },
+  {
+   "ts_ns": 1787801537315467000,
+   "check": "price_jump",
+   "severity": "WARNING",
+   "venue": "KRX",
+   "symbol": "368600",
+   "detail": "0.692% 이동 — 평소 중앙값 0.086% 의 8배",
+   "value": 0.6920415224913495
+  },
+  {
+   "ts_ns": 1787801444814947000,
+   "check": "price_jump",
+   "severity": "WARNING",
+   "venue": "KRX",
+   "symbol": "007120",
+   "detail": "0.753% 이동 — 평소 중앙값 0.083% 의 9배",
+   "value": 0.7525083612040134
+  },
+  {
+   "ts_ns": 1787801444247868000,
+   "check": "price_jump",
+   "severity": "WARNING",
+   "venue": "KRX",
+   "symbol": "009190",
+   "detail": "1.859% 이동 — 평소 중앙값 0.126% 의 15배",
+   "value": 1.858974358974359
+  },
+  {
+   "ts_ns": 1787801413974536000,
+   "check": "price_jump",
+   "severity": "WARNING",
+   "venue": "KRX",
+   "symbol": "007120",
+   "detail": "0.758% 이동 — 평소 중앙값 0.083% 의 9배",
+   "value": 0.7582139848357203
+  },
+  {
+   "ts_ns": 1787801400180484000,
+   "check": "price_jump",
+   "severity": "WARNING",
+   "venue": "KRX",
+   "symbol": "432470",
+   "detail": "0.871% 이동 — 평소 중앙값 0.096% 의 9배",
+   "value": 0.8712487899322363
+  },
+  {
+   "ts_ns": 1787801380047928000,
+   "check": "price_jump",
+   "severity": "WARNING",
+   "venue": "KRX",
+   "symbol": "007120",
+   "detail": "1.166% 이동 — 평소 중앙값 0.083% 의 14배",
+   "value": 1.1656952539550374
+  },
+  {
+   "ts_ns": 1787801329442229000,
+   "check": "price_jump",
+   "severity": "WARNING",
+   "venue": "KRX",
+   "symbol": "065770",
+   "detail": "0.639% 이동 — 평소 중앙값 0.064% 의 10배",
+   "value": 0.6389776357827476
+  },
+  {
+   "ts_ns": 1787801325030143000,
+   "check": "price_jump",
+   "severity": "WARNING",
+   "venue": "KRX",
+   "symbol": "0155E0",
+   "detail": "1.040% 이동 — 평소 중앙값 0.116% 의 9배",
+   "value": 1.0398613518197575
+  },
+  {
+   "ts_ns": 1787801286856996000,
+   "check": "stale_value",
+   "severity": "WARNING",
+   "venue": "KRX",
+   "symbol": "360750",
+   "detail": "123초 동안 20건이 모두 같은 값 2.644e+04 — 업스트림 캐시 의심",
+   "value": 123.13704204559326
+  },
+  {
+   "ts_ns": 1787801260807378000,
+   "check": "price_jump",
+   "severity": "WARNING",
+   "venue": "KRX",
+   "symbol": "0155E0",
+   "detail": "0.524% 이동 — 평소 중앙값 0.060% 의 9배",
+   "value": 0.52417006406523
+  },
+  {
+   "ts_ns": 1787801248680633000,
+   "check": "price_jump",
+   "severity": "WARNING",
+   "venue": "KRX",
+   "symbol": "0155E0",
+   "detail": "0.823% 이동 — 평소 중앙값 0.060% 의 14배",
+   "value": 0.8225616921269095
+  },
+  {
+   "ts_ns": 1787801227876978000,
+   "check": "price_jump",
+   "severity": "WARNING",
+   "venue": "KRX",
+   "symbol": "0155E0",
+   "detail": "0.594% 이동 — 평소 중앙값 0.060% 의 10배",
+   "value": 0.5938242280285035
+  },
+  {
+   "ts_ns": 1787801223447437000,
+   "check": "price_jump",
+   "severity": "WARNING",
+   "venue": "KRX",
+   "symbol": "0155E0",
+   "detail": "1.018% 이동 — 평소 중앙값 0.060% 의 17배",
+   "value": 1.0179640718562875
+  },
+  {
+   "ts_ns": 1787801167806006000,
+   "check": "price_jump",
+   "severity": "WARNING",
+   "venue": "KRX",
+   "symbol": "008290",
+   "detail": "1.107% 이동 — 평소 중앙값 0.125% 의 9배",
+   "value": 1.107011070110701
+  },
+  {
+   "ts_ns": 1787801156409245000,
+   "check": "price_jump",
+   "severity": "WARNING",
+   "venue": "KRX",
+   "symbol": "226340",
+   "detail": "0.560% 이동 — 평소 중앙값 0.070% 의 8배",
+   "value": 0.5602240896358543
+  }
+ ],
+ "source": "녹화 리플레이 (sample.mdf)",
+ "captured_at": "2026-08-27 20:51:43 KST"
+}

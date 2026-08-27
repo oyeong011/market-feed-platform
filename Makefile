@@ -104,7 +104,10 @@ factor: venv  ## 재무 팩터 스크리닝 → docs/data/factors.json
 schema:  ## PostgreSQL 스키마 적용 (DATABASE_URL 필요)
 	psql "$$DATABASE_URL" -f src/mdfeed/storage/schema.sql
 
-docs: bench backtest  ## 대시보드용 데이터 갱신
+quality-snapshot: ## 품질 검사 스냅샷 → docs/data/quality.json
+	$(PY) scripts/capture_quality.py --out docs/data/quality.json
+
+docs: bench backtest quality-snapshot  ## 대시보드용 데이터 갱신
 	@echo "docs/data/ 갱신 완료"
 
 docker-build:  ## 컨테이너 이미지 빌드

@@ -130,6 +130,13 @@ class Config:
     tcp_admin_port: int = field(default_factory=lambda: _int("TCP_ADMIN_PORT", 9111))
     writer_admin_port: int = field(default_factory=lambda: _int("WRITER_ADMIN_PORT", 9104))
     strategy_admin_port: int = field(default_factory=lambda: _int("STRATEGY_ADMIN_PORT", 9105))
+    quality_admin_port: int = field(default_factory=lambda: _int("QUALITY_ADMIN_PORT", 9106))
+    # 품질 검사 임계값. 오탐이 잦으면 사람이 알람을 무시하게 되므로 보수적으로.
+    qc_jump_abs_pct: float = field(default_factory=lambda: float(_env("QC_JUMP_ABS_PCT", "10")))
+    qc_jump_sigma: float = field(default_factory=lambda: float(_env("QC_JUMP_SIGMA", "8")))
+    qc_max_spread_bp: float = field(default_factory=lambda: float(_env("QC_MAX_SPREAD_BP", "1000")))
+    qc_stale_after_s: float = field(default_factory=lambda: float(_env("QC_STALE_AFTER_S", "120")))
+    qc_divergence_pct: float = field(default_factory=lambda: float(_env("QC_DIVERGENCE_PCT", "3")))
     signal_bus_path: str = field(default_factory=lambda: _env("SIGNAL_BUS_PATH", "/tmp/mdfeed/signals.sock"))
     record_file: str = field(default_factory=lambda: _env("RECORD_FILE", ""))
     heartbeat_s: float = field(default_factory=lambda: float(_env("HEARTBEAT_S", "5")))
@@ -182,7 +189,8 @@ def load() -> Config:
         # 샤드마다 관리 포트가 달라야 어느 샤드가 아픈지 구분된다
         off = cfg.shard_port_offset
         for f in ("feedd_admin_port", "tcp_admin_port", "writer_admin_port",
-                  "strategy_admin_port", "tcp_port", "ws_port", "http_port"):
+                  "strategy_admin_port", "quality_admin_port",
+                  "tcp_port", "ws_port", "http_port"):
             setattr(cfg, f, getattr(cfg, f) + off)
         if not os.getenv("MDFEED_RING_NAME"):
             cfg.ring_name = f"{cfg.ring_name}_{cfg.shard}"

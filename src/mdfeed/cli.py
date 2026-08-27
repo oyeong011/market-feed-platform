@@ -31,6 +31,7 @@ SERVICES = [
     ("rest-api", "mdfeed.services.rest_api", 9103),
     ("writer", "mdfeed.services.writer", 9104),
     ("strategy", "mdfeed.services.strategy", 9105),
+    ("quality", "mdfeed.services.quality", 9106),
 ]
 
 

@@ -3,7 +3,7 @@
 [![CI](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml)
 [![Pages](https://github.com/oyeong011/market-feed-platform/actions/workflows/pages.yml/badge.svg)](https://oyeong011.github.io/market-feed-platform/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![tests](https://img.shields.io/badge/tests-158%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-179%20passing-brightgreen)
 ![venues](https://img.shields.io/badge/거래소-4개%20경로%20실연결-blue)
 
 거래소 실시간 시세를 **수집 → 정규화 → 멀티프로토콜 배포**하는 마켓데이터 피드 서비스와
@@ -15,13 +15,14 @@
 **▶ 데모 대시보드: https://oyeong011.github.io/market-feed-platform/**
 
 ```
-거래소 WebSocket ──▶ feedd ──▶ UDS 버스 ──┬──▶ tcp-gateway  :9101  MDFP/1 바이너리
- (Upbit·Binance·KIS)  정규화·seq        ├──▶ ws-gateway   :9102  WebSocket + 대시보드
-                      시계보정          ├──▶ writer              1분봉 · PostgreSQL/SQLite
-            └─▶ 공유메모리 링    ├──▶ strategy            지표 → SIGNAL ──┐
-                                                 └──▶ rest-api    :9103  과거 조회        │
-                                                        ▲                                 │
-                                                        └──────── signals.sock ───────────┘
+거래소 ──▶ feedd:crypto ──┐             ┌──▶ tcp-gateway  :9101  MDFP/1 바이너리
+           feedd:krx    ──┴── UDS 버스 ──┼──▶ ws-gateway   :9102  WebSocket + 대시보드
+           (샤딩)                        ├──▶ writer              1분봉 · PostgreSQL
+                                         ├──▶ rest-api     :9103  과거 조회
+                                         ├──▶ strategy            지표 → SIGNAL ──┐
+                                         └──▶ quality      :9106  품질 검사       │
+                                                    ▲                             │
+                                                    └────── signals.sock ─────────┘
 ```
 
 ---
@@ -90,7 +91,7 @@ make demo        # 6개 프로세스 기동 + 대시보드 안내
 make status      # 서비스 상태 (프로세스 + HTTP 헬스 + 포트)
 make client      # 참조 TCP 구독 클라이언트 (갭 탐지 포함)
 make diag        # 장애 진단 원스톱
-make test        # 158개 테스트 — 네트워크 불필요
+make test        # 179개 테스트 — 네트워크 불필요
 ```
 
 인터넷이 없어도 됩니다. 저장소에 든 녹화 파일로 전 구간을 재현합니다:
@@ -343,6 +344,65 @@ make backtest    # → docs/data/backtest.json (대시보드가 읽음)
 이 수치는 **파이프라인이 끝까지 동작한다는 증거**이지 전략의 우열이 아닙니다.
 실제로 세 전략 모두 손실이었고, 그대로 적었습니다.
 
+## 데이터 품질 — 원칙을 집행하는 부분
+
+이 문서 맨 위에 *"틀린 값을 조용히 배포한다"* 를 네 가지 문제 중 하나로 적어 뒀습니다.
+그런데 **그걸 탐지하는 장치가 없었습니다.** 원칙만 있고 집행이 없으면 원칙이 아닙니다.
+
+`quality` 프로세스가 버스를 구독해 계속 검사합니다.
+
+| 검사 | 무엇이 틀렸다는 신호인가 |
+|---|---|
+| **가격 점프** | 파싱 오프셋이 밀렸거나 소수점을 잘못 읽었다 |
+| **크로스된 호가** | 매수 > 매도. 정상 시장에서 지속 불가 — 필드가 뒤바뀐 신호 |
+| **광폭 스프레드** | 유동성 고갈이거나 한쪽 호가만 갱신 중 |
+| **정체** | 같은 값이 계속 온다. 연결은 살아 있는데 내용이 안 바뀐다 |
+| **OHLC 위반** | 집계 로직 버그. 하류가 전부 오염된다 |
+| **교차 시장 괴리** | 같은 자산이 두 거래소에서 벌어짐 |
+
+### 오탐을 줄이는 방법 — 종목마다 정상 범위가 다르다
+
+"X% 넘으면 이상"으로만 하면 급등락에서 오탐이 쏟아지고, **사람이 알람을 무시하게
+됩니다. 그러면 진짜가 왔을 때도 무시합니다.**
+
+그래서 절대 임계와 함께 **최근 변동성 대비**를 봅니다. 평소 0.01% 씩 움직이던
+종목의 1% 는 이상하지만, 평소 3% 씩 흔들리던 종목의 2% 는 그냥 변동성입니다.
+(중앙값을 씁니다 — 평균은 이상치에 끌려갑니다)
+
+### 외부 소스 없이 자체 정합성 검사 — 암묵 환율
+
+업비트는 원화, 바이낸스는 달러로 같은 코인을 거래합니다.
+**두 가격의 비율이 곧 환율**이고, 여러 코인에서 뽑은 값은 서로 가까워야 합니다.
+
+실측 (2026-08-27):
+
+```
+BTC 1,385.2   ETH 1,386.2   SOL 1,384.0   XRP 1,386.2   KRW/USD
+```
+
+4개 자산에서 **독립적으로** 뽑았는데 **0.16% 이내로 수렴**합니다.
+외부 환율 소스 없이 데이터 일관성을 증명한 것입니다.
+하나만 벌어지면 그 종목의 시세가 이상하다는 뜻이고, 어느 쪽인지는 나머지가 알려줍니다.
+
+부수적으로 이 값 자체가 상품이 됩니다 — 국내 시장 프리미엄 지표입니다.
+
+### 이상을 발견해도 데이터를 버리지 않습니다
+
+마켓데이터에서 "이상해 보이는 값"의 상당수는 **진짜 시장 움직임**입니다.
+급등락, 유동성 고갈, 서킷브레이커. 자동으로 걸러내면 정작 중요한 순간의 데이터를 잃습니다.
+
+**표시하고 기록할 뿐, 판단은 사람이 합니다.** 마켓데이터 벤더가 `suspect` 플래그를
+붙여 내보내되 지우지는 않는 관행과 같습니다.
+
+검사기를 별도 프로세스로 둔 이유도 같습니다 — 검사는 **관찰자**여야 합니다.
+수집기에 붙이면 hot path 가 무거워지고, 검사 로직 버그가 수집까지 죽입니다.
+
+```bash
+curl localhost:9106/healthz     # 검사 건수·이상 통계
+curl localhost:9106/events      # 최근 탐지 목록
+curl localhost:9106/fx          # 암묵 환율
+```
+
 ## 수평 확장 — 단일 장애점 제거
 
 `feedd` 하나가 모든 업스트림을 들면 거래소 하나의 문제로 전부가 내려갑니다.
@@ -480,7 +540,7 @@ src/mdfeed/
 
 ops/     systemd 유닛 6종 · ops.sh · watchdog.sh · healthcheck.py · logrotate
 quant/   backtest.py · run_backtest.py · integrations.py · factor_screen.py
-tests/   158개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E)
+tests/   179개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E)
 bench/   계층별 성능 측정 → docs/data/bench.json
 docs/    GitHub Pages 대시보드 (정적/실시간 겸용)
 ```

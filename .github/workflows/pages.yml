@@ -60,6 +60,10 @@ jobs:
             --out docs/data/factors.json || echo "참조 데이터 미확보 — 건너뜀"
         env: { PYTHONPATH: src }
 
+      - name: 품질 검사 스냅샷 → docs/data/quality.json
+        run: python scripts/capture_quality.py --out docs/data/quality.json
+        env: { PYTHONPATH: src }
+
       - name: 빌드 메타 기록
         run: |
           python - <<'PY'

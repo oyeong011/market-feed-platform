@@ -107,6 +107,7 @@ footer{padding:36px 0 56px;color:var(--dimmer);font-size:12.5px}
       <a class="btn" href="#arch">아키텍처</a>
       <a class="btn" href="#perf">성능</a>
       <a class="btn" href="#ops">운영</a>
+      <a class="btn" href="#quality">품질</a>
       <a class="btn" href="#quant">퀀트</a>
     </div>
     <div id="modebar">
@@ -283,6 +284,30 @@ footer{padding:36px 0 56px;color:var(--dimmer);font-size:12.5px}
       </table>
     </div>
     <p class="note" id="perfnote"></p>
+  </div>
+</section>
+
+<!-- ─────────── 데이터 품질 ─────────── -->
+<section id="quality">
+  <div class="wrap">
+    <h2>데이터 품질 — 원칙을 집행하는 부분</h2>
+    <p class="lede">
+      이 페이지 맨 위에 <strong>"틀린 값을 조용히 배포한다"</strong>를 네 가지 문제 중 하나로
+      적었습니다. 그런데 그걸 탐지하는 장치가 없었습니다. 원칙만 있고 집행이 없으면 원칙이 아닙니다.
+      <code>quality</code> 프로세스가 버스를 구독해 계속 검사합니다.
+    </p>
+    <div class="grid g4" id="qcards"></div>
+    <h3>외부 소스 없이 자체 정합성 검사 — 암묵 환율</h3>
+    <p class="lede" style="margin-bottom:14px">
+      업비트는 원화, 바이낸스는 달러로 같은 코인을 거래합니다. <strong>두 가격의 비율이 곧 환율</strong>이고,
+      여러 코인에서 뽑은 값은 서로 가까워야 합니다. 하나만 벌어지면 그 종목의 시세가 이상하다는 뜻이고,
+      어느 쪽인지는 나머지가 알려줍니다.
+    </p>
+    <div class="tblwrap">
+      <table><thead><tr><th>자산</th><th class="num">암묵 환율 (KRW/USD)</th><th class="num">중앙값 대비</th></tr></thead>
+      <tbody id="fxbody"><tr><td colspan="3" class="txt muted">불러오는 중…</td></tr></tbody></table>
+    </div>
+    <p class="note" id="qnote"></p>
   </div>
 </section>
 
@@ -544,6 +569,39 @@ loadJSON("data/factors.json").then(d => {
     `<tr><td class="muted">${i+1}</td><td>${esc(r.key)}</td><td class="txt">${esc(r.name)}</td>
      <td class="num">${r.score.toFixed(3)}</td><td class="num">${pct(r.operating_margin)}</td>
      <td class="num">${pct(r.roe)}</td><td class="num ${r.revenue_growth>0?"up":"down"}">${pct(r.revenue_growth)}</td></tr>`).join("");
+});
+
+/* ── 데이터 품질 ──────────────────────────────────────────────── */
+loadJSON("data/quality.json").then(d => {
+  if(!d){ return; }
+  const cards = [
+    ["검사한 메시지", fmt(d.checked), "가격 점프 · 크로스된 호가 · 광폭 스프레드 · 정체 · OHLC 위반 · 교차 시장 괴리"],
+    ["CRITICAL", fmt(d.critical), "이 값을 쓰면 안 된다는 판정. 0 이면 배포된 데이터에 구조적 오류가 없다는 뜻입니다."],
+    ["WARNING", fmt(d.warning), "봐야 한다는 판정. 실제 시장 움직임일 수도 있어 버리지 않고 표시만 합니다."],
+    ["오탐 억제", "변동성 대비", "\"X% 넘으면 이상\"으로만 하면 급등락에서 오탐이 쏟아지고, 사람이 알람 전체를 무시하게 됩니다. 종목별 최근 변동성 중앙값과 비교합니다."],
+  ];
+  $("#qcards").innerHTML = cards.map(([k,v,n]) =>
+    `<div class="card"><div class="k">${k}</div><div class="v">${v}</div><div class="n">${n}</div></div>`).join("");
+
+  const fx = d.implied_fx || {};
+  const vals = Object.values(fx).sort((a,b)=>a-b);
+  const mid = vals.length ? vals[Math.floor(vals.length/2)] : 0;
+  const rows = Object.entries(fx).sort();
+  $("#fxbody").innerHTML = rows.length
+    ? rows.map(([k,v]) => {
+        const dev = mid ? (v-mid)/mid*100 : 0;
+        return `<tr><td>${esc(k)}</td><td class="num">${fmt(v,1)}</td>
+          <td class="num ${Math.abs(dev)>3?"down":"muted"}">${dev>=0?"+":""}${dev.toFixed(3)}%</td></tr>`;
+      }).join("")
+    : '<tr><td colspan="3" class="txt muted">암묵 환율 데이터 없음</td></tr>';
+  const spread = vals.length>1 ? (vals[vals.length-1]-vals[0])/mid*100 : 0;
+  $("#qnote").innerHTML =
+    `${rows.length}개 자산에서 <strong>독립적으로</strong> 뽑은 환율이 <strong>${spread.toFixed(2)}% 이내</strong>로
+     수렴합니다. 외부 환율 소스 없이 데이터 일관성을 증명한 것입니다.<br>
+     <strong>이상을 발견해도 데이터를 버리지 않습니다.</strong> 마켓데이터에서 "이상해 보이는 값"의 상당수는
+     진짜 시장 움직임입니다 — 급등락, 유동성 고갈, 서킷브레이커. 자동으로 걸러내면 정작 중요한 순간의
+     데이터를 잃습니다. 표시하고 기록할 뿐, 판단은 사람이 합니다.
+     <br><span style="color:var(--dimmer)">기준: ${esc(d.source||"")} · ${esc(d.captured_at||"")}</span>`;
 });
 
 /* ── 빌드 정보 ────────────────────────────────────────────────── */

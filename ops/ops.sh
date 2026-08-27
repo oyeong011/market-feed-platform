@@ -16,14 +16,14 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 RUN_DIR="${MDFEED_RUN_DIR:-/tmp/mdfeed}"
-SERVICES="feedd tcp-gateway ws-gateway rest-api writer strategy"
+SERVICES="feedd tcp-gateway ws-gateway rest-api writer strategy quality"
 
 # 연관배열(declare -A)은 bash 4+ 전용이라 macOS 기본 bash 3.2 에서 깨진다.
 # 개발 노트북과 리눅스 서버에서 같은 스크립트를 쓰려고 case 로 조회한다.
 admin_port() {
   case "$1" in
     feedd) echo 9100 ;; tcp-gateway) echo 9111 ;; ws-gateway) echo 9102 ;;
-    rest-api) echo 9103 ;; writer) echo 9104 ;; strategy) echo 9105 ;;
+    rest-api) echo 9103 ;; writer) echo 9104 ;; strategy) echo 9105 ;; quality) echo 9106 ;;
   esac
 }
 module_of() {
@@ -34,6 +34,7 @@ module_of() {
     rest-api) echo mdfeed.services.rest_api ;;
     writer) echo mdfeed.services.writer ;;
     strategy) echo mdfeed.services.strategy ;;
+    quality) echo mdfeed.services.quality ;;
   esac
 }
 
