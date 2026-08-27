@@ -19,6 +19,22 @@ import sys
 import urllib.request
 
 PORTS = [9100, 9200, 9111, 9102, 9103, 9104, 9105, 9106]
+
+# 구성에 따라 없는 것이 정상인 지표.
+#
+# 지연·시계 지표는 **지연을 측정하는 어댑터가 하나라도 있어야** 생긴다.
+# 리플레이 전용 구성(CI)에서는 measures_latency=False 뿐이라 생기지 않는데,
+# 그건 결함이 아니라 정확한 동작이다. 없는 값을 0 으로 채우면
+# "지연이 0µs" 라는 거짓말이 된다.
+#
+# 다만 **실측 어댑터가 붙어 있는데도 없으면 그건 진짜 결함**이다.
+# 그래서 조건을 확인한 뒤에 판정한다.
+CONDITIONAL = {
+    "mdfeed_ingest_latency_microseconds":
+        "지연을 측정하는 어댑터(measures_latency=True)가 있어야 생성된다",
+    "mdfeed_clock_offset_us":
+        "같은 조건. 시계 오프셋은 거래소 체결시각이 있어야 추정할 수 있다",
+}
 METRIC_RE = re.compile(r"\b(mdfeed_[a-z0-9_]+)")
 EXPR_RE = re.compile(r"^\s*expr:\s*(.+)$")
 
@@ -36,6 +52,24 @@ def scrape(port: int) -> set[str]:
             continue
         out.add(line.split("{")[0].split(" ")[0])
     return out
+
+
+def any_adapter_measures_latency() -> bool | None:
+    """지연을 측정하는 업스트림이 하나라도 붙어 있는가.
+
+    None 이면 feedd 에 물어보지 못한 것 — 판단을 유보한다.
+    """
+    for port in (9100, 9200):
+        try:
+            with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/healthz", timeout=4) as r:
+                d = json.loads(r.read())
+        except Exception:                            # noqa: BLE001
+            continue
+        for u in d.get("upstreams", []):
+            if u.get("measures_latency"):
+                return True
+    return False
 
 
 def main() -> int:
@@ -66,22 +100,36 @@ def main() -> int:
             for m in METRIC_RE.findall(e.group(1)):
                 referenced.setdefault(m, []).append(alert)
 
-    # up 은 Prometheus 가 만드는 지표라 우리 /metrics 에 없다
-    missing = {m: a for m, a in referenced.items() if m not in exposed}
-    ok = {m: a for m, a in referenced.items() if m in exposed}
+    measures = any_adapter_measures_latency()
+    ok, conditional, missing = {}, {}, {}
+    for m, alerts in referenced.items():
+        if m in exposed:
+            ok[m] = alerts
+        elif m in CONDITIONAL and measures is False:
+            # 지연을 재는 어댑터가 없으므로 없는 것이 정확한 동작이다
+            conditional[m] = alerts
+        else:
+            missing[m] = alerts
 
-    print(f"{'지표':<46} {'상태':<8} 참조 알람")
-    print("-" * 90)
+    print(f"{'지표':<46} {'상태':<10} 참조 알람")
+    print("-" * 92)
     for m, alerts in sorted(ok.items()):
-        print(f"{m:<46} {'OK':<8} {', '.join(alerts)}")
+        print(f"{m:<46} {'OK':<10} {', '.join(alerts)}")
+    for m, alerts in sorted(conditional.items()):
+        print(f"{m:<46} {'조건부':<10} {', '.join(alerts)}")
+        print(f"{'':<46} {'':<10} └ {CONDITIONAL[m]}")
     for m, alerts in sorted(missing.items()):
-        print(f"{m:<46} {'없음':<8} {', '.join(alerts)}   ← 이 알람은 영원히 안 울린다")
-    print("-" * 90)
-    print(f"참조 {len(referenced)}종 · 존재 {len(ok)} · 누락 {len(missing)}")
+        print(f"{m:<46} {'없음':<10} {', '.join(alerts)}   ← 이 알람은 영원히 안 울린다")
+    print("-" * 92)
+    print(f"참조 {len(referenced)}종 · 존재 {len(ok)} · 조건부 {len(conditional)} · "
+          f"누락 {len(missing)}")
+    if conditional:
+        print(f"조건부는 현재 구성(지연 측정 어댑터 없음)에서 없는 것이 정확한 동작입니다.\n"
+              f"실측 어댑터를 붙이면 생성되며, 그때도 없으면 결함으로 잡힙니다.")
     if missing:
         print("\n누락된 지표를 노출하거나 규칙을 고치세요.")
         return 1
-    print("모든 알람이 실재하는 지표를 참조합니다.")
+    print("모든 알람이 실재하거나, 없는 이유가 설명되는 지표를 참조합니다.")
     return 0
 
 
