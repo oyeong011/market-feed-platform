@@ -1,566 +1,532 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MDFeed 포트폴리오 — 실시간 마켓데이터 FEED 플랫폼</title>
+<title>권오영 포트폴리오 — MDFeed</title>
 <style>
-/* ─────────────────────────────────────────────────────────────
-   인쇄(PDF) 우선 설계.
-   화면에서도 읽히되, 기준은 A4 인쇄물이다.
-   ───────────────────────────────────────────────────────────── */
-@page { size: A4; margin: 16mm 14mm 16mm 14mm; }
+/* ── 인쇄 기준: A4 세로, 여백 0 (컬러 밴드를 재단선까지 채우기 위해) ── */
+@page { size: A4; margin: 0; }
+
+*{margin:0;padding:0;box-sizing:border-box}
 
 :root{
-  --ink:#16181d; --ink2:#3d434e; --dim:#6b7280; --line:#d8dce3;
-  --accent:#1a4d8f; --accent-bg:#eef3fa; --ok:#0f7b52; --bad:#b3261e;
-  --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  --navy:#0B2545;      /* 헤더 밴드 */
+  --navy-2:#123A63;
+  --accent:#00A6A6;    /* 강조 */
+  --accent-d:#00807F;
+  --ink:#16202B;
+  --gray:#5B6B7B;
+  --line:#DCE3EA;
+  --bg-soft:#F4F7FA;
+  --red:#C0392B;
 }
-*{box-sizing:border-box;margin:0;padding:0}
-/* 한글은 단어 중간에서 끊으면 안 된다. 표 셀까지 전역 적용.
-   (기본 break-word 로 두면 "오픈소/스" 처럼 잘린다) */
-body,td,th,li,p,div{word-break:keep-all;overflow-wrap:break-word}
-p,td{orphans:2;widows:2}
+
 html{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+
 body{
-  font-family:-apple-system,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif;
-  color:var(--ink); background:#fff; font-size:10pt; line-height:1.55;
-  letter-spacing:-0.1px;
+  font-family:"Pretendard","Apple SD Gothic Neo","Noto Sans KR",-apple-system,sans-serif;
+  color:var(--ink); font-size:10pt; line-height:1.6;
+  /* 한글은 어절 단위로만 끊는다. 안 그러면 표 안에서 '오픈소/스'가 된다 */
+  word-break:keep-all; overflow-wrap:break-word;
 }
-.page{max-width:186mm;margin:0 auto;padding:0 4mm}
-@media screen{
-  body{background:#f0f1f4;padding:24px 0}
-  .page{background:#fff;padding:18mm 14mm;box-shadow:0 2px 16px rgba(0,0,0,.09);
-        border-radius:3px;margin-bottom:0}
+
+/* ── 슬라이드 = 페이지 1장 ── */
+.slide{
+  width:210mm; height:297mm; page-break-after:always;
+  position:relative; overflow:hidden;
+  padding:0 18mm 16mm;
 }
+.slide:last-child{page-break-after:auto}
+
+/* ── 페이지 헤더 밴드 ── */
+.band{
+  margin:0 -18mm 9mm; padding:9mm 18mm 7mm;
+  background:var(--navy); color:#fff;
+  display:flex; align-items:baseline; gap:5mm;
+}
+.band .no{
+  font-size:22pt; font-weight:800; color:var(--accent);
+  line-height:1; letter-spacing:-.5pt;
+}
+.band h2{font-size:16pt; font-weight:700; letter-spacing:-.3pt}
+.band .sub{margin-left:auto; font-size:8.5pt; color:#9FB6CC; font-weight:400}
+
+h3{
+  font-size:11pt; font-weight:700; color:var(--navy);
+  margin:6mm 0 2.5mm; padding-left:2.5mm;
+  border-left:3px solid var(--accent);
+}
+h3:first-of-type{margin-top:0}
+
+p{margin-bottom:2.5mm; color:#26333F}
+.lead{font-size:10.5pt; color:var(--gray); margin-bottom:5mm}
+strong{font-weight:700; color:var(--navy)}
+.hi{color:var(--accent-d); font-weight:700}
+.bad{color:var(--red); font-weight:700}
+code{font-family:"SF Mono",Menlo,monospace; font-size:8.5pt;
+     background:var(--bg-soft); padding:.3mm 1.2mm; border-radius:1mm; color:var(--navy-2)}
 
 /* ── 표지 ── */
-.cover{text-align:left;padding:10mm 0 8mm}
-.cover .kicker{font-size:9pt;letter-spacing:2.2px;color:var(--accent);font-weight:700;
-               text-transform:uppercase;margin-bottom:7mm}
-.cover h1{font-size:27pt;line-height:1.16;letter-spacing:-1.2px;font-weight:800;margin-bottom:4mm}
-.cover .sub{font-size:11.5pt;color:var(--ink2);line-height:1.66;max-width:150mm}
-.cover .rule{height:3px;background:var(--accent);width:56mm;margin:8mm 0 7mm}
-.cover .meta{font-size:9.4pt;color:var(--dim);line-height:1.85}
-.cover .meta b{color:var(--ink);font-weight:600}
-.cover a{color:var(--accent);text-decoration:none}
+.cover{background:var(--navy); color:#fff; padding:0}
+.cover-in{padding:44mm 18mm 0}
+.cover .kicker{font-size:9pt; letter-spacing:3pt; color:var(--accent); font-weight:600}
+.cover h1{font-size:40pt; font-weight:800; line-height:1.12; margin:6mm 0 0; letter-spacing:-1.5pt}
+.cover h1 .t2{color:var(--accent)}
+.cover .def{font-size:11pt; color:#C6D6E4; margin-top:6mm; max-width:150mm; line-height:1.65}
+.cover .who{margin-top:22mm; font-size:13pt; font-weight:700}
+.cover .who span{font-size:9.5pt; font-weight:400; color:#9FB6CC; margin-left:3mm}
+.cover .links{margin-top:4mm; font-size:9pt; color:#9FB6CC; line-height:1.9}
+.cover .links b{display:inline-block; width:16mm; color:var(--accent); font-weight:600}
 
-/* ── 표지 핵심 수치 ── */
-.headline{display:grid;grid-template-columns:repeat(4,1fr);gap:0;margin:9mm 0 0;
-          border-top:1.5px solid var(--ink);border-bottom:1.5px solid var(--ink)}
-.headline div{padding:5mm 3mm;border-right:1px solid var(--line)}
-.headline div:last-child{border-right:none}
-.headline .n{font-family:var(--mono);font-size:16pt;font-weight:700;letter-spacing:-0.6px;
-             line-height:1.1;margin-bottom:1.5mm}
-.headline .l{font-size:8.2pt;color:var(--dim);line-height:1.4}
+.cover-stats{
+  position:absolute; left:0; right:0; bottom:0;
+  background:#081C36; padding:9mm 18mm;
+  display:grid; grid-template-columns:repeat(4,1fr); gap:4mm;
+}
+.cover-stats .n{font-size:24pt; font-weight:800; color:var(--accent); line-height:1}
+.cover-stats .l{font-size:8pt; color:#A8BCCE; margin-top:2mm; line-height:1.45}
+.cover-note{
+  position:absolute; left:18mm; right:18mm; bottom:46mm;
+  font-size:7.5pt; color:#7E93A8; line-height:1.55; border-top:1px solid #1E3A5C; padding-top:3mm;
+}
 
-/* ── 섹션 ── */
-h2{font-size:14.5pt;font-weight:800;letter-spacing:-0.5px;margin:7mm 0 3.5mm;
-   padding-bottom:2mm;border-bottom:2px solid var(--ink);page-break-after:avoid}
-h2 .num{color:var(--accent);font-family:var(--mono);font-size:11pt;margin-right:3mm}
-h3{font-size:11pt;font-weight:700;margin:5mm 0 2mm;color:var(--ink);page-break-after:avoid}
-h4{font-size:10pt;font-weight:700;margin:4.5mm 0 2mm;color:var(--accent);page-break-after:avoid}
-p{margin-bottom:2.4mm;text-align:justify;word-break:keep-all}
-strong{font-weight:700}
-code{font-family:var(--mono);font-size:.88em;background:#f1f3f6;padding:.1em .35em;
-     border-radius:2px;color:#2b3444}
-a{color:var(--accent)}
-
-/* ── STAR 블록 ── */
-.star{border-left:3px solid var(--accent);padding-left:5mm;margin:4mm 0 6mm;
-      page-break-inside:avoid}
-.star .tag{display:inline-block;font-family:var(--mono);font-size:8.4pt;font-weight:700;
-           color:#fff;background:var(--accent);padding:.7mm 2.4mm;border-radius:2px;
-           margin-bottom:2mm;letter-spacing:.5px}
-.star.i .tag{background:var(--ok)}
-.star.i{border-left-color:var(--ok)}
+/* ── 숫자 카드 ── */
+.stats{display:grid; gap:3mm; margin:3mm 0 5mm}
+.stats.c3{grid-template-columns:repeat(3,1fr)}
+.stats.c4{grid-template-columns:repeat(4,1fr)}
+.stat{background:var(--bg-soft); border-left:3px solid var(--accent); padding:3.5mm 4mm}
+.stat .n{font-size:15pt; font-weight:800; color:var(--navy); line-height:1.1; letter-spacing:-.5pt}
+.stat .l{font-size:8pt; color:var(--gray); margin-top:1.5mm; line-height:1.45}
 
 /* ── 표 ── */
-thead{display:table-header-group}
-table{width:100%;border-collapse:collapse;margin:2.5mm 0 3.5mm;font-size:9pt}
-/* 긴 표는 쪼개지되 행 중간에서는 안 끊기게. thead 는 반복된다.
-   avoid 로 묶어 두면 표 하나 때문에 페이지가 통째로 비는 일이 생긴다 */
-tr{page-break-inside:avoid}
-th{text-align:left;font-weight:700;font-size:8.4pt;color:var(--dim);
-   text-transform:uppercase;letter-spacing:.5px;padding:2mm 2.5mm;
-   border-bottom:1.5px solid var(--ink);white-space:nowrap}
-td{padding:1.9mm 2.5mm;border-bottom:.5px solid var(--line);vertical-align:top;line-height:1.5}
-tr:last-child td{border-bottom:none}
-.num-col{text-align:right;font-family:var(--mono);white-space:nowrap}
-.mono{font-family:var(--mono);font-size:.92em}
-.ok{color:var(--ok);font-weight:700}
-.bad{color:var(--bad);font-weight:700}
-.big{font-family:var(--mono);font-weight:700}
-
-/* ── 강조 박스 ── */
-.callout{background:var(--accent-bg);border-left:3px solid var(--accent);
-         padding:3.5mm 5mm;margin:4mm 0;font-size:9.6pt;page-break-inside:avoid}
-.callout .t{font-weight:700;margin-bottom:1.5mm;color:var(--accent)}
-.note{font-size:8.8pt;color:var(--dim);line-height:1.6;margin-top:2mm}
+table{width:100%; border-collapse:collapse; font-size:8.8pt; margin:2mm 0 4mm}
+th{
+  text-align:left; font-weight:700; font-size:8pt; color:#fff;
+  background:var(--navy-2); padding:2mm 3mm;
+}
+td{padding:2.2mm 3mm; border-bottom:1px solid var(--line); vertical-align:top; line-height:1.5}
+tr:nth-child(even) td{background:#FAFCFD}
+td.num{font-family:"SF Mono",Menlo,monospace; font-size:8.2pt; text-align:right; white-space:nowrap}
 
 /* ── 다이어그램 ── */
-pre.dia{font-family:var(--mono);font-size:7.9pt;line-height:1.4;background:#f7f8fa;
-        border:.5px solid var(--line);padding:3.5mm;overflow:hidden;white-space:pre;
-        page-break-inside:avoid;margin:2.5mm 0 3.5mm;color:#2b3444}
+pre.dia{
+  font-family:"SF Mono",Menlo,monospace; font-size:8pt; line-height:1.5;
+  background:var(--navy); color:#CFE3F0; padding:5mm; border-radius:1.5mm;
+  white-space:pre; overflow:hidden; margin:2mm 0 4mm;
+}
+pre.dia b{color:var(--accent); font-weight:600}
 
-/* ── 페이지 나눔 ── */
-.pb{page-break-before:always}
-.avoid{page-break-inside:avoid}
-@media screen{ .pb{margin-top:14mm;border-top:2px dashed #c9ccd3;padding-top:10mm} }
+/* ── 결함 카드 ── */
+.fix{
+  border:1px solid var(--line); border-left:3px solid var(--red);
+  padding:4mm 5mm; margin-bottom:4mm; background:#fff;
+}
+.fix .t{font-size:9.5pt; font-weight:700; color:var(--navy); margin-bottom:1.5mm}
+.fix .d{font-size:8.7pt; color:#33424F; line-height:1.55}
+.fix .d em{font-style:normal; color:var(--accent-d); font-weight:700}
 
-/* ── 푸터 ── */
-.foot{margin-top:10mm;padding-top:3mm;border-top:1px solid var(--line);
-      font-size:8.4pt;color:var(--dim);display:flex;justify-content:space-between}
+/* ── STAR 압축 그리드 ── */
+.star{display:grid; grid-template-columns:14mm 1fr; gap:0; margin-bottom:4mm}
+.star .k{
+  background:var(--navy); color:#fff; font-weight:800; font-size:9.5pt;
+  display:flex; align-items:center; justify-content:center; letter-spacing:.5pt;
+}
+.star .k.acc{background:var(--accent)}
+.star .v{border:1px solid var(--line); border-left:none; padding:3mm 4mm; font-size:8.8pt; line-height:1.6}
+.star .v ol{margin:1.5mm 0 0 4mm; padding:0}
+.star .v li{margin-bottom:1mm}
+
+/* ── 콜아웃 ── */
+.callout{
+  background:var(--bg-soft); border-left:3px solid var(--navy);
+  padding:3.5mm 4mm; font-size:8.8pt; line-height:1.6; margin:3mm 0;
+}
+.callout b{color:var(--navy)}
+
+.foot{
+  position:absolute; left:18mm; right:18mm; bottom:8mm;
+  border-top:1px solid var(--line); padding-top:2.5mm;
+  font-size:7.5pt; color:#8E9DAB; display:flex; justify-content:space-between;
+}
 </style>
 </head>
 <body>
-<div class="page">
 
-<!-- ══════════════ 표지 ══════════════ -->
-<div class="cover">
-  <div class="kicker">Portfolio · 2026.08</div>
-  <h1>MDFeed<br>실시간 마켓데이터<br>FEED 플랫폼</h1>
-  <div class="rule"></div>
-  <p class="sub">
-    거래소 실시간 시세를 <strong>수집 → 정규화 → 멀티프로토콜 배포</strong>하는
-    금융 데이터 피드 서비스와, 그것을 리눅스에서 운영하기 위한 자동화 스택.
-    수집 경로 5개를 실연결로 검증했습니다.
-  </p>
-  <div class="meta" style="margin-top:7mm">
-    <b>저장소</b> &nbsp; github.com/oyeong011/market-feed-platform<br>
-    <b>데모</b> &nbsp;&nbsp;&nbsp; oyeong011.github.io/market-feed-platform<br>
-    <b>참조 데이터</b> &nbsp; github.com/oyeong011/financial-database
+<!-- ═══════════ 표지 ═══════════ -->
+<section class="slide cover">
+  <div class="cover-in">
+    <div class="kicker">PORTFOLIO · 2026.08</div>
+    <h1>MDFeed<br><span class="t2">실시간 마켓데이터 FEED 플랫폼</span></h1>
+    <p class="def">
+      거래소 실시간 시세를 <strong style="color:#fff">수집 → 정규화 → 멀티프로토콜 배포</strong>하는
+      금융 데이터 피드 서비스와, 그것을 리눅스에서 운영하기 위한 자동화 스택.
+      수집 경로 5개를 실제 거래소 연결로 검증했습니다.
+    </p>
+
+    <div class="who">권오영 <span>Market Data / Feed Engineering</span></div>
+    <div class="links">
+      <b>저장소</b> github.com/oyeong011/market-feed-platform<br>
+      <b>데모</b> oyeong011.github.io/market-feed-platform<br>
+      <b>메일</b> duddls5079@gmail.com
+    </div>
   </div>
-</div>
 
-<div class="headline">
-  <div><div class="n">5</div><div class="l">수집 경로<br>실연결 검증</div></div>
-  <div><div class="n">1,783</div><div class="l">코스피 종목<br>계층형 피드</div></div>
-  <div><div class="n">26</div><div class="l">실측으로 잡은<br>결함 기록</div></div>
-  <div><div class="n">179</div><div class="l">테스트<br>CI 6잡 통과</div></div>
-</div>
+  <div class="cover-note">
+    소유권 표기 — 구현에는 AI를 상당 부분 활용했습니다. 판단·측정·결정은 본인의 것이고 코드 작성은 AI 보조입니다.
+    이 문서의 모든 수치는 실제로 돌려서 얻은 값입니다.
+  </div>
 
-<div class="callout" style="margin-top:8mm">
-  <div class="t">이 문서를 읽는 법</div>
-  이 프로젝트에서 가장 값진 것은 기능 목록이 아니라 <strong>만드는 과정에서 잡아낸 결함
-  26건</strong>입니다. 문서가 틀린 곳, 측정이 거짓말하던 곳, 실제로 돌려봐야 드러나는 곳입니다.
-  각 항목마다 원인과 조치를 코드 주석과 문서에 남겼습니다.
-</div>
-
-<div class="note" style="margin-top:6mm">
-  <strong>소유권 표기</strong> — 이 프로젝트의 구현에는 AI를 상당 부분 활용했습니다.
-  이 문서에서 <strong>판단·측정·결정</strong>은 본인의 것이고, 코드 작성은 AI 보조입니다.
-  각 항목에서 그 경계를 구분해 적었습니다.
-</div>
-
-<!-- ══════════════ 1. 무엇을 만들었나 ══════════════ -->
-<div class="pb"></div>
-<h2><span class="num">01</span>무엇을 만들었나</h2>
-
-<p>
-금융정보 서비스는 거래소에서 시세를 받아 고객 단말에 공급합니다. 그런데 거래소마다
-형식이 전부 다릅니다.
-</p>
-
-<pre class="dia">업비트     JSON 을 바이너리 프레임으로 보냄
-바이낸스   가격을 문자열로 보냄
-한국투자   005930^103546^266250^…   파이프·캐럿 구분 문자열</pre>
-
-<p>
-이것을 하나로 통일해 여러 소비자에게 나눠주는 중간 계층이 <strong>FEED 서비스</strong>입니다.
-매매 프로그램도, 시세를 보는 화면도 아닙니다. 그 화면들에 <strong>데이터를 먹여주는 뒷단</strong>입니다.
-</p>
-
-<pre class="dia">거래소 ─▶ feedd:crypto ─┐            ┌─▶ tcp-gateway   MDFP/1 바이너리 (기관용)
-         feedd:krx    ─┴─ UDS 버스 ─┼─▶ ws-gateway    WebSocket + 대시보드
-         (샤딩)                     ├─▶ writer        1분봉 · PostgreSQL
-                                    ├─▶ rest-api      과거 조회
-                                    ├─▶ strategy      지표 → SIGNAL
-                                    └─▶ quality       품질 검사</pre>
-
-<h3>수집 경로와 자산군</h3>
-<table>
-<thead><tr><th>자산군</th><th>경로</th><th class="num-col">종목</th><th>갱신</th></tr></thead>
-<tbody>
-<tr><td>암호화폐</td><td>업비트 · 바이낸스 WebSocket</td><td class="num-col">7</td><td>실시간 틱</td></tr>
-<tr><td>국내주식 (틱)</td><td>KIS WebSocket <code>H0STCNT0</code></td><td class="num-col">3</td><td>실시간 체결</td></tr>
-<tr><td>국내주식 (전체)</td><td>KIS REST 계층형</td><td class="num-col"><b>1,783</b></td><td>15분 회전</td></tr>
-<tr><td>지수</td><td>KIS 업종 현재지수</td><td class="num-col">6</td><td>10초</td></tr>
-<tr><td>해외금리</td><td>KIS 금리 종합</td><td class="num-col">7</td><td>5분</td></tr>
-</tbody>
-</table>
-
-<h3>무엇을 직접 만들고 무엇을 맡겼나</h3>
-<table>
-<thead><tr><th style="width:20%">계층</th><th style="width:15%">선택</th><th>이유</th></tr></thead>
-<tbody>
-<tr><td><b>피드</b><br><span class="note">프로토콜·프레이밍·갭 복구</span></td><td><b>직접 구현</b></td>
-<td>라이브러리를 써도 메시지 프레이밍·시퀀스 갭 탐지·스냅샷 복구·느린 구독자 격리는
-<strong>어차피 직접 해야 합니다.</strong> 그 경계를 알려면 한 번은 아래까지 내려가 봐야 합니다.</td></tr>
-<tr><td><b>분석</b><br><span class="note">백테스트·성과지표</span></td><td><b>오픈소스</b></td>
-<td><code>backtesting.py</code>·<code>vectorbt</code>가 낫습니다. 새로 만들 이유가 없습니다.
-우리가 제공하는 건 데이터와 전략 코드이고, 검증은 검증된 도구에 맡깁니다.</td></tr>
-<tr><td><b>저장소</b></td><td><b>오픈소스</b></td>
-<td>PostgreSQL + TimescaleDB. 시계열 파티셔닝·보존정책을 직접 만들 이유가 없습니다.</td></tr>
-</tbody>
-</table>
-
-<p class="note" style="page-break-before:avoid">
-피드 계층을 직접 만든 부수 효과로 <strong>핵심 경로 의존성이 0</strong>이 되어,
-<code>python3</code>만 있으면 어떤 리눅스에서도 <code>git clone &amp;&amp; make demo</code>로 돕니다.
-</p>
-
-<!-- ══════════════ 2. 프로젝트 STAR ══════════════ -->
-<div class="pb"></div>
-<h2><span class="num">02</span>프로젝트 STAR</h2>
-
-<div class="star avoid">
-<span class="tag">S · 상황</span>
-<p>
-채용 요건의 대부분이 이 계층에서 나옵니다 — 프로세스 간 통신, TCP/HTTP,
-리눅스 서비스 점검, 파이프라인 자동화. <strong>요건에 "안다"고 쓰는 대신
-동작하는 것으로 보이기로 했습니다.</strong>
-</p>
-</div>
-
-<div class="star avoid">
-<span class="tag">T · 과제</span>
-<p>
-기능을 늘리는 것이 아니라 <strong>네 가지 실패를 막는 것</strong>을 목표로 정의했습니다.
-이 정의가 이후 모든 판단의 기준이 됐습니다.
-</p>
-<table>
-<thead><tr><th style="width:36%">문제</th><th>왜 어려운가</th></tr></thead>
-<tbody>
-<tr><td>세션은 반드시 끊긴다</td><td>끊긴 구간은 영구 유실. 거래소는 과거를 다시 주지 않는다</td></tr>
-<tr><td>느린 소비자 하나가<br>전체를 멈춘다</td><td>한 구독자를 기다리면 전원이 굶는다 (head-of-line blocking)</td></tr>
-<tr><td>프로세스는 멀쩡한데<br>데이터만 안 온다</td><td>실제 장애의 대부분. <code>systemctl status</code>로 안 잡힌다</td></tr>
-<tr><td>틀린 값을<br>조용히 배포한다</td><td>값이 없는 것보다 나쁘다. <strong>아무 알람도 안 울린다</strong></td></tr>
-</tbody>
-</table>
-</div>
-
-<div class="star avoid">
-<span class="tag">A · 행동</span>
-<h4>① 구조 — 수집을 모으고 소비를 분리</h4>
-<p>소비자가 각자 거래소에 붙으면 같은 데이터를 N번 받고 N배로 끊깁니다.
-수집은 한 프로세스로 모으고 배포·적재·전략·품질검사를 분리했습니다.
-거래소 하나의 장애가 전체를 내리지 않도록 venue 그룹별로 샤딩했습니다.</p>
-
-<h4>② 느린 소비자 격리</h4>
-<p>발행 경로에서 전송 완료를 기다리면 구독자 하나가 느릴 때 전체가 멈춥니다.
-구독자마다 유한 큐를 두고 차면 오래된 것부터 버리되, <strong>버린 건수를 반드시 셉니다.</strong></p>
-
-<h4>③ 프로세스는 멀쩡한데 데이터가 안 오는 장애</h4>
-<p><code>Restart=on-failure</code>는 프로세스가 죽어야 동작합니다. liveness와 readiness를
-분리하고, 헬스 판정 기반 워치독을 따로 뒀습니다.</p>
-
-<h4>④ 품질 검사 — 원칙을 집행하는 부분</h4>
-<p>원칙은 처음부터 적어 뒀는데 <strong>집행 장치가 없었습니다.</strong>
-원칙만 있고 집행이 없으면 원칙이 아닙니다. 별도 프로세스가 6가지를 계속 검사합니다 —
-가격 점프, 크로스된 호가, 광폭 스프레드, 정체, OHLC 위반, 교차 시장 괴리.</p>
-
-<h4>⑤ 그리고 계속 측정했습니다</h4>
-<p>참조 구독 클라이언트, 부하 시험, 장시간 감시, 장애 주입, 알람 검증.
-<strong>측정하지 않았으면 몰랐을 것들이 계속 나왔습니다.</strong></p>
-</div>
-
-<div class="star avoid">
-<span class="tag">R · 결과</span>
-<table>
-<thead><tr><th style="width:22%">축</th><th>결과</th></tr></thead>
-<tbody>
-<tr><td>커버리지</td><td>수집 경로 5개 · 자산군 4축 · 코스피 <b>1,783종목</b></td></tr>
-<tr><td>무결성</td><td>구독자 데이터 무결성 <span class="bad">48.5%</span> → <span class="ok">100.0000%</span></td></tr>
-<tr><td>성능</td><td>IPC 지연 <b>p50 47.3 µs</b> · 파이프라인 49,235 msg/s · 적재 480,586 rows/s</td></tr>
-<tr><td>안정성</td><td>systemd 11항목 자동 검증 · 장애 주입 4종 복구 확인</td></tr>
-<tr><td>품질</td><td>108,156건 검사 → CRITICAL 0 · 암묵 환율 자산 간 괴리 <b>0.050%</b></td></tr>
-<tr><td>자동화</td><td>CI 6잡 · 테스트 <b>179개</b> · 대시보드 지표 자동 갱신</td></tr>
-<tr><td>기록</td><td>실측으로 잡은 결함 <b>26건</b>, 원인·조치 전부 문서화</td></tr>
-</tbody>
-</table>
-</div>
-
-<div class="star i avoid">
-<span class="tag">I · 배운 것</span>
-<h4>① 문서를 믿기 전에 한 번 재본다</h4>
-<p>KIS 문서는 체결구분 <code>3</code>이 매도라고 했지만 실제로는 <code>5</code>였습니다.
-문서대로 뒀으면 매도 체결이 전량 미상으로 남아 주문 흐름 지표가 통째로 무의미해졌을 것입니다.</p>
-
-<h4>② 근거 없이 적은 한계 서술은 없느니만 못하다</h4>
-<p>"구독자 수백 명이면 재인코딩이 병목"이라고 적어 뒀는데, 재보니 CPU 0.28%였습니다.
-그럴듯한 문장은 아무도 의심하지 않고, 그 위에 잘못된 최적화 계획이 쌓입니다.</p>
-
-<h4>③ 안 돌아본 복구 경로는 복구 경로가 아니다</h4>
-<p>61분을 돌려도 재접속이 0회였습니다. 복구 코드가 맞는지 확인된 적이 없었다는 뜻입니다.</p>
-
-<h4>④ 계측 도구도 거짓말을 한다</h4>
-<p>알람 11개 중 4개가 영원히 안 울릴 상태였습니다. 누수 알람은 기동 때마다 오탐이 났습니다.
-장애 주입 테스트 하나는 <strong>아예 안 돌고 통과</strong>했습니다.</p>
-
-<h4>⑤ 값이 없는 것보다 틀린 값이 나쁘다</h4>
-<p>국내 금리 응답이 손상돼 왔을 때, 그럴듯한 숫자를 내보내는 대신
-<strong>발행하지 않고 그 이유를 노출</strong>하기로 했습니다.</p>
-</div>
-
-<!-- ══════════════ 3. 결함 하이라이트 ══════════════ -->
-<div class="pb"></div>
-<h2><span class="num">03</span>실측으로 잡아낸 결함</h2>
-
-<p>
-전부 <strong>참조 클라이언트·통합 테스트·CI·장애 주입이 잡아낸</strong> 것입니다.
-아래는 26건 중 대표 8건입니다.
-</p>
-
-<table>
-<thead><tr><th style="width:26%">증상</th><th>진짜 원인</th><th style="width:24%">조치</th></tr></thead>
-<tbody>
-<tr>
-<td><b>구독자 데이터 무결성 48.5%</b></td>
-<td>게이트웨이가 심볼을 걸러 보내는데 시퀀스는 전역 번호를 그대로 흘림.
-걸러진 번호가 구독자에겐 전부 유실로 보였다. <strong>프로토콜 설계 결함</strong></td>
-<td>구독자별 시퀀스 재넘버링<br><span class="ok">→ 100.0000%</span></td>
-</tr>
-<tr>
-<td><b>국내 매도 체결이 전부 방향 미상</b></td>
-<td>KIS 문서는 체결구분 <code>1</code>매수 / <code>3</code>매도라 했으나, 실계좌 300건을
-체결가와 호가로 대조하니 <strong>매도는 <code>5</code></strong>. <code>3</code>은 한 건도 안 옴</td>
-<td>관측값 기준 매핑.<br>미매핑 코드는 세어서 노출</td>
-</tr>
-<tr>
-<td><b>feedd 재시작이 소비자 전체를 끌고 내려감</b></td>
-<td>systemd <code>Requires=</code>가 재시작을 전파. 버스 구독자에 넣어둔
-지수 백오프 자동 재접속이 <strong>설정 한 줄로 무력화</strong></td>
-<td><code>Wants=</code> + <code>After=</code><br>실측: feedd만 111→170</td>
-</tr>
-<tr>
-<td><b>종료 중 세그폴트</b></td>
-<td><code>asyncio.to_thread</code>는 await를 취소해도 스레드가 안 멈춤.
-그 스레드가 <code>executemany</code> 중일 때 DB 커넥션을 닫아 use-after-free</td>
-<td>DB 접근 경로를<br>단일 락으로 직렬화</td>
-</tr>
-<tr>
-<td><b>지연시간이 −30,825 µs</b></td>
-<td>거래소 시계가 로컬보다 앞섬. 음수 지연이 든 테이블은 어떤 SQL 집계를 해도 결론이 틀림</td>
-<td>NTP 방식 최소값 필터로<br>venue별 오프셋 보정</td>
-</tr>
-<tr>
-<td><b>벤치마크가 지연이 아니라 큐 적체를 측정</b></td>
-<td>최대 속도로 밀어 넣고 지연을 재니 p50이 105 ms. IPC 지연이 아니라 기다린 시간</td>
-<td>지연은 페이싱, 처리량은<br>버스트로 분리 <span class="ok">→ 47 µs</span></td>
-</tr>
-<tr>
-<td><b>알람 11개 중 4개가 영원히 안 울릴 상태</b></td>
-<td>카운터를 0으로 초기화하지 않아 첫 사건 전까지 지표가 없음.
-Prometheus는 오류 없이 <strong>조용히 no data</strong></td>
-<td>사전 초기화 +<br>CI에서 지표 실재 검증</td>
-</tr>
-<tr>
-<td><b>이동평균 동률을 교차로 오인</b></td>
-<td><code>a &gt; b</code> 하나로 판정해 두 값이 정확히 같아지는 순간을 "하향 돌파"로 처리.
-국내 주식은 호가 단위가 커서 실제로 발생하는데 크립토 float에서는 거의 없어 오래 숨어 있었음</td>
-<td>동률은 판정 보류.<br>수정 후 교차 9곳 pandas와 일치</td>
-</tr>
-</tbody>
-</table>
-
-<div class="callout">
-<div class="t">이 목록이 이 프로젝트의 알맹이입니다</div>
-기능은 코드를 읽으면 알 수 있습니다. 하지만 <strong>"문서가 틀렸다"를 어떻게 알았는가</strong>,
-<strong>"내가 쓴 한계 서술이 틀렸다"를 어떻게 발견했는가</strong>는 과정을 남겨야만 전달됩니다.
-</div>
-
-<!-- ══════════════ 4. 요건 대응 ══════════════ -->
-<div class="pb"></div>
-<h2><span class="num">04</span>채용 요건 대응</h2>
-
-<table>
-<thead><tr><th style="width:30%">요건</th><th>대표 근거</th><th style="width:26%">실측</th></tr></thead>
-<tbody>
-<tr><td>금융 데이터 FEED<br>개발 및 운영</td><td>수집 경로 5개, 배포 프로토콜 3종, 스냅샷+증분 복구</td><td>무결성 <b>48.5% → 100.0000%</b></td></tr>
-<tr><td>Linux 서비스·프로세스<br>점검 및 안정화</td><td>systemd 6유닛 + 자동 검증 테스트베드 + 장애 주입</td><td>11항목 · 복구 4종 확인</td></tr>
-<tr><td>파이프라인·배포·점검<br>자동화</td><td>Makefile 단일 입구 · CI 6잡 · Pages 지표 자동 갱신</td><td>테스트 <b>179개</b></td></tr>
-<tr><td>Python</td><td>수집·배포 hot path 및 운영 도구 전부</td><td>소스 8,835줄 · 핵심 의존성 <b>0</b></td></tr>
-<tr><td>SQL 기초,<br>관계형 DB 이해</td><td>복합 인덱스 · 사전 집계 upsert · 하이퍼테이블 · 보존정책</td><td>적재 <b>480,586 rows/s</b></td></tr>
-<tr><td>Linux 명령·프로세스·<br>로그 확인</td><td><code>ops.sh diag</code> 원스톱 진단 · RUNBOOK 장애 8종</td><td>1차 진단 한 줄</td></tr>
-<tr><td><b>프로세스 간 통신,<br>네트워크 프로토콜</b></td><td>MDFP/1 TCP · WebSocket 클라이언트·서버 · HTTP/1.1 서버 ·
-UDS pub/sub · 공유메모리 링버퍼 <b>직접 구현</b></td><td>IPC 지연 <b>p50 47.3 µs</b></td></tr>
-<tr><td>자료구조·운영체제·<br>네트워크</td><td>링버퍼 · 로그버킷 히스토그램 · 시그널 · AIMD 유량 제어</td><td>세그폴트·종료정지 실사례</td></tr>
-<tr><td class="ok">우대 · 파이프라인·<br>인프라·자동화</td><td>SEC EDGAR · OpenDART 수집기 <b>143일 운영</b></td><td><b>487,434건</b> · error 0</td></tr>
-<tr><td class="ok">우대 · Feed 기반<br>마켓데이터 서비스</td><td>KIS 실계좌 연결 · 계층형 피드 설계 · 품질 검사</td><td>코스피 <b>1,783종목</b></td></tr>
-</tbody>
-</table>
-
-<h3>네트워크·IPC — 직접 구현한 것</h3>
-<table>
-<thead><tr><th style="width:32%">구현물</th><th>다룬 문제</th></tr></thead>
-<tbody>
-<tr><td><b>MDFP/1 TCP 프로토콜</b></td><td>TCP는 바이트 스트림이라 <strong>메시지 경계가 없다.</strong>
-길이 프리픽스 프레이밍 · CRC32 무결성 · 시퀀스 갭 탐지 · 재동기화 · 스냅샷+증분</td></tr>
-<tr><td><b>WebSocket 클라이언트·서버</b><br><span class="note">RFC 6455</span></td>
-<td>HTTP Upgrade 핸드셰이크 · <code>Sec-WebSocket-Accept</code> 계산 ·
-마스킹 · 확장 길이(7/16/64비트) · 단편화 재조립 · ping/pong</td></tr>
-<tr><td><b>HTTP/1.1 서버</b></td><td>keep-alive · Content-Length 바이트 정확도 · HEAD ·
-헤더 크기 상한 · 경로 탈출 차단</td></tr>
-<tr><td><b>UDS pub/sub 버스</b></td><td>프로세스 간 팬아웃 · 구독자별 백프레셔 · 지수 백오프 재접속</td></tr>
-<tr><td><b>공유메모리 링버퍼</b></td><td>SPSC 브로드캐스트 · 논블로킹 생산자 · 추월 감지 · 찢긴 읽기 방지</td></tr>
-</tbody>
-</table>
-
-<!-- ══════════════ 5. 검증 ══════════════ -->
-<div class="pb"></div>
-<h2><span class="num">05</span>어디까지 검증했나</h2>
-
-<h3>실측 성능</h3>
-<table>
-<thead><tr><th>계층</th><th class="num-col">처리량</th><th class="num-col">지연 p50</th><th class="num-col">지연 p99</th></tr></thead>
-<tbody>
-<tr><td>MDFP 인코딩</td><td class="num-col">2,305,570 msg/s</td><td class="num-col">434 ns</td><td class="num-col">–</td></tr>
-<tr><td>MDFP 파싱 (재동기화 포함)</td><td class="num-col">759,786 msg/s</td><td class="num-col">1,316 ns</td><td class="num-col">–</td></tr>
-<tr><td>공유메모리 링버퍼</td><td class="num-col">1,560,551 msg/s</td><td class="num-col">641 ns</td><td class="num-col">–</td></tr>
-<tr><td><b>UDS 순수 IPC 지연</b></td><td class="num-col">–</td><td class="num-col"><b>47.3 µs</b></td><td class="num-col"><b>105.9 µs</b></td></tr>
-<tr><td>HTTP/1.1 (keep-alive)</td><td class="num-col">15,237 req/s</td><td class="num-col">62.2 µs</td><td class="num-col">95.5 µs</td></tr>
-<tr><td><b>전체 파이프라인</b></td><td class="num-col"><b>49,235 msg/s</b></td><td class="num-col">–</td><td class="num-col">–</td></tr>
-</tbody>
-</table>
-<p class="note">
-macOS 26.5 · Apple Silicon 10코어 · Python 3.14. 절대 성능이 아니라
-<strong>계층별 상대 비용</strong>과 이 구조가 견디는 규모를 보기 위한 수치입니다.
-</p>
+  <div class="cover-stats">
+    <div><div class="n">5</div><div class="l">수집 경로<br>실연결 검증</div></div>
+    <div><div class="n">1,783</div><div class="l">코스피 종목<br>계층형 피드</div></div>
+    <div><div class="n">26</div><div class="l">실측으로 잡은<br>결함 기록</div></div>
+    <div><div class="n">179</div><div class="l">테스트<br>CI 6잡 통과</div></div>
+  </div>
+</section>
 
 
-<h3>부하 — 어디서 무너지는가</h3>
-<p>
-리플레이를 3배속으로 고정해 소스 속도를 회차마다 동일하게 두고 쟀습니다.
-실거래소는 틱 밀도가 회차마다 달라 구독자 수에 따른 변화인지 구분할 수 없습니다.
-<strong>비교하려면 변수를 하나만 남겨야 합니다.</strong>
-</p>
-<table>
-<thead><tr><th class="num-col">구독자</th><th class="num-col">총 처리량</th><th class="num-col">1인당 유지율</th>
-<th class="num-col">p99 지연</th><th class="num-col">유실</th><th class="num-col">드롭</th></tr></thead>
-<tbody>
-<tr><td class="num-col">1</td><td class="num-col">40 msg/s</td><td class="num-col">100%</td><td class="num-col">1.4 ms</td><td class="num-col">0</td><td class="num-col">0</td></tr>
-<tr><td class="num-col">10</td><td class="num-col">491</td><td class="num-col">124%</td><td class="num-col">3.7 ms</td><td class="num-col">0</td><td class="num-col">0</td></tr>
-<tr><td class="num-col">25</td><td class="num-col">1,330</td><td class="num-col">139%</td><td class="num-col">8.0 ms</td><td class="num-col">0</td><td class="num-col">0</td></tr>
-<tr><td class="num-col">50</td><td class="num-col">2,507</td><td class="num-col">130%</td><td class="num-col">12.8 ms</td><td class="num-col">0</td><td class="num-col">0</td></tr>
-<tr><td class="num-col">100</td><td class="num-col"><b>6,376</b></td><td class="num-col">168%</td><td class="num-col"><b>27.9 ms</b></td><td class="num-col">0</td><td class="num-col">0</td></tr>
-</tbody>
-</table>
-<p>
-<strong>처리량은 버팁니다.</strong> 총 처리량이 160배 늘어도 유실·드롭이 0이고 1인당 처리량이
-유지됩니다 — 팬아웃은 선형입니다. <strong>무너지는 건 지연입니다</strong>(p99 19배).
-이 배포단의 한계는 "몇 명까지"가 아니라 <strong>"몇 ms까지 허용하나"</strong>입니다.
-</p>
+<!-- ═══════════ 01 무엇을 ═══════════ -->
+<section class="slide">
+  <div class="band"><span class="no">01</span><h2>무엇을 만들었나</h2><span class="sub">FEED 서비스</span></div>
 
-<div class="callout">
-<div class="t">이 측정이 제 가설을 뒤집었습니다</div>
-설계 문서에 <em>"구독자 수백 명이면 재인코딩이 병목"</em>이라고 적어 뒀습니다.
-<strong>몇 명인지 재보지도 않고 쓴 문장이었습니다.</strong>
-재보니 100명·6,376 msg/s에서 재인코딩 CPU는 <b>0.28%</b>였습니다.
-단계를 쪼개니 구독자당 재인코딩 552 ns, 큐 삽입 410 ns, <strong>소켓 write+drain 1,476 ns</strong> —
-진짜 비용은 소켓 쓰기였고, 재인코딩을 없애도 4분의 1만 줄어듭니다.
-</div>
+  <p class="lead">
+    금융정보 서비스는 거래소 시세를 받아 고객 단말에 공급합니다. 그런데 <strong>거래소마다 형식이 전부 다릅니다.</strong>
+  </p>
 
-<h3>장애 주입 — 복구 경로는 평소에 안 돌아간다</h3>
-<p>
-지수 백오프 재접속, CRC 재동기화, 느린 구독자 격리, DB 폴백, 샤드 격리.
-그런데 61분을 돌려도 재접속이 0회였습니다. <strong>안 돌아본 복구 경로는
-복구 경로가 아닙니다.</strong>
-</p>
-<table>
-<thead><tr><th style="width:34%">시나리오</th><th>결과</th></tr></thead>
-<tbody>
-<tr><td>TCP 스트림에 쓰레기 주입</td><td>오염 3회 → <span class="ok">재동기화 4회 후 1,101건 계속 수신</span></td></tr>
-<tr><td>읽지 않는 구독자 25초</td><td><span class="ok">게이트웨이 정상 유지</span></td></tr>
-<tr><td>DB 파일 권한 박탈</td><td><span class="ok">writer 생존</span> · 복구 후 적재 재개 (32,429 → 35,271)</td></tr>
-<tr><td><code>feedd</code> SIGKILL</td><td><span class="ok">writer PID 유지</span> + 수신 재개 (38,047 → 39,975)</td></tr>
-<tr><td>샤드 하나 SIGKILL</td><td>다른 샤드 정상 · 적재 계속 (4,533 → 6,978행)</td></tr>
-</tbody>
-</table>
+  <table>
+    <tr><td style="width:26mm"><strong>업비트</strong></td><td>JSON을 바이너리 프레임으로 보냄</td></tr>
+    <tr><td><strong>바이낸스</strong></td><td>가격을 문자열로 보냄</td></tr>
+    <tr><td><strong>한국투자</strong></td><td><code>005930^103546^266250^…</code> 파이프·캐럿 구분 문자열</td></tr>
+  </table>
 
-<h3>인프라 실검증</h3>
-<table>
-<thead><tr><th style="width:26%">항목</th><th>확인한 것</th></tr></thead>
-<tbody>
-<tr><td>PostgreSQL<br>+ TimescaleDB</td><td>하이퍼테이블 3개 · 보존정책 2개 · 분석 뷰 4종 ·
-SQLite와 동시 적재로 다중 소비자 검증 (시퀀스 갭 0)</td></tr>
-<tr><td>Docker Compose</td><td>7개 컨테이너 전부 healthy · REST/TCP/대시보드 전 구간 · 구독 무결성 100%</td></tr>
-<tr><td>리눅스 systemd</td><td>Ubuntu 22.04 테스트베드에서 11항목 자동 검증 —
-<code>User=mdfeed</code> · <code>ProtectSystem=strict</code> · SIGKILL 재시작 · 우아한 종료 flush</td></tr>
-<tr><td>Prometheus<br>+ Grafana</td><td>타깃 8개 UP · 알람 11개 4그룹 · 대시보드 12패널 자동 프로비저닝 ·
-<strong>알람 지표 실재 검증을 CI에 편입</strong></td></tr>
-</tbody>
-</table>
+  <p>
+    이것을 하나로 통일해 여러 소비자에게 나눠주는 중간 계층이 <strong>FEED 서비스</strong>입니다.
+    매매 프로그램도, 시세 화면도 아닙니다. <strong>그 화면들에 데이터를 먹여주는 뒷단</strong>입니다.
+  </p>
 
-<h3>데이터 품질 — 원칙을 집행하는 부분</h3>
-<p>
-<em>"틀린 값을 조용히 배포한다"</em>를 네 문제 중 하나로 적어 놓고, 정작 탐지 장치가
-없었습니다. 별도 프로세스가 6가지를 계속 검사합니다.
-</p>
-<table>
-<thead><tr><th style="width:34%">항목</th><th class="num-col">결과</th></tr></thead>
-<tbody>
-<tr><td>검사한 메시지</td><td class="num-col big">108,156</td></tr>
-<tr><td>CRITICAL</td><td class="num-col big ok">0</td></tr>
-<tr><td>WARNING</td><td class="num-col big">92 <span class="note">(전부 실제 시장 움직임)</span></td></tr>
-</tbody>
-</table>
-<p>
-<strong>외부 소스 없이 자체 정합성을 검사합니다.</strong> 업비트는 원화, 바이낸스는 달러로
-같은 코인을 거래합니다. 두 가격의 비율이 곧 환율이고, 여러 코인에서 뽑은 값은 서로 가까워야 합니다.
-</p>
-<pre class="dia">BTC 1,386.7    ETH 1,386.2    SOL 1,386.0   KRW/USD        괴리 0.050%</pre>
-<p class="note">
-세 종목이 서로를 검증합니다. 하나만 벌어지면 그 종목의 시세가 이상하다는 뜻이고,
-어느 쪽인지는 나머지가 알려줍니다.
-<strong>이상을 발견해도 데이터를 버리지 않습니다</strong> — "이상해 보이는 값"의 상당수는
-진짜 시장 움직임(급등락·유동성 고갈·서킷브레이커)입니다. 표시하고 기록할 뿐, 판단은 사람이 합니다.
-</p>
+<pre class="dia">거래소 ─▶ <b>feedd:crypto</b> ─┐              ┌─▶ <b>tcp-gateway</b>  MDFP/1 바이너리 (기관용)
+         <b>feedd:krx</b>    ─┴─ UDS 버스 ─┼─▶ <b>ws-gateway</b>   WebSocket + 대시보드
+         (venue 샤딩)                  ├─▶ <b>writer</b>       1분봉 · PostgreSQL
+                                       ├─▶ <b>rest-api</b>     과거 조회
+                                       ├─▶ <b>strategy</b>     지표 → SIGNAL
+                                       └─▶ <b>quality</b>      품질 검사</pre>
 
-<!-- ══════════════ 6. 범위와 한계 ══════════════ -->
-<div class="pb"></div>
-<h2><span class="num">06</span>범위와 한계</h2>
+  <h3>수집 경로 — 4개 자산군, 5개 경로 전부 실연결</h3>
+  <table>
+    <tr><th style="width:36mm">자산군</th><th>경로</th><th style="width:20mm">종목</th><th style="width:26mm">갱신</th></tr>
+    <tr><td>암호화폐</td><td>업비트 · 바이낸스 WebSocket</td><td class="num">7</td><td>실시간 틱</td></tr>
+    <tr><td>국내주식 (틱)</td><td>KIS WebSocket <code>H0STCNT0</code></td><td class="num">3</td><td>실시간 체결</td></tr>
+    <tr><td>국내주식 (전체)</td><td>KIS REST 계층형 (순위 API + 유니버스 회전)</td><td class="num">1,783</td><td>15분 회전</td></tr>
+    <tr><td>지수</td><td>KIS 업종 현재지수</td><td class="num">6</td><td>10초</td></tr>
+    <tr><td>해외금리</td><td>KIS 금리 종합</td><td class="num">7</td><td>5분</td></tr>
+  </table>
 
-<p>정직하게 적습니다. 못 하는 것을 한 척하지 않는 것이 이 프로젝트의 원칙입니다.</p>
+  <div class="callout">
+    <b>핵심 경로 의존성 0.</b> 피드 계층을 직접 만든 부수 효과로, <code>python3</code>만 있으면
+    어떤 리눅스에서도 <code>git clone &amp;&amp; make demo</code>로 바로 돕니다. 설치 문서가 필요 없습니다.
+  </div>
 
-<table>
-<thead><tr><th style="width:34%">한계</th><th>내용</th></tr></thead>
-<tbody>
-<tr><td><b>국내 주식 틱은 3종목까지</b></td><td>계정 한도이며 실측으로 확인했습니다. 나머지 1,780종목은
-REST 스냅샷으로 덮었고 <strong>체결 단위가 아닙니다.</strong> 코스피 전종목 틱은 거래소와의
-정식 시세 계약 영역이고 개인 API로는 불가능합니다.</td></tr>
-<tr><td><b>배포단의 한계는<br>구독자 수가 아니라 지연</b></td><td>100명까지 유실·드롭 0이지만
-p99가 1.4 ms → 27.9 ms로 19배 늘어납니다.</td></tr>
-<tr><td><b>국내 금리는<br>수집하되 발행하지 않음</b></td><td>공급 측 응답에서 종목명이
-<code>U+FFFD</code>로 이미 손상돼 오고 키·값 대응도 어긋납니다. 짝짓기를 신뢰할 수 없어
-<strong>발행하지 않고 그 사실과 손상 건수를 노출</strong>합니다.</td></tr>
-<tr><td>호가는 최우선(BBO)만</td><td>전체 depth 오더북 복원은 범위 밖입니다.</td></tr>
-<tr><td>주문 실행 없음</td><td>시그널 생성까지입니다. 실주문은 전혀 다른 신뢰성 요구를 갖습니다.</td></tr>
-<tr><td>시계 오프셋은 상대값</td><td>편도 지연의 절대값을 알려면 PTP 하드웨어 타임스탬프가 필요합니다.</td></tr>
-<tr><td>백테스트 결과는<br>통계적 의미 없음</td><td>저장소 샘플은 38분 구간 단일 종목입니다.
-파이프라인이 동작한다는 증거이지 전략의 우열이 아닙니다. 세 전략 모두 손실이었고 그대로 적었습니다.</td></tr>
-<tr><td>PINGPONG 실측 미검증</td><td>코드는 공식 예제와 맞췄으나 데이터가 흐르는 동안엔
-ping이 오지 않아 실제로 받아보지 못했습니다.</td></tr>
-</tbody>
-</table>
+  <div class="foot"><span>MDFeed — 실시간 마켓데이터 FEED 플랫폼</span><span>01</span></div>
+</section>
 
-<h3>산출물</h3>
-<table>
-<thead><tr><th style="width:30%">구분</th><th>내용</th></tr></thead>
-<tbody>
-<tr><td>소스</td><td>8,835줄 — 프로토콜 · 어댑터 5종 · 서비스 7개 · 저장소 · 지표 · 품질</td></tr>
-<tr><td>테스트</td><td>1,879줄 · <b>179개</b> — 프로토콜 퍼징 · 지표 대조 · E2E · 샤딩 · 품질</td></tr>
-<tr><td>운영</td><td>1,232줄 — systemd 6유닛 · <code>ops.sh</code> · 워치독 · 헬스체크 ·
-장애 주입 · Prometheus/Grafana</td></tr>
-<tr><td>문서</td><td>README · PORTFOLIO · DETAILS · DESIGN · RUNBOOK</td></tr>
-</tbody>
-</table>
 
-<div class="foot">
-  <span>MDFeed — 실시간 마켓데이터 FEED 플랫폼</span>
-  <span>github.com/oyeong011/market-feed-platform</span>
-</div>
+<!-- ═══════════ 02 STAR ═══════════ -->
+<section class="slide">
+  <div class="band"><span class="no">02</span><h2>프로젝트 STAR</h2><span class="sub">상황 · 과제 · 행동 · 결과 · 배운 것</span></div>
 
-</div>
+  <div class="star">
+    <div class="k">S</div>
+    <div class="v">
+      채용 요건의 대부분이 이 계층에서 나옵니다 — <strong>프로세스 간 통신, TCP/HTTP, 리눅스 서비스 점검, 파이프라인 자동화.</strong>
+      요건에 "안다"고 쓰는 대신 <strong>동작하는 것으로 보이기로</strong> 했습니다.
+    </div>
+  </div>
+
+  <div class="star">
+    <div class="k">T</div>
+    <div class="v">
+      기능을 늘리는 것이 아니라 <strong>네 가지 실패를 막는 것</strong>을 목표로 정의했습니다. 이 정의가 이후 모든 판단의 기준이 됐습니다.
+      <ol>
+        <li><strong>세션은 반드시 끊긴다</strong> — 끊긴 구간은 영구 유실. 거래소는 과거를 다시 주지 않는다</li>
+        <li><strong>느린 소비자 하나가 전체를 멈춘다</strong> — 한 구독자를 기다리면 전원이 굶는다</li>
+        <li><strong>프로세스는 멀쩡한데 데이터만 안 온다</strong> — 실제 장애의 대부분. <code>systemctl status</code>로 안 잡힌다</li>
+        <li><strong>틀린 값을 조용히 배포한다</strong> — 값이 없는 것보다 나쁘다. 아무 알람도 안 울린다</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="star">
+    <div class="k">A</div>
+    <div class="v">
+      <ol>
+        <li><strong>수집을 모으고 소비를 분리</strong> — 소비자가 각자 거래소에 붙으면 같은 데이터를 N번 받고 N배로 끊깁니다.
+            거래소 하나의 장애가 전체를 내리지 않도록 <strong>venue 그룹별로 샤딩</strong>했습니다.</li>
+        <li><strong>느린 소비자 격리</strong> — 구독자마다 유한 큐를 두고 차면 오래된 것부터 버리되, <strong>버린 건수를 반드시 셉니다.</strong></li>
+        <li><strong>liveness와 readiness 분리</strong> — <code>Restart=on-failure</code>는 프로세스가 죽어야 동작합니다.
+            헬스 판정 기반 워치독을 따로 뒀습니다.</li>
+        <li><strong>품질 검사로 원칙을 집행</strong> — 원칙만 있고 집행이 없으면 원칙이 아닙니다. 별도 프로세스가 6가지를 계속 검사합니다.</li>
+        <li><strong>그리고 계속 측정했습니다</strong> — 부하 시험, 장시간 감시, 장애 주입, 알람 검증.</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="star">
+    <div class="k acc">R</div>
+    <div class="v" style="padding:2.5mm 4mm">
+      무결성 <span class="hi">48.5% → 100.0000%</span> · IPC 지연 <span class="hi">p50 47.3 µs</span> ·
+      파이프라인 <span class="hi">49,235 msg/s</span> · 적재 <span class="hi">480,586 rows/s</span> ·
+      품질검사 108,156건 중 <span class="hi">CRITICAL 0</span> · 장애 주입 4종 복구 확인 ·
+      실측으로 잡은 결함 <span class="hi">26건</span> 원인·조치 전부 문서화
+    </div>
+  </div>
+
+  <div class="star">
+    <div class="k acc">I</div>
+    <div class="v">
+      <ol>
+        <li><strong>문서를 믿기 전에 한 번 재본다</strong> — KIS 문서는 체결구분 <code>3</code>이 매도라 했지만 실제는 <code>5</code>였습니다.
+            그대로 뒀으면 매도 체결이 전량 미상으로 남아 주문 흐름 지표가 통째로 무의미해졌을 것입니다.</li>
+        <li><strong>근거 없이 적은 한계 서술은 없느니만 못하다</strong> — "구독자 수백이면 재인코딩이 병목"이라 적어 뒀는데
+            재보니 CPU <span class="hi">0.28%</span>였습니다. 그럴듯한 문장 위에 잘못된 최적화 계획이 쌓입니다.</li>
+        <li><strong>계측 도구도 거짓말을 한다</strong> — 알람 11개 중 4개가 영원히 안 울릴 상태였고,
+            장애 주입 테스트 하나는 아예 안 돌고 통과하고 있었습니다.</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="foot"><span>MDFeed — 실시간 마켓데이터 FEED 플랫폼</span><span>02</span></div>
+</section>
+
+
+<!-- ═══════════ 03 요건 대응 ═══════════ -->
+<section class="slide">
+  <div class="band"><span class="no">03</span><h2>채용 요건 대응</h2><span class="sub">요건 → 근거 → 실측</span></div>
+
+  <table>
+    <tr><th style="width:42mm">요건</th><th>대표 근거</th><th style="width:42mm">실측</th></tr>
+    <tr><td><strong>금융 데이터 FEED<br>개발 및 운영</strong></td>
+        <td>수집 경로 5개, 배포 프로토콜 3종, 스냅샷+델타 복구</td>
+        <td>무결성 <span class="hi">48.5%→100.0000%</span></td></tr>
+    <tr><td><strong>Linux 서비스·프로세스<br>점검 및 안정화</strong></td>
+        <td>systemd 6유닛 + 자동 검증 테스트베드 + 장애 주입</td>
+        <td>11항목 · 복구 4종 확인</td></tr>
+    <tr><td><strong>파이프라인·배포·점검<br>자동화</strong></td>
+        <td>Makefile 단일 진입 · CI 6잡 · Pages 지표 자동 갱신</td>
+        <td>테스트 <span class="hi">179개</span></td></tr>
+    <tr><td><strong>Python</strong></td>
+        <td>수집부터 <code>hot path</code>·운영 도구까지 전부</td>
+        <td>소스 8,835줄 · 핵심 의존성 0</td></tr>
+    <tr><td><strong>SQL 기초 ·<br>관계형 DB 이해</strong></td>
+        <td>복합 인덱스 · 시간 집계 <code>upsert</code> · 하이퍼테이블 · 보존정책</td>
+        <td>적재 <span class="hi">480,586 rows/s</span></td></tr>
+    <tr><td><strong>Linux 명령·프로세스·<br>로그 확인</strong></td>
+        <td><code>ops.sh</code> 8종 진단 · RUNBOOK 장애 8종</td>
+        <td>1차 진단 한 줄</td></tr>
+    <tr><td><strong>프로세스 간 통신,<br>네트워크 프로토콜</strong></td>
+        <td>MDFP/1 TCP · WebSocket 클라이언트+서버 · HTTP/1.1 서버 · UDS pub/sub · 공유메모리 링버퍼 <strong>직접 구현</strong></td>
+        <td>IPC 지연 <span class="hi">p50 47.3 µs</span></td></tr>
+    <tr><td><strong>자료구조 · 운영체제 ·<br>네트워크</strong></td>
+        <td>링버퍼 · 로그버킷 히스토그램 · 시그널 · AIMD 유량 제어</td>
+        <td>세그폴트·좀비잡기 실사례</td></tr>
+    <tr><td><strong style="color:var(--accent-d)">우대 — 데이터 파이프라인·<br>인프라·자동화</strong></td>
+        <td>SEC EDGAR · OpenDART 수집기 · 16.3일 무중단 운영</td>
+        <td><span class="hi">487만4천</span>건 · error 0</td></tr>
+    <tr><td><strong style="color:var(--accent-d)">우대 — Feed 기반<br>마켓데이터 서비스</strong></td>
+        <td>KIS 실계좌 연결 · 계층형 피드 설계 · 품질 감시</td>
+        <td>코스피 <span class="hi">1,783종목</span></td></tr>
+  </table>
+
+  <h3>네트워크 · IPC — 직접 구현한 것</h3>
+  <table>
+    <tr><th style="width:44mm">구현물</th><th>다룬 문제</th></tr>
+    <tr><td><strong>MDFP/1 TCP 프로토콜</strong></td>
+        <td>TCP는 바이트 스트림이라 <strong>메시지 경계가 없다</strong> · 길이 프리픽스 프레이밍 · CRC32 무결성 · 시퀀스 갭 탐지 · 재동기 · 스냅샷+델타</td></tr>
+    <tr><td><strong>WebSocket 클라이언트+서버</strong><br><span style="font-size:7.5pt;color:var(--gray)">RFC 6455</span></td>
+        <td>HTTP Upgrade 핸드셰이크 · <code>Sec-WebSocket-Accept</code> 계산 · 마스킹 · 확장 길이(7/16/64비트) · 단편화 재조립 · ping/pong</td></tr>
+    <tr><td><strong>HTTP/1.1 서버</strong></td>
+        <td>keep-alive · <code>Content-Length</code> 바이트 정확성 · HEAD · 헤더 크기 상한 · 경로 탈출 차단</td></tr>
+    <tr><td><strong>UDS pub/sub 버스</strong></td>
+        <td>프로세스 간 팬아웃 · 구독자별 백프레셔 · 지수 백오프 재접속</td></tr>
+    <tr><td><strong>공유메모리 링버퍼</strong></td>
+        <td>SPSC 브로드캐스트 · 논블로킹 생산자 · 추월 감지 · 찢긴 읽기 방지</td></tr>
+  </table>
+
+  <div class="foot"><span>MDFeed — 실시간 마켓데이터 FEED 플랫폼</span><span>03</span></div>
+</section>
+
+
+<!-- ═══════════ 04 결함 ═══════════ -->
+<section class="slide">
+  <div class="band"><span class="no">04</span><h2>실측으로 잡아낸 결함</h2><span class="sub">26건 중 대표 5건</span></div>
+
+  <p class="lead">
+    이 프로젝트에서 가장 값진 것은 기능 목록이 아닙니다. <strong>문서가 틀린 곳, 측정이 거짓말하던 곳,
+    실제로 돌려봐야 드러난 곳</strong>입니다. 전부 참조 클라이언트·통합 테스트·CI·장애 주입에서 나왔습니다.
+  </p>
+
+  <div class="fix">
+    <div class="t">① 구독자가 받은 데이터의 절반이 무결성 실패 — 48.5%</div>
+    <div class="d">
+      게이트웨이가 심볼을 걸러 보내면서 <strong>시퀀스는 전역 번호를 그대로 흘렸습니다.</strong>
+      구독자 입장에서는 갈 데 없는 갭이 계속 보입니다. 구독자별로 시퀀스를 다시 매기도록 고쳤습니다.
+      <em>→ 100.0000%</em>
+    </div>
+  </div>
+
+  <div class="fix">
+    <div class="t">② 국내 매도 체결이 전부 방향 미상</div>
+    <div class="d">
+      KIS 문서는 체결구분 <code>3</code>이 매도라고 명시합니다. 300건을 호가와 대조하니
+      <code>5</code>가 매도였고 <code>3</code>은 한 건도 나오지 않았습니다.
+      문서대로 뒀다면 매도 체결이 전량 미상으로 남아 <strong>주문 흐름 지표가 통째로 무의미</strong>해졌을 것입니다.
+      <em>→ 관측된 기준으로 매핑, 미매핑 코드는 세어서 노출</em>
+    </div>
+  </div>
+
+  <div class="fix">
+    <div class="t">③ 지연시간이 −30,825 µs — 음수로 측정됨</div>
+    <div class="d">
+      거래소 시계가 로컬보다 앞섭니다. 음수 지연이 곧 데이터를 어떤 SQL 집계로도 되살릴 수 없다는 뜻입니다.
+      NTP 방식의 최소값 필터로 <strong>venue별 오프셋을 추정</strong>해 보정했습니다.
+      <em>→ 정상 범위 복귀</em>
+    </div>
+  </div>
+
+  <div class="fix">
+    <div class="t">④ 벤치마크가 지연이 아니라 큐 적체를 측정하고 있었다</div>
+    <div class="d">
+      최대 속도로 밀어 넣고 지연을 재니 <code>p50 105 ms</code>. 지연이 아니라 <strong>기다린 시간</strong>이었습니다.
+      페이스 부하와 버스트 처리량으로 분리했습니다.
+      <em>→ 지연 p50 47.3 µs</em>
+    </div>
+  </div>
+
+  <div class="fix">
+    <div class="t">⑤ 알람 11개 중 4개가 영원히 안 울릴 상태였다</div>
+    <div class="d">
+      카운터를 0으로 초기화하지 않으면 첫 이벤트 전까지 시계열 자체가 없고,
+      <strong>Prometheus는 없는 값을 <code>0</code>이 아니라 <code>no data</code>로 봅니다.</strong>
+      시작 시점에 카운터를 미리 선언하도록 고쳤습니다.
+      <em>→ 알람 검증기를 CI에 편입</em>
+    </div>
+  </div>
+
+  <div class="callout">
+    <b>이 목록이 이 프로젝트의 알맹이입니다.</b> 기능은 코드를 읽으면 압니다.
+    하지만 "문서가 틀렸다"를 어떻게 알았는가, "내가 쓴 한계 서술이 틀렸다"를 어떻게 발견했는가는
+    <strong>과정을 남겨야만 전달됩니다.</strong>
+  </div>
+
+  <div class="foot"><span>MDFeed — 실시간 마켓데이터 FEED 플랫폼</span><span>04</span></div>
+</section>
+
+
+<!-- ═══════════ 05 검증 ═══════════ -->
+<section class="slide">
+  <div class="band"><span class="no">05</span><h2>어디까지 검증했나</h2><span class="sub">전부 실행해서 얻은 값</span></div>
+
+  <h3>실측 성능</h3>
+  <table>
+    <tr><th style="width:52mm">계층</th><th style="width:36mm">처리량</th><th style="width:26mm">지연 p50</th><th>지연 p99</th></tr>
+    <tr><td>MDFP 인코딩</td><td class="num">2,305,570 msg/s</td><td class="num">434 ns</td><td class="num">—</td></tr>
+    <tr><td>MDFP 파싱 (재동기 포함)</td><td class="num">759,786 msg/s</td><td class="num">1,316 ns</td><td class="num">—</td></tr>
+    <tr><td>공유메모리 링버퍼</td><td class="num">1,560,551 msg/s</td><td class="num">641 ns</td><td class="num">—</td></tr>
+    <tr><td><strong>UDS 순수 IPC 지연</strong></td><td class="num">—</td><td class="num"><strong>47.3 µs</strong></td><td class="num"><strong>105.9 µs</strong></td></tr>
+    <tr><td>HTTP/1.1 (keep-alive)</td><td class="num">15,237 req/s</td><td class="num">62.2 µs</td><td class="num">95.5 µs</td></tr>
+    <tr><td><strong>전체 파이프라인</strong></td><td class="num"><strong>49,235 msg/s</strong></td><td class="num">—</td><td class="num">—</td></tr>
+  </table>
+
+  <h3>부하 — 어디서 무너지는가</h3>
+  <table>
+    <tr><th style="width:26mm">구독자</th><th>총 처리량</th><th>1인당 유지율</th><th>p99 지연</th><th>유실</th><th>드롭</th></tr>
+    <tr><td class="num">1</td><td class="num">40 msg/s</td><td class="num">100%</td><td class="num">1.4 ms</td><td class="num">0</td><td class="num">0</td></tr>
+    <tr><td class="num">25</td><td class="num">1,330</td><td class="num">139%</td><td class="num">8.0 ms</td><td class="num">0</td><td class="num">0</td></tr>
+    <tr><td class="num">100</td><td class="num">6,376</td><td class="num">168%</td><td class="num">27.9 ms</td><td class="num">0</td><td class="num">0</td></tr>
+  </table>
+  <p style="font-size:8.8pt">
+    <strong>처리량은 버팁니다.</strong> 총 처리량이 160배로 늘어도 유실 드롭이 0이고,
+    <strong>먼저 무너지는 건 지연입니다</strong>(p99 19배). "몇 ms까지 허용되나"를 답할 근거입니다.
+  </p>
+
+  <div class="callout">
+    <b>이 측정이 제 가설을 뒤집었습니다.</b> 설계 문서에 "구독자 수백 명이면 재인코딩이 병목"이라 적어 뒀는데,
+    100명 6,376명치를 뿌려도 재인코딩 CPU는 <strong>0.28%</strong>였습니다.
+    단계를 쪼개니 구독자당 재인코딩 552 ns, 큐 삽입 410 ns, <strong>소켓 write 1,476 ns — 전체 비용의 59%</strong>였습니다.
+  </div>
+
+  <h3>장애 주입 · 인프라</h3>
+  <table>
+    <tr><th style="width:56mm">시나리오</th><th>결과</th></tr>
+    <tr><td>TCP 스트림에 쓰레기 주입</td><td>오검 3회 → <strong>재동기 4회 후 100% 계속 수신</strong></td></tr>
+    <tr><td>읽지 않는 구독자 25초</td><td>게이트웨이 정상 유지 (드롭 카운트 노출)</td></tr>
+    <tr><td><code>feedd</code> SIGKILL</td><td>writer PID 유지 → 수신 재개 (38,047 → 39,975) · <strong>연쇄 재시작 없음</strong></td></tr>
+    <tr><td>장시간 연속 운전</td><td>60분 · 8개 서비스 전부 <strong>RSS 증가 최대 0.01 MB/h · FD 누수 0</strong></td></tr>
+    <tr><td>인프라</td><td>Ubuntu 22.04 테스트베드 systemd 11항목 · Docker Compose 7컨테이너 healthy ·
+        Prometheus 8타깃 · 알람 11개 4그룹 · Grafana 12패널</td></tr>
+    <tr><td>데이터 품질</td><td>검사 <strong>108,156건</strong> → <strong>CRITICAL 0</strong> ·
+        암묵 환율 교차검증(업비트 KRW ÷ 바이낸스 USD) 자산 간 괴리 <strong>0.050%</strong></td></tr>
+  </table>
+
+  <div class="foot"><span>MDFeed — 실시간 마켓데이터 FEED 플랫폼</span><span>05</span></div>
+</section>
+
+
+<!-- ═══════════ 06 판단 ═══════════ -->
+<section class="slide">
+  <div class="band"><span class="no">06</span><h2>무엇을 직접 만들고 무엇을 맡겼나</h2><span class="sub">판단 근거</span></div>
+
+  <p class="lead">
+    직접 만든 것이 많다는 사실 자체는 자랑이 아닙니다. <strong>어디를 직접 만들고 어디를 검증된 도구에 맡길지</strong>
+    판단한 근거가 이 프로젝트의 내용입니다.
+  </p>
+
+  <table>
+    <tr><th style="width:34mm">계층</th><th style="width:24mm">선택</th><th>이유</th></tr>
+    <tr><td><strong>피드 프로토콜</strong><br>프레이밍 · 갭 복구</td>
+        <td><strong style="color:var(--accent-d)">직접 구현</strong></td>
+        <td>라이브러리를 써도 메시지 프레이밍 · 시퀀스 갭 탐지 · 스냅샷 복구 · 느린 구독자 격리는
+            <strong>어차피 직접 해야 합니다.</strong> 그 경계를 알려면 한 번은 아래까지 내려가 봐야 합니다.</td></tr>
+    <tr><td><strong>분석 · 백테스트</strong><br>성과지표</td>
+        <td><strong>오픈소스</strong></td>
+        <td><code>backtesting.py</code> · <code>vectorbt</code>가 낫습니다. 새로 만들 이유가 없습니다.
+            우리가 제공하는 건 <strong>데이터와 전략 코드</strong>이고, 검증은 검증된 도구에 맡깁니다.</td></tr>
+    <tr><td><strong>저장소</strong></td>
+        <td><strong>오픈소스</strong></td>
+        <td>PostgreSQL + TimescaleDB. 시계열 파티셔닝 · 보존정책을 직접 만들 이유가 없습니다.</td></tr>
+    <tr><td><strong>관측</strong></td>
+        <td><strong>오픈소스</strong></td>
+        <td>Prometheus + Grafana. 우리가 만든 건 <strong>무엇을 지표로 내보낼지</strong>와 알람 규칙입니다.</td></tr>
+  </table>
+
+  <h3>정직하게 적는 범위</h3>
+  <table>
+    <tr><th style="width:52mm">한계</th><th>내용</th></tr>
+    <tr><td><strong>국내 주식 틱은 3종목까지</strong></td>
+        <td>계좌 한도로 실측해 확인했습니다. 나머지 1,780종목은 REST 스냅샷으로 덮되
+            <strong>체결 단위가 아님</strong>을 명시합니다.</td></tr>
+    <tr><td><strong>호가는 최우선(BBO)만</strong></td>
+        <td>전체 depth 20호가 복원은 범위 밖입니다.</td></tr>
+    <tr><td><strong>단일 노드 · 단일 리전</strong></td>
+        <td>다중 리전 이중화, PTP 하드웨어 타임스탬프는 범위 밖입니다.</td></tr>
+  </table>
+
+  <div class="callout" style="border-left-color:var(--accent)">
+    <b>정직하게 적습니다.</b> 못 하는 것을 한 척하지 않는 것이 이 프로젝트의 원칙입니다.
+    데이터 서비스에서 <strong>틀린 값은 없는 값보다 나쁘고</strong>, 그 원칙은 문서에도 똑같이 적용됩니다.
+  </div>
+
+  <div style="margin-top:8mm; background:var(--navy); color:#fff; padding:6mm 7mm">
+    <div style="font-size:12pt; font-weight:700; margin-bottom:2.5mm">권오영</div>
+    <div style="font-size:8.8pt; color:#B9CDDE; line-height:1.9">
+      <b style="color:var(--accent); display:inline-block; width:16mm">저장소</b> github.com/oyeong011/market-feed-platform<br>
+      <b style="color:var(--accent); display:inline-block; width:16mm">데모</b> oyeong011.github.io/market-feed-platform<br>
+      <b style="color:var(--accent); display:inline-block; width:16mm">참조 데이터</b> github.com/oyeong011/financial-database<br>
+      <b style="color:var(--accent); display:inline-block; width:16mm">메일</b> duddls5079@gmail.com
+    </div>
+  </div>
+
+  <div class="foot"><span>MDFeed — 실시간 마켓데이터 FEED 플랫폼</span><span>06</span></div>
+</section>
+
 </body>
 </html>
