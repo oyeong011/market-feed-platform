@@ -121,17 +121,26 @@ footer{padding:36px 0 56px;color:var(--dimmer);font-size:12.5px}
   <div class="wrap">
     <h2>실시간 시세 보드</h2>
     <p class="lede" id="livelede">
-      ws-gateway 가 초당 수백 틱을 100ms 주기로 병합해 보냅니다. 사람 눈은 초당 10프레임 이상을
-      구분하지 못하는데 원본 틱을 그대로 밀면 브라우저 렌더링이 못 따라가 탭이 멈추기 때문입니다.
+      국내 <strong>코스피 전 종목</strong>과 크립토를 함께 봅니다.
+      <code>KIS</code> 는 웹소켓 실시간 체결(밀리초), <code>KRX</code> 는 REST 스냅샷입니다 —
+      웹소켓 등록 한도가 계정당 3종목이라 나머지는 계층형 피드로 덮었습니다.
+      ws-gateway 는 초당 수백 틱을 100ms 주기로 병합해 보냅니다. 원본 틱을 그대로 밀면
+      브라우저 렌더링이 못 따라가 탭이 멈추기 때문입니다.
     </p>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+      <input id="qfilter" placeholder="종목명 또는 코드로 거르기 (예: 삼성, 005930, BTC)"
+             style="flex:1;min-width:240px;background:var(--panel);border:1px solid var(--line);
+                    color:var(--fg);padding:8px 12px;border-radius:6px;font-size:13px;font-family:inherit">
+      <span id="qcount" class="badge"></span>
+    </div>
     <div class="tblwrap">
       <table id="quotes">
         <thead><tr>
-          <th>거래소</th><th>종목</th><th class="num">현재가</th><th class="num">매수호가</th>
-          <th class="num">매도호가</th><th class="num">스프레드</th><th class="num">체결수</th>
-          <th class="num">누적수량</th><th class="num">수집지연</th>
+          <th>거래소</th><th>코드</th><th class="txt">종목명</th><th class="num">현재가</th>
+          <th class="num">매수호가</th><th class="num">매도호가</th><th class="num">스프레드</th>
+          <th class="num">체결수</th><th class="num">누적수량</th><th class="num">수집지연</th>
         </tr></thead>
-        <tbody id="qbody"><tr><td colspan="9" class="txt muted">불러오는 중…</td></tr></tbody>
+        <tbody id="qbody"><tr><td colspan="10" class="txt muted">불러오는 중…</td></tr></tbody>
       </table>
     </div>
     <p class="note" id="livenote"></p>
@@ -553,6 +562,7 @@ function renderRow(it){
   const dec = it.last > 1000 ? 0 : (it.last > 1 ? 2 : 4);
   tr.innerHTML =
     `<td class="muted">${esc(it.venue)}</td><td>${esc(it.symbol)}</td>
+     <td class="txt">${esc(it.name||"")}</td>
      <td class="num ${dir>0?"up":dir<0?"down":""}">${fmt(it.last, dec)}</td>
      <td class="num muted">${it.bid?fmt(it.bid,dec):"–"}</td>
      <td class="num muted">${it.ask?fmt(it.ask,dec):"–"}</td>
@@ -561,6 +571,25 @@ function renderRow(it){
      <td class="num muted">${fmt(it.volume,3)}</td>
      <td class="num muted">${it.latency_us!==undefined?fmt(it.latency_us/1000,1)+"ms":"–"}</td>`;
   if(dir){ tr.className = dir>0 ? "flash-up" : "flash-down"; setTimeout(()=>tr.className="", 600); }
+}
+
+/* 1,000종목이 넘으므로 렌더는 상위 N개만 한다. 전부 그리면 브라우저가 버벅인다. */
+const MAX_ROWS = 300;
+let allItems = [];
+
+function renderList(items){
+  const q = ($("#qfilter").value || "").trim().toLowerCase();
+  const filtered = q
+    ? items.filter(i => (i.symbol+" "+(i.name||"")+" "+i.venue).toLowerCase().includes(q))
+    : items;
+  const shown = filtered.slice(0, MAX_ROWS);
+  qbody.innerHTML = ""; rows.clear();
+  shown.forEach(renderRow);
+  const n = filtered.length;
+  $("#qcount").textContent = n > shown.length
+    ? `${fmt(n)}종목 중 상위 ${shown.length} 표시`
+    : `${fmt(n)}종목`;
+  if (!n) qbody.innerHTML = '<tr><td colspan="10" class="txt muted">일치하는 종목 없음</td></tr>';
 }
 
 function sortRows(){
@@ -600,10 +629,15 @@ function staticMode(){
      저장소를 클론해 <code>make demo</code> 를 실행한 뒤 <code>http://localhost:9102/</code> 를 여세요 —
      같은 페이지가 WebSocket 을 잡아 자동으로 LIVE 모드로 전환됩니다.`;
   loadJSON("data/snapshot.json").then(d => {
-    if(!d || !d.items){ qbody.innerHTML = '<tr><td colspan="9" class="txt muted">스냅샷 데이터 없음</td></tr>'; return; }
-    qbody.innerHTML=""; rows.clear();
-    d.items.forEach(renderRow); sortRows();
-    $("#livelede").innerHTML += `<br><span style="color:var(--dimmer);font-size:13px">스냅샷 기준: ${esc(d.captured_at || "")}</span>`;
+    if(!d || !d.items){ qbody.innerHTML = '<tr><td colspan="10" class="txt muted">스냅샷 데이터 없음</td></tr>'; return; }
+    allItems = d.items;
+    renderList(allItems);
+    $("#qfilter").addEventListener("input", () => renderList(allItems));
+    const vc = d.venue_counts || {};
+    const parts = Object.entries(vc).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k} ${fmt(v)}`);
+    $("#livelede").innerHTML +=
+      `<br><span style="color:var(--dimmer);font-size:13px">스냅샷 기준 ${esc(d.captured_at||"")}
+       · ${parts.join(" · ")} · 활발한 순서로 정렬</span>`;
   });
 }
 

@@ -18,9 +18,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import csv                                                    # noqa: E402
+
 from mdfeed.clock import ClockMonitor                         # noqa: E402
 from mdfeed.models import MSG_BOOK, MSG_TRADE, BookTop, Trade  # noqa: E402
 from mdfeed.protocol import FrameParser                        # noqa: E402
+
+
+def load_names(path: str = "data/reference/krx_symbols.csv") -> dict:
+    """종목코드만 있는 화면은 못 읽는다. 마스터에서 이름을 붙인다."""
+    try:
+        with open(path, newline="", encoding="utf-8") as fh:
+            return {r["code"]: r["name"] for r in csv.DictReader(fh)}
+    except FileNotFoundError:
+        return {}
 
 
 def from_live(port: int) -> dict | None:
@@ -78,8 +89,18 @@ def main() -> int:
             return 1
         d = from_replay(args.replay)
 
+    names = load_names()
+    for it in d["items"]:
+        nm = names.get(it["symbol"])
+        if nm:
+            it["name"] = nm
+    # 활발한 종목이 위로 오게 정렬한다. 1,000종목이 넘으면 순서가 곧 가독성이다.
+    d["items"].sort(key=lambda x: (-(x.get("trades") or 0), x["venue"], x["symbol"]))
     d["captured_at"] = time.strftime("%Y-%m-%d %H:%M:%S KST")
     d["count"] = len(d["items"])
+    d["venue_counts"] = {}
+    for it in d["items"]:
+        d["venue_counts"][it["venue"]] = d["venue_counts"].get(it["venue"], 0) + 1
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(d, fh, ensure_ascii=False, indent=1)
