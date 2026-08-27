@@ -2,9 +2,18 @@
 Description=MDFeed — DB 적재기 + 1분봉 집계
 Documentation=https://github.com/oyeong011/market-feed-platform
 After=mdfeed-feedd.service
-# feedd 가 UDS 버스 소켓을 만든 뒤에 소비자가 떠야 한다. 순서가 뒤집히면
-# 소비자는 재접속 백오프를 돌며 첫 수 초를 낭비한다(치명적이진 않지만 불필요하다).
-Requires=mdfeed-feedd.service
+# feedd 가 UDS 버스 소켓을 만든 뒤에 소비자가 떠야 하므로 After= 로 순서를 준다.
+#
+# 단 Requires= 는 쓰지 않는다. Requires= 로 두면 feedd 가 재시작될 때 소비자까지
+# 함께 재시작된다 — 실제 systemd 에서 feedd 를 SIGKILL 했더니 tcp-gateway 와
+# writer 의 PID 도 같이 바뀌는 걸 확인했다.
+#
+# 버스 구독자에는 지수 백오프 자동 재접속이 들어 있다. 소비자가 feedd 재시작을
+# 타고 넘으라고 만든 장치인데, Requires= 가 그걸 무력화한다. 소비자를 함께 내리면
+# 그동안 쌓이던 배치 버퍼도 같이 날아간다.
+#
+# Wants= 는 "함께 켜지면 좋다"는 의사표시만 하고 재시작을 전파하지 않는다.
+Wants=mdfeed-feedd.service
 PartOf=mdfeed.target
 
 [Service]

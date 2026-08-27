@@ -64,26 +64,41 @@ services:
   tcp-gateway:
     <<: *common
     command: ["python3", "-m", "mdfeed.services.tcp_gateway"]
+    environment:
+      <<: *env
+      MDFEED_HEALTH_PORT: "9111"
     ports: ["9101:9101", "9111:9111"]
 
   ws-gateway:
     <<: *common
     command: ["python3", "-m", "mdfeed.services.ws_gateway"]
+    environment:
+      <<: *env
+      MDFEED_HEALTH_PORT: "9102"
     ports: ["9102:9102"]
 
   writer:
     <<: *common
     command: ["python3", "-m", "mdfeed.services.writer"]
+    environment:
+      <<: *env
+      MDFEED_HEALTH_PORT: "9104"
     ports: ["9104:9104"]
 
   rest-api:
     <<: *common
     command: ["python3", "-m", "mdfeed.services.rest_api"]
+    environment:
+      <<: *env
+      MDFEED_HEALTH_PORT: "9103"
     ports: ["9103:9103"]
 
   strategy:
     <<: *common
     command: ["python3", "-m", "mdfeed.services.strategy"]
+    environment:
+      <<: *env
+      MDFEED_HEALTH_PORT: "9105"
     ports: ["9105:9105"]
 
 volumes:

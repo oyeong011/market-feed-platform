@@ -2,6 +2,18 @@
 -- TimescaleDB 확장이 있으면 하이퍼테이블로, 없으면 일반 파티션 없는 테이블로 동작한다.
 -- psql -f schema.sql 로 멱등 실행 가능.
 
+-- ── 표시 시간대 ────────────────────────
+-- TIMESTAMPTZ 는 UTC 로 저장되고 조회 시 세션 시간대로 변환된다. 기본값이 UTC 라
+-- 국내 장 시간(09:00~15:30 KST)을 조회하면 00:00~06:30 으로 보인다. 장 시작 전인지
+-- 마감 후인지 눈으로 판단할 수 없어 운영 조회에서 실수가 난다.
+-- 저장 값은 그대로이고 표시만 바뀜다.
+DO $tz$
+BEGIN
+    EXECUTE format('ALTER DATABASE %I SET timezone TO ''Asia/Seoul''', current_database());
+END
+$tz$;
+SET timezone TO 'Asia/Seoul';
+
 CREATE TABLE IF NOT EXISTS venues (
     code        TEXT PRIMARY KEY,
     name        TEXT NOT NULL,

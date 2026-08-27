@@ -109,6 +109,9 @@ docker-up:  ## docker compose 로 전체 스택 + Postgres 기동
 docker-down:  ## docker compose 종료
 	docker compose down -v
 
+systemd-test:  ## systemd 가 실제로 도는 리눅스 컨테이너에서 유닛 검증
+	@bash ops/testbed/verify_systemd.sh
+
 install-systemd:  ## 리눅스 서버에 systemd 설치 (root 필요)
 	sudo bash ops/ops.sh install
 

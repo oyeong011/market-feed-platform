@@ -245,6 +245,12 @@ def open_storage(cfg) -> Storage:
             s = PostgresStorage(cfg.pg_dsn)
             s.ensure_schema()
             return s
+        except ImportError:
+            # 설정 오류다. 폴백은 하되 조용히 넘기면 안 된다 — compose 스택에서
+            # DATABASE_URL 을 줬는데도 SQLite 로 떨어져 있는 걸 한참 뒤에야 알았다.
+            log.error(
+                "DATABASE_URL 이 설정됐지만 psycopg2 드라이버가 없어 Postgres 를 쓸 수 없다. "
+                "SQLite 로 폴백한다. 설치: pip install 'mdfeed[postgres]'")
         except Exception as e:                    # noqa: BLE001
             log.error("Postgres 연결 실패 (%s) → SQLite 폴백. 데이터는 계속 쌓인다", e)
     s = SQLiteStorage(cfg.sqlite_path)
