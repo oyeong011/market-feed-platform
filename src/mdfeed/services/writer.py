@@ -199,6 +199,10 @@ class Writer:
         with self._db_lock:
             self.storage.close()
 
+    def _prune_locked(self, prune_fn) -> dict:
+        with self._db_lock:
+            return prune_fn(self.storage, self.cfg.retention_days)
+
     async def _retention_loop(self, stop: asyncio.Event) -> None:
         """디스크를 재고, 보존 기간이 지난 원시 데이터를 지운다.
 
@@ -228,8 +232,9 @@ class Writer:
 
             if cfg.retention_days > 0 and self.storage:
                 # 삭제는 블로킹이다. 이벤트 루프에서 직접 돌리면 적재가 멈춘다.
-                deleted = await asyncio.to_thread(
-                    prune, self.storage, cfg.retention_days)
+                # flush 와 같은 락을 거친다. 같은 SQLite 연결을 두 스레드가
+                # 동시에 만지면 락 경합으로 적재가 밀리고, 최악엔 깨진다.
+                deleted = await asyncio.to_thread(self._prune_locked, prune)
                 n = sum(deleted.values())
                 if n:
                     self.pruned_rows += n

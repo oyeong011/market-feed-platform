@@ -137,3 +137,13 @@ def test_기존_DB_는_히스토리에서_백필된다(tmp_path):
     s2 = SQLiteStorage(path); s2.ensure_schema()   # 재기동
     assert len(s2.latest()) == 1
     s2.close()
+
+
+def test_체결과_latest_가_한_트랜잭션이다(store, tmp_path):
+    """따로 커밋하면 flush 마다 fsync 가 두 번이고, 중간에 죽으면
+    trades 는 들어갔는데 latest 는 옛날 값인 상태가 남는다."""
+    import inspect
+    from mdfeed.storage.db import SQLiteStorage
+    src = inspect.getsource(SQLiteStorage.insert_trades)
+    assert src.count("commit()") == 1, "커밋이 한 번이어야 한다"
+    assert "_LATEST_UPSERT" in src

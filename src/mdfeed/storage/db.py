@@ -163,12 +163,17 @@ class SQLiteStorage(Storage):
         return len(rows)
 
     def insert_trades(self, rows):
-        n = self._many(
+        if not rows:
+            return 0
+        # 체결 적재와 latest 갱신을 한 트랜잭션으로 묶는다.
+        # 따로 커밋하면 flush 마다 fsync 가 두 번이고, 중간에 죽으면
+        # trades 는 들어갔는데 latest 는 옛날 값인 상태가 남는다.
+        self.conn.executemany(
             "INSERT INTO trades (ts,venue,symbol,price,qty,side,recv_ts,latency_us,seq) "
             "VALUES (?,?,?,?,?,?,?,?,?)", rows)
-        if rows:
-            self.upsert_latest(self._latest_rows(rows))
-        return n
+        self.conn.executemany(self._LATEST_UPSERT, self._latest_rows(rows))
+        self.conn.commit()
+        return len(rows)
 
     def insert_book(self, rows):
         return self._many(
@@ -190,16 +195,18 @@ class SQLiteStorage(Storage):
             "INSERT INTO signals (ts,venue,symbol,strategy,action,strength,ref_price) "
             "VALUES (?,?,?,?,?,?,?)", rows)
 
+    # ts 가 더 최신일 때만 덮는다. 샤드나 재생이 섞이면 과거 값이
+    # 최신을 밀어낼 수 있다.
+    _LATEST_UPSERT = (
+        "INSERT INTO latest (venue,symbol,ts,price,qty,side,latency_us) "
+        "VALUES (?,?,?,?,?,?,?) "
+        "ON CONFLICT(venue,symbol) DO UPDATE SET "
+        "ts=excluded.ts, price=excluded.price, qty=excluded.qty, "
+        "side=excluded.side, latency_us=excluded.latency_us "
+        "WHERE excluded.ts >= latest.ts")
+
     def upsert_latest(self, rows: Sequence[tuple]) -> int:
-        # ts 가 더 최신일 때만 덮는다. 샤드나 재생이 섞이면 과거 값이
-        # 최신을 밀어낼 수 있다.
-        return self._many(
-            "INSERT INTO latest (venue,symbol,ts,price,qty,side,latency_us) "
-            "VALUES (?,?,?,?,?,?,?) "
-            "ON CONFLICT(venue,symbol) DO UPDATE SET "
-            "ts=excluded.ts, price=excluded.price, qty=excluded.qty, "
-            "side=excluded.side, latency_us=excluded.latency_us "
-            "WHERE excluded.ts >= latest.ts", rows)
+        return self._many(self._LATEST_UPSERT, rows)
 
     def query(self, sql: str, params: Sequence = ()) -> list[dict]:
         cur = self.conn.execute(sql, tuple(params))
