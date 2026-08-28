@@ -12,6 +12,7 @@ DB 호출은 전부 asyncio.to_thread 로 뺀다 — sqlite3/psycopg2 는 블로
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import threading
 import time
@@ -30,28 +31,48 @@ class RestAPI:
         self.registry = Registry(SERVICE)
         self.storage = None
         self.db_errors = 0
-        # 조회 스레드가 DB 를 읽는 중에 종료가 커넥션을 닫으면 세그폴트가 난다.
-        # writer 와 같은 이유로 직렬화한다.
-        self._db_lock = threading.Lock()
+        # 조회는 더 이상 직렬화하지 않는다.
+        #
+        # 예전엔 커넥션 하나를 락으로 감쌌다. 그 락이 곧 지연이었다 —
+        # 실측: /api/v1/stats(560만 행 COUNT) 4.6초가 도는 동안
+        # 0.01초짜리 /api/v1/quotes 가 **4.44초**로 밀렸다. 444배다.
+        # 이 프로세스를 실시간 경로와 따로 뗀 이유가 "무거운 조회 한 방이
+        # 나머지를 막지 않게"인데, 정작 프로세스 안에서 그 일이 벌어지고 있었다.
+        # 이제 저장소가 스레드마다 조회 커넥션을 준다(SQLite WAL 은 읽기 동시성이
+        # 있다). 락은 종료 경로에만 남긴다.
+        self._close_lock = threading.Lock()
+        # 적재 통계는 요청 경로에서 세지 않는다. 아래 _counts_loop 참고.
+        self._counts: dict | None = None
+        self._counts_at = 0.0
+        self._counts_took = 0.0
+        self._counts_ready = asyncio.Event()
         from ..runtime import make_tracker
         self.tracker = make_tracker()
         self._started = time.time()
 
-    def _call_locked(self, fn, *a, **kw):
-        with self._db_lock:
-            return fn(*a, **kw)
-
     async def _q(self, fn, *a, **kw):
         try:
-            return await asyncio.to_thread(self._call_locked, fn, *a, **kw)
+            return await asyncio.to_thread(fn, *a, **kw)
         except Exception as e:                       # noqa: BLE001
             self.db_errors += 1
             self.registry.counter("db_errors_total")
             raise
 
     # ── 라우트 ────────────────────────────────────────────────────────────
-    async def symbols(self, _req: Request) -> Response:
-        rows = await self._q(self.storage.symbols)
+    async def symbols(self, req: Request) -> Response:
+        """적재된 종목 목록.
+
+        기본값은 latest 테이블(종목당 한 줄)에서 읽어 종목 수에 비례한다.
+        봉 개수까지 필요하면 ``?bars=1`` — 그건 bars_1m 전체를 훑으므로
+        누적 봉 수에 비례한다. 688종목이면 하루 약 100만 봉이 쌓인다.
+        목록을 보려던 요청이 통계 비용을 물지 않게 기본에서 뺐다.
+        """
+        if req.query.get("bars") in ("1", "true"):
+            rows = await self._q(self.storage.symbols)
+        else:
+            rows = await self._q(self.storage.latest, 5000, None, None)
+            rows = [{"venue": r["venue"], "symbol": r["symbol"], "last_ts": r["ts"]}
+                    for r in rows]
         return Response.json({"count": len(rows), "items": rows})
 
     async def quotes(self, req: Request) -> Response:
@@ -83,7 +104,6 @@ class RestAPI:
                               "count": len(rows), "items": rows})
 
     async def signals(self, req: Request) -> Response:
-        p = self.storage.placeholder
         limit = req.q_int("limit", 50, 1, 500)
         rows = await self._q(
             self.storage.query,
@@ -92,12 +112,50 @@ class RestAPI:
         return Response.json({"count": len(rows), "items": rows})
 
     async def stats(self, _req: Request) -> Response:
-        counts = await self._q(self.storage.counts)
+        """적재 통계. 세는 건 백그라운드가 하고 여기선 읽기만 한다.
+
+        ``COUNT(*)`` 는 커버링 인덱스를 타도 누적 행수에 비례한다.
+        실측 560만 행에서 4.6초 — 그리고 그 4.6초가 다른 모든 조회를 막았다.
+        정확한 값을 즉시 주는 것보다, 몇 초 지난 값을 언제 잰 건지 밝히고
+        주는 편이 낫다. 그래서 ``as_of`` 와 ``age_s`` 를 같이 낸다.
+        """
+        # 아직 한 번도 못 셌으면 진행 중인 첫 집계를 기다린다. 그 뒤로는 즉시.
+        await self._counts_ready.wait()
         return Response.json({
             "backend": self.storage.kind,
-            "counts": counts,
+            "counts": self._counts,
+            "counts_as_of": round(self._counts_at, 1),
+            "counts_age_s": round(time.time() - self._counts_at, 1),
+            "counts_took_ms": round(self._counts_took * 1000, 1),
             "uptime_s": round(time.time() - self._started, 1),
         })
+
+    async def _counts_loop(self, stop: asyncio.Event) -> None:
+        """적재 통계를 주기적으로 다시 센다.
+
+        주기는 ``max(설정 TTL, 실제 소요 × 10)`` 이다. 테이블이 커져
+        한 번 세는 데 30초가 걸리면 5분에 한 번만 센다 — 집계가 자기 자신
+        때문에 디스크를 계속 물고 있는 상황을 막는다. 고정 주기로 두면
+        데이터가 늘어난 만큼 조용히 I/O 를 잡아먹는다.
+        """
+        while not stop.is_set():
+            t0 = time.perf_counter()
+            try:
+                counts = await self._q(self.storage.counts)
+                self._counts_took = time.perf_counter() - t0
+                self._counts = counts
+                self._counts_at = time.time()
+            except Exception as e:                   # noqa: BLE001
+                log.warning("적재 통계 집계 실패: %s", e)
+                self._counts_took = time.perf_counter() - t0
+                if self._counts is None:
+                    self._counts = {}
+                    self._counts_at = time.time()
+            self._counts_ready.set()
+            self.registry.gauge("counts_scan_seconds", self._counts_took)
+            delay = max(self.cfg.stats_ttl_s, self._counts_took * 10)
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(stop.wait(), timeout=delay)
 
     def health(self) -> dict:
         return {"service": SERVICE, "healthy": self.db_errors < 20,
@@ -119,20 +177,27 @@ class RestAPI:
         http.route("GET", "/api/v1", lambda r: Response.json({
             "service": SERVICE,
             "endpoints": {
-                "GET /api/v1/symbols": "적재된 종목 목록",
+                "GET /api/v1/symbols?bars=1": "적재된 종목 목록 (bars=1 이면 봉 통계 포함)",
                 "GET /api/v1/quotes?venue=&symbol=&limit=": "최신 시세",
                 "GET /api/v1/bars?venue=&symbol=&limit=": "1분봉 (오름차순)",
                 "GET /api/v1/trades?venue=&symbol=&limit=": "최근 체결",
                 "GET /api/v1/signals?limit=": "전략 시그널",
-                "GET /api/v1/stats": "적재 통계",
+                "GET /api/v1/stats": "적재 통계 (as_of 시점 기준)",
             }}))
         await http.start()
         from ..runtime import sample_resources
         res_task = asyncio.create_task(sample_resources(self.tracker, stop))
+        counts_task = asyncio.create_task(self._counts_loop(stop))
         await stop.wait()
         res_task.cancel()
+        counts_task.cancel()
+        # CancelledError 는 BaseException 이라 suppress(Exception) 이 못 잡는다
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await counts_task
+        # HTTP 를 먼저 닫아 새 조회가 안 들어오게 한 뒤에 저장소를 닫는다.
         await http.close()
-        await asyncio.to_thread(self._call_locked, self.storage.close)
+        with self._close_lock:
+            await asyncio.to_thread(self.storage.close)
 
 
 def main() -> int:

@@ -182,6 +182,11 @@ class Config:
     # 디스크 감시는 항상 돈다 — 재는 것과 지우는 것은 별개다.
     disk_warn_hours: float = field(
         default_factory=lambda: float(_env("DISK_WARN_HOURS", "24")))
+    # 적재 통계(COUNT(*))는 누적 행수에 비례한다. 실측 560만 행에서 4.6초.
+    # 요청 경로에서 빼고 이 주기로만 다시 센다. 스캔이 느려지면 주기도
+    # 자동으로 길어진다(실제 소요의 10배 아래로는 안 돈다).
+    stats_ttl_s: float = field(
+        default_factory=lambda: float(_env("STATS_TTL_S", "60")))
 
     # ── 전략엔진 ───────────────────────────────────────────────────────────
     strategies: list[str] = field(default_factory=lambda: _list("STRATEGIES", "sma_cross,rsi_revert"))

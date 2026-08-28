@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import threading
 import time
 from typing import Any, Iterable, Sequence
 
@@ -125,6 +126,9 @@ class SQLiteStorage(Storage):
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
+        self._readers: dict[int, sqlite3.Connection] = {}
+        self._readers_lock = threading.Lock()
+        self._closed = False
 
     def ensure_schema(self) -> None:
         with open(os.path.join(HERE, "schema_sqlite.sql"), encoding="utf-8") as fh:
@@ -208,8 +212,37 @@ class SQLiteStorage(Storage):
     def upsert_latest(self, rows: Sequence[tuple]) -> int:
         return self._many(self._LATEST_UPSERT, rows)
 
+    def _reader(self) -> sqlite3.Connection:
+        """조회는 스레드마다 별도 커넥션을 쓴다.
+
+        커넥션 하나를 락으로 직렬화하면 무거운 조회 하나가 나머지 전부를 막는다.
+        실측(560만 행): ``SELECT COUNT(*) FROM trades`` 4.6초가 도는 동안
+        0.01초짜리 최신시세 조회가 **4.44초**로 밀렸다 — 444배다.
+        WAL 은 읽기끼리 동시성이 있으니 막고 있던 건 DB 가 아니라 우리 락이었다.
+
+        ``query_only`` 로 이 커넥션에서는 쓰기가 아예 안 되게 잠근다.
+        조회 경로와 쓰기 경로를 나눠 놨어도(``query``/``execute``) 규약은
+        언젠가 깨지는데, 커넥션이 거부하면 그때 바로 드러난다.
+        """
+        if self._closed:
+            return self.conn
+        tid = threading.get_ident()
+        conn = self._readers.get(tid)
+        if conn is not None:
+            return conn
+        try:
+            conn = sqlite3.connect(self.path, check_same_thread=False, timeout=10.0)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only=ON")
+        except sqlite3.Error as e:                # noqa: BLE001
+            log.warning("조회 커넥션을 못 열었다(%s) → 본 커넥션으로 처리한다", e)
+            return self.conn
+        with self._readers_lock:
+            self._readers[tid] = conn
+        return conn
+
     def query(self, sql: str, params: Sequence = ()) -> list[dict]:
-        cur = self.conn.execute(sql, tuple(params))
+        cur = self._reader().execute(sql, tuple(params))
         return [dict(r) for r in cur.fetchall()]
 
     def execute(self, sql: str, params: Sequence = ()) -> int:
@@ -228,6 +261,14 @@ class SQLiteStorage(Storage):
             (cutoff,))
 
     def close(self) -> None:
+        """쓰기 커넥션만 닫는다. 남의 스레드가 읽는 중인 커넥션은 건드리지 않는다.
+
+        읽는 중인 sqlite3 커넥션을 다른 스레드에서 닫으면 세그폴트가 난다.
+        예전엔 락으로 막았는데, 그 락이 곧 위의 444배 지연이었다.
+        종료 직전 프로세스에서 리더 몇 개를 안 닫는 건 대가가 없다 —
+        OS 가 회수한다. 대신 닫힌 뒤 새 리더는 열지 않는다.
+        """
+        self._closed = True
         try:
             self.conn.commit()
             self.conn.close()

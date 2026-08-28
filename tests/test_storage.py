@@ -147,3 +147,62 @@ def test_체결과_latest_가_한_트랜잭션이다(store, tmp_path):
     src = inspect.getsource(SQLiteStorage.insert_trades)
     assert src.count("commit()") == 1, "커밋이 한 번이어야 한다"
     assert "_LATEST_UPSERT" in src
+
+
+# ── 조회 동시성 ─────────────────────────────────────────────────────────────
+# 커넥션 하나를 락으로 직렬화하면 무거운 조회가 나머지를 전부 막는다.
+# 실측(560만 행): COUNT(*) 4.6초 동안 0.01초짜리 최신시세가 4.44초로 밀렸다.
+
+def test_조회는_스레드마다_다른_커넥션을_쓴다(store):
+    import threading
+    seen = {}
+
+    def probe(tag):
+        store.query("SELECT 1 AS x")
+        seen[tag] = id(store._reader())
+
+    probe("main")
+    t = threading.Thread(target=probe, args=("other",))
+    t.start(); t.join()
+    assert seen["main"] != seen["other"], "두 스레드가 같은 커넥션을 공유하면 서로 막는다"
+
+
+def test_조회_커넥션으로는_쓸_수_없다(store):
+    """query 경로에 DELETE 가 섞여 들어오면 커넥션이 거부해야 한다.
+
+    query/execute 로 나눠 놨어도 규약은 언젠가 깨진다. 그때 조용히
+    통과하는 대신 여기서 터지는 편이 낫다 — 예전에 prune 이
+    query() 로 DELETE 를 돌려 아무 일도 안 일어난 적이 있다.
+    """
+    with pytest.raises(Exception):
+        store.query("DELETE FROM trades")
+
+
+def test_긴_조회가_짧은_조회를_막지_않는다(store):
+    """느린 조회와 빠른 조회를 동시에 돌려, 빠른 쪽이 기다리지 않는지 본다.
+
+    커넥션 하나를 공유하면 sqlite3 가 커넥션 단위로 직렬화하므로 뒤엣것이
+    앞엣것을 통째로 기다린다. 스레드마다 커넥션을 나누면 WAL 읽기끼리는
+    동시에 돈다. 아래 SLOW 는 데이터가 아니라 재귀 CTE 로 시간을 만든다 —
+    테스트가 큰 DB 를 만들지 않고도 같은 상황을 낸다.
+    """
+    import threading
+
+    SLOW = ("WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL "
+            "SELECT x+1 FROM c WHERE x < 4000000) SELECT COUNT(*) AS n FROM c")
+
+    t = time.perf_counter()
+    store.query(SLOW)
+    slow_s = time.perf_counter() - t
+    assert slow_s > 0.2, f"느린 조회가 {slow_s*1000:.0f}ms 뿐이라 이 시험은 의미가 없다"
+
+    th = threading.Thread(target=lambda: store.query(SLOW))
+    th.start()
+    time.sleep(0.02)
+    t = time.perf_counter()
+    store.query("SELECT venue, symbol FROM latest")
+    fast_s = time.perf_counter() - t
+    th.join()
+    assert fast_s < slow_s / 4, (
+        f"느린 조회 {slow_s*1000:.0f}ms 도는 동안 빠른 조회가 "
+        f"{fast_s*1000:.0f}ms 걸렸다 — 뒤에 줄 서 있다")
