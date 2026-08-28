@@ -1,0 +1,56 @@
+{
+  "captured_at": "2026-08-28T11:05:55+09:00",
+  "date": "2026-08-28",
+  "services_up": 5,
+  "services_expected": 6,
+  "unhealthy": [],
+  "uptime_h": 12.39,
+  "throughput": {
+    "feedd_seq": 5759036,
+    "rows_written": 5804381,
+    "bars_written": 14054,
+    "signals": 398
+  },
+  "integrity": {
+    "gap_count": 1,
+    "lost_messages": 2343,
+    "duplicate_count": 0,
+    "bus_dropped": 11535
+  },
+  "quality": {
+    "checked": 5942264,
+    "critical": 1132,
+    "warning": 215,
+    "critical_rate_pct": 0.019,
+    "by_check": {
+      "price_jump:CRITICAL": 1132,
+      "price_jump:WARNING": 204,
+      "stale_value:WARNING": 11
+    }
+  },
+  "upstreams": [
+    {
+      "venue": "upbit",
+      "messages": 156484,
+      "reconnects": 0,
+      "errors": 0,
+      "last_msg_age_s": 34958.9,
+      "stale": true
+    },
+    {
+      "venue": "binance",
+      "messages": 5594245,
+      "reconnects": 9,
+      "errors": 9,
+      "last_msg_age_s": 0.0,
+      "stale": false
+    }
+  ],
+  "memory_mb": {
+    "feedd": 40.4,
+    "rest-api": 29.0,
+    "writer": 31.3,
+    "strategy": 27.8,
+    "quality": 29.7
+  }
+}

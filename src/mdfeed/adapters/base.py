@@ -79,12 +79,38 @@ class Adapter(abc.ABC):
                 self.registry.observe("ingest_latency", CLOCK.observe(venue, raw))
         self.emit(msg)
 
+    async def _stale_watchdog(self) -> None:
+        """업무 메시지 기준으로 정체를 감시한다.
+
+        소켓 recv 타임아웃만으로는 부족하다. 거래소가 체결이 아닌 프레임
+        (핑퐁·상태 통지)을 계속 보내면 recv 는 매번 성공해 타임아웃이 리셋되고,
+        정작 시세는 몇 시간째 끊겨 있어도 재접속이 일어나지 않는다.
+        실제로 업비트에서 9.6시간 동안 reconnects=0 인 채 시세만 멎었다.
+
+        그래서 recv 가 아니라 `_mark()` 가 갱신하는 last_msg_at 을 본다.
+        판정되면 세션 코루틴을 취소해 감독 루프의 재접속 경로로 보낸다.
+        """
+        # 첫 메시지를 아직 못 받은 세션에도 기한을 준다
+        deadline = time.time() + self.stale_after_s
+        while True:
+            await asyncio.sleep(min(self.stale_after_s / 2, 15.0))
+            last = self.last_msg_at or deadline
+            idle = time.time() - last
+            if idle > self.stale_after_s:
+                log.warning(
+                    "[%s] 업무 메시지 %.0fs 정체 — 소켓은 살아 있으나 세션을 끊는다",
+                    self.name, idle,
+                )
+                if self.registry:
+                    self.registry.counter("stale_restarts_total", venue=self.name.upper())
+                return
+
     async def run(self) -> None:
         backoff = 1.0
         while not self._stop.is_set():
             try:
                 log.info("[%s] 세션 시작", self.name)
-                await self.session()
+                await self._session_with_watchdog()
                 backoff = 1.0                        # 정상 종료 → 백오프 리셋
             except asyncio.CancelledError:
                 raise
@@ -106,6 +132,29 @@ class Adapter(abc.ABC):
                 await asyncio.wait_for(self._stop.wait(), timeout=delay)
             backoff = min(backoff * 2, 30.0)
 
+    async def _session_with_watchdog(self):
+        """세션과 정체 감시를 나란히 돌린다. 감시가 먼저 끝나면 세션을 취소한다."""
+        session = asyncio.ensure_future(self.session())
+        guard = asyncio.ensure_future(self._stale_watchdog())
+        try:
+            done, _ = await asyncio.wait(
+                {session, guard}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if guard in done and session not in done:
+                session.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await session
+                raise StaleSessionError(
+                    f"{self.name}: 업무 메시지 {self.stale_after_s:.0f}s 이상 정체"
+                )
+            return session.result()
+        finally:
+            for t in (session, guard):
+                if not t.done():
+                    t.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await t
+
     def stop(self) -> None:
         self._stop.set()
 
@@ -125,6 +174,10 @@ class Adapter(abc.ABC):
             "stale": self.is_stale,
             "measures_latency": self.measures_latency,
         }
+
+
+class StaleSessionError(RuntimeError):
+    """업무 메시지가 끊겨 세션을 강제 종료했을 때."""
 
 
 class StaleGuard:
