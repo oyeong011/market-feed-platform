@@ -120,6 +120,11 @@ def gateway_stats(admin_port: int) -> dict:
 
 
 def run_round(host: str, port: int, n: int, seconds: float, admin: int) -> dict:
+    # 상류 유량을 회차마다 같이 잰다. 이게 없으면 회차 간 비교가 성립하지 않는다.
+    # 실측: 배치 전송 전후를 비교하려다 상류가 227건/s → 140건/s 로 달라져
+    # 개선인지 시장이 한산해진 것인지 구분할 수 없었다. 종목 수를 늘리면
+    # 유량이 바뀌므로 이 값 없이 잰 수치는 다른 날짜와 비교할 수 없다.
+    g0 = gateway_stats(admin)
     subs = [Subscriber(host, port, seconds) for _ in range(n)]
     t0 = time.perf_counter()
     for s in subs:
@@ -157,6 +162,13 @@ def run_round(host: str, port: int, n: int, seconds: float, admin: int) -> dict:
         "crc_errors": sum(s.crc_errors for s in connected),
         "gateway_dropped": g.get("total_dropped"),
         "gateway_subscribers": g.get("subscribers"),
+        # 게이트웨이가 상류에서 받은 유량. 회차 비교의 전제 조건이다.
+        "upstream_frames_in": g.get("frames_in"),
+        "upstream_msg_per_s": round(
+            (g.get("frames_in", 0) - g0.get("frames_in", 0)) / elapsed, 1)
+        if elapsed and g.get("frames_in") is not None
+           and g0.get("frames_in") is not None else None,
+        "upstream_symbols": g.get("cached_symbols"),
     }
 
 
@@ -171,15 +183,16 @@ def main() -> int:
     args = ap.parse_args()
 
     print(f"대상 {args.host}:{args.port} · 회차당 {args.seconds:.0f}초\n")
-    print(f"{'구독자':>6} {'접속':>6} {'총 msg/s':>10} {'1인당 msg/s':>12} "
+    print(f"{'구독자':>6} {'접속':>6} {'상류/s':>8} {'총 msg/s':>10} {'1인당 msg/s':>12} "
           f"{'p50':>9} {'p99':>10} {'max':>10} {'유실':>7} {'드롭':>8}")
-    print("-" * 88)
+    print("-" * 98)
 
     rounds = []
     for n in args.subscribers:
         r = run_round(args.host, args.port, n, args.seconds, args.admin)
         rounds.append(r)
         print(f"{r['subscribers']:>6} {r['connected']:>6} "
+              f"{str(r['upstream_msg_per_s'] or '-'):>8} "
               f"{r['msg_per_s_total']:>10,} {r['msg_per_s_per_sub']:>12,.1f} "
               f"{r['latency_p50_us']:>8,.0f}µ {r['latency_p99_us']:>9,.0f}µ "
               f"{r['latency_max_us']:>9,.0f}µ {r['lost_messages']:>7,} "
