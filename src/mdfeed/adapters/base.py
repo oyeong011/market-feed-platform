@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import abc
+import csv
+import os
 import asyncio
 import contextlib
 import logging
@@ -28,6 +30,42 @@ log = logging.getLogger("mdfeed.adapter")
 
 # 어댑터 전체가 공유하는 시계 감시기. venue 별로 오프셋을 따로 추정한다.
 CLOCK = ClockMonitor()
+
+
+def load_universe(path: str, markets: set[str], limit: int = 0) -> list[tuple[str, str]]:
+    """종목 마스터 CSV(market,code,name)에서 (코드, 이름) 목록을 읽는다.
+
+    KRX 도 암호화폐도 같은 형식을 쓴다. 유니버스 관리가 갈리면 한쪽에만
+    한도·필터가 붙고 다른 쪽은 조용히 빠진다.
+    """
+    if not os.path.exists(path):
+        return []
+    out = []
+    with open(path, newline="", encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            if row.get("market") in markets:
+                out.append((row["code"], row.get("name", "")))
+    return out[:limit] if limit else out
+
+
+def _resolve_symbols(cfg, attr: str, market: str, limit: int, log) -> list[str]:
+    """구독 종목을 정한다. 한도가 0이면 명시 목록, >0 이면 마스터 앞의 N개.
+
+    유니버스 파일이 없거나 비면 명시 목록으로 되돌아간다 — 종목이 0개면
+    어댑터는 붙긴 하는데 아무것도 안 오고, 그게 장애와 구분되지 않는다.
+    """
+    explicit = list(getattr(cfg, attr, []) or [])
+    if limit <= 0:
+        return explicit
+    path = getattr(cfg, "crypto_universe_path", "")
+    uni = [code for code, _ in load_universe(path, {market}, limit)]
+    if not uni:
+        log.warning("[%s] 유니버스 %s 를 못 읽었다 — 명시 목록 %d종목으로 진행 "
+                    "(python scripts/fetch_crypto_symbols.py 로 생성)",
+                    market.lower(), path, len(explicit))
+        return explicit
+    log.info("[%s] 유니버스 %d종목 구독 (한도 %d)", market.lower(), len(uni), limit)
+    return uni
 
 
 class Adapter(abc.ABC):
@@ -74,14 +112,23 @@ class Adapter(abc.ABC):
         return True
 
     # ── 공통 ──────────────────────────────────────────────────────────────
-    def _mark(self, msg) -> None:
-        """어댑터가 정규화 메시지를 하나 만들 때마다 호출."""
+    def _mark(self, msg, measure: bool = True) -> None:
+        """어댑터가 정규화 메시지를 하나 만들 때마다 호출.
+
+        measure=False 는 구독 직후 받는 스냅샷용이다. 스냅샷의 체결 시각은
+        "마지막으로 거래된 때"라서 거래가 뜸한 종목이면 몇 시간 전이다.
+        그걸 수집 지연으로 세면 지표가 통째로 망가진다 — 실측에서 업비트를
+        4종목에서 288종목으로 늘리자 p99 가 106초, max 가 53분으로 나왔고,
+        전부 스냅샷이었다. 데이터는 쓰되 지연에는 넣지 않는다.
+        """
         self.messages += 1
         self.last_msg_at = time.time()
         if self.registry:
             venue = self.name.upper()
             self.registry.counter("ticks_total", venue=venue)
-            if self.measures_latency and hasattr(msg, "latency_us"):
+            if not measure:
+                self.registry.counter("snapshot_msgs_total", venue=venue)
+            if measure and self.measures_latency and hasattr(msg, "latency_us"):
                 raw = msg.latency_us
                 # 원시값과 시계 보정값을 둘 다 남긴다. 보정 로직이 틀렸을 때
                 # 원시값이 없으면 그 사실조차 알 수 없다.

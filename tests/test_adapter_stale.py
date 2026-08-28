@@ -124,3 +124,38 @@ async def test_개장_직후_첫_체결_전에_끊지_않는다():
     except (asyncio.CancelledError, Exception):
         pass
     assert alive, "개장하자마자 첫 체결도 오기 전에 세션을 끊었다"
+
+
+# ── 스냅샷을 지연으로 세지 않는지 ───────────────────────────────────────────
+# 업비트를 4종목 → 288종목으로 늘리자 지연 p99 가 106초, max 가 53분으로
+# 나왔다. 전부 구독 직후 오는 스냅샷이었다. 스냅샷의 체결 시각은
+# "마지막으로 거래된 때"라 거래가 뜸한 종목이면 몇 시간 전이다.
+
+class _Fake:
+    latency_us = 5_000_000.0          # 5초
+
+
+@pytest.mark.asyncio
+async def test_스냅샷은_지연_히스토그램에_안_들어간다():
+    from mdfeed.metrics import Registry
+    a = ChattyButDead()
+    a.registry = Registry("feedd")
+    a.emit = lambda m: None
+
+    a._mark(_Fake(), measure=False)
+    assert a.registry.histogram("ingest_latency", venue="CHATTY").snapshot()["count"] == 0
+    assert a.registry.snapshot()["counters"].get(
+        'snapshot_msgs_total{venue="CHATTY"}') == 1
+
+    a._mark(_Fake(), measure=True)
+    assert a.registry.histogram("ingest_latency", venue="CHATTY").snapshot()["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_스냅샷도_메시지_수와_정체_판정에는_들어간다():
+    """지연에서만 빼는 것이다. 데이터가 온 사실 자체는 세야 한다."""
+    a = ChattyButDead()
+    a.emit = lambda m: None
+    a._mark(_Fake(), measure=False)
+    assert a.messages == 1
+    assert a.last_msg_at > 0

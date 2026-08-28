@@ -46,7 +46,7 @@ import urllib.error
 import urllib.request
 
 from ..models import BookTop, Trade, SIDE_UNKNOWN, now_ns
-from .base import Adapter
+from .base import Adapter, load_universe
 from .kis import ENDPOINTS, market_is_open
 
 log = logging.getLogger("mdfeed.adapter.kis_rest")
@@ -133,16 +133,6 @@ class AdaptiveRateLimiter:
         return 1.0 / self.interval
 
 
-def load_universe(path: str, markets: set[str], limit: int) -> list[tuple[str, str]]:
-    """KRX 종목 마스터에서 (코드, 종목명) 목록을 읽는다."""
-    if not os.path.exists(path):
-        return []
-    out = []
-    with open(path, newline="", encoding="utf-8") as fh:
-        for row in csv.DictReader(fh):
-            if row.get("market") in markets:
-                out.append((row["code"], row.get("name", "")))
-    return out[:limit] if limit else out
 
 
 class KISRestAdapter(Adapter):
@@ -173,6 +163,10 @@ class KISRestAdapter(Adapter):
         self.rate_limited = 0
         self.sweep_laps = 0
         self.symbols_seen: set[str] = set()
+        # 한 바퀴 도는 데 걸린 시간. 유니버스를 늘리면 데이터가 늘지 않고
+        # 이 값이 길어진다 — 종목당 갱신 주기가 그만큼 늘어난다는 뜻이다.
+        self._lap_started = 0.0
+        self.last_lap_s = 0.0
 
     def enabled(self) -> bool:
         return bool(self.app_key and self.app_secret and self.universe)
@@ -309,9 +303,14 @@ class KISRestAdapter(Adapter):
             idx += 1
             if idx % len(self.universe) == 0:
                 self.sweep_laps += 1
+                now = time.time()
+                if self._lap_started:
+                    self.last_lap_s = now - self._lap_started
+                self._lap_started = now
                 log.info("[kis_rest] 유니버스 %d종목 %d회전 완료 "
-                         "(관측 종목 %d개)", len(self.universe),
-                         self.sweep_laps, len(self.symbols_seen))
+                         "(관측 종목 %d개, 한 바퀴 %.0f초 = 종목당 갱신 주기)",
+                         len(self.universe), self.sweep_laps,
+                         len(self.symbols_seen), self.last_lap_s)
             d = await self._call("/uapi/domestic-stock/v1/quotations/inquire-price",
                                  TR_PRICE, {"FID_COND_MRKT_DIV_CODE": "J",
                                             "FID_INPUT_ISCD": code})
@@ -343,6 +342,10 @@ class KISRestAdapter(Adapter):
             "rank_calls": self.rank_calls,
             "poll_calls": self.poll_calls,
             "sweep_laps": laps,
+            # 종목당 갱신 주기. 아직 한 바퀴를 못 돌았으면 현재 유량으로 추정한다.
+            "lap_s": round(self.last_lap_s, 1) if self.last_lap_s else None,
+            "projected_lap_s": round(
+                len(self.universe) / max(self.limiter.current_rate, 0.1), 1),
             "rate_limited": self.rate_limited,
             "current_rate_per_s": round(self.limiter.current_rate, 2),
             "backoffs": self.limiter.backoffs,

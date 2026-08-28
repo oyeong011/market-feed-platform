@@ -71,6 +71,15 @@ class Config:
         default_factory=lambda: _list("BINANCE_SYMBOLS", "btcusdt,ethusdt,solusdt"))
     kis_symbols: list[str] = field(
         default_factory=lambda: _list("KIS_SYMBOLS", "005930,000660,373220"))
+    # 암호화폐 유니버스. KRX 와 달리 웹소켓 구독이라 종목을 늘리면 유량이
+    # 실제로 늘어난다(폴링처럼 회전 주기가 길어지는 게 아니다).
+    # 한도 0 = 위의 명시 목록을 쓴다. >0 이면 마스터에서 앞의 N개.
+    crypto_universe_path: str = field(
+        default_factory=lambda: _env("CRYPTO_UNIVERSE", "data/reference/crypto_symbols.csv"))
+    upbit_universe_limit: int = field(
+        default_factory=lambda: _int("UPBIT_UNIVERSE_LIMIT", 0))
+    binance_universe_limit: int = field(
+        default_factory=lambda: _int("BINANCE_UNIVERSE_LIMIT", 0))
     kis_app_key: str = field(default_factory=lambda: os.getenv("KIS_APP_KEY", ""))
     kis_app_secret: str = field(default_factory=lambda: os.getenv("KIS_APP_SECRET", ""))
     # real = 실전투자, vts = 모의투자. 실시간 시세는 실전 계좌 키를 쓴다.

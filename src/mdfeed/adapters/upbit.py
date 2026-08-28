@@ -14,13 +14,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import contextlib
 import json
 import time
 
 from ..models import BookTop, Trade, SIDE_BUY, SIDE_SELL, now_ns
 from ..wsproto import WSClient
-from .base import Adapter
+from .base import Adapter, _resolve_symbols
+
+log = logging.getLogger("mdfeed.upbit")
 
 URL = "wss://api.upbit.com/websocket/v1"
 
@@ -32,7 +35,9 @@ class UpbitAdapter(Adapter):
 
     def __init__(self, cfg, emit, registry=None):
         super().__init__(cfg, emit, registry)
-        self.symbols = cfg.upbit_symbols
+        self.symbols = _resolve_symbols(
+            cfg, "upbit_symbols", "UPBIT",
+            getattr(cfg, "upbit_universe_limit", 0), log)
 
     async def session(self) -> None:
         ws = await WSClient.connect(URL)
@@ -72,12 +77,15 @@ class UpbitAdapter(Adapter):
         ts_recv = now_ns()
         # trade_timestamp 는 ms. 거래소가 체결을 확정한 시각이다
         ts_event = int(m["trade_timestamp"]) * 1_000_000
+        # 구독 직후 오는 스냅샷은 "마지막 체결"이라 시각이 한참 과거일 수 있다.
+        # 시세로는 쓰지만 수집 지연으로는 세지 않는다.
+        live = m.get("stream_type") != "SNAPSHOT"
         side = SIDE_BUY if m.get("ask_bid") == "BID" else SIDE_SELL
         self._mark(Trade(
             venue="UPBIT", symbol=m["code"],
             ts_event_ns=ts_event, ts_recv_ns=ts_recv,
             price=float(m["trade_price"]), qty=float(m["trade_volume"]), side=side,
-        ))
+        ), measure=live)
 
         bid, ask = m.get("best_bid_price"), m.get("best_ask_price")
         if bid and ask:
@@ -86,4 +94,4 @@ class UpbitAdapter(Adapter):
                 ts_event_ns=ts_event, ts_recv_ns=ts_recv,
                 bid=float(bid), bid_qty=float(m.get("best_bid_size") or 0),
                 ask=float(ask), ask_qty=float(m.get("best_ask_size") or 0),
-            ))
+            ), measure=live)
