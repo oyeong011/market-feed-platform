@@ -184,6 +184,18 @@ class FeedDaemon:
             "items": sorted(self.snapshot.values(),
                             key=lambda x: (x["venue"], x["symbol"]))}))
         http.route("GET", "/stats", lambda r: Response.json(self.registry.snapshot()))
+
+        # 잘린 심볼 목록. 개수만 세면 "10종이 잘린다"까지는 알아도
+        # 어느 심볼인지 몰라 아무 조치도 못 한다. 지표는 조치 가능해야 한다.
+        def _trunc(_req):
+            from ..models import truncated_symbols
+            t = truncated_symbols()
+            return Response.json({
+                "count": len(t),
+                "note": "전송 심볼 폭(16바이트)을 넘어 잘린 원본 이름",
+                "symbols": sorted(t.items(), key=lambda kv: -kv[1]),
+            })
+        http.route("GET", "/symbols/truncated", _trunc)
         await http.start()
 
         tasks = [asyncio.create_task(self._keep_running(a, stop),

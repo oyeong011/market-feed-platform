@@ -1,14 +1,14 @@
 {
-  "captured_at": "2026-08-28T11:11:06+09:00",
+  "captured_at": "2026-08-28T17:01:18+09:00",
   "date": "2026-08-28",
-  "services_up": 7,
-  "services_expected": 7,
+  "services_up": 8,
+  "services_expected": 8,
   "unhealthy": [],
-  "uptime_h": 0.01,
+  "uptime_h": 0.02,
   "throughput": {
-    "feedd_seq": 7657,
-    "rows_written": 6755,
-    "bars_written": 82,
+    "feedd_seq": 8631,
+    "rows_written": 7435,
+    "bars_written": 61,
     "signals": 0
   },
   "integrity": {
@@ -18,64 +18,68 @@
     "bus_dropped": 0
   },
   "quality": {
-    "checked": 7307,
-    "critical": 10,
+    "checked": 8321,
+    "critical": 0,
     "warning": 0,
-    "critical_rate_pct": 0.1369,
-    "by_check": {
-      "price_jump:CRITICAL": 10
-    }
+    "critical_rate_pct": 0.0,
+    "by_check": {}
   },
   "upstreams": [
     {
       "venue": "upbit(feedd)",
-      "messages": 600,
+      "messages": 1628,
       "reconnects": 0,
       "errors": 0,
-      "last_msg_age_s": 0.0,
-      "stale": false
+      "last_msg_age_s": 0.7,
+      "stale": false,
+      "expects_data": true
     },
     {
       "venue": "binance(feedd)",
-      "messages": 5982,
+      "messages": 6908,
       "reconnects": 0,
       "errors": 0,
-      "last_msg_age_s": 0.2,
-      "stale": false
+      "last_msg_age_s": 0.1,
+      "stale": false,
+      "expects_data": true
     },
     {
       "venue": "kis(krx)",
-      "messages": 848,
+      "messages": 0,
       "reconnects": 0,
       "errors": 0,
-      "last_msg_age_s": 0.2,
-      "stale": false
+      "last_msg_age_s": null,
+      "stale": false,
+      "expects_data": false
     },
     {
       "venue": "kis_rest(krx)",
-      "messages": 180,
+      "messages": 50,
       "reconnects": 0,
       "errors": 0,
-      "last_msg_age_s": 2.3,
-      "stale": false
+      "last_msg_age_s": null,
+      "stale": false,
+      "expects_data": false
     },
     {
       "venue": "kis_macro(krx)",
-      "messages": 27,
+      "messages": 13,
       "reconnects": 0,
       "errors": 0,
-      "last_msg_age_s": 4.6,
-      "stale": false
+      "last_msg_age_s": null,
+      "stale": false,
+      "expects_data": false
     }
   ],
   "inactive_upstreams": [],
   "memory_mb": {
-    "feedd": 39.8,
+    "feedd": 40.1,
     "feedd:krx": 43.2,
-    "ws-gateway": 29.9,
-    "rest-api": 28.7,
-    "writer": 29.5,
-    "strategy": 28.3,
-    "quality": 29.3
+    "ws-gateway": 29.7,
+    "rest-api": 29.1,
+    "writer": 29.2,
+    "strategy": 28.0,
+    "quality": 28.9,
+    "tcp-gateway": 27.8
   }
 }
