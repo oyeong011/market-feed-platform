@@ -1,0 +1,10 @@
+[Unit]
+Description=MDFeed 일일 운영 기록 (장 마감 후)
+
+[Timer]
+# 한국 정규장 마감(15:30) 이후. 그날 장을 다 담고 나서 찍는다.
+OnCalendar=Mon..Fri 16:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,56 +1,81 @@
 {
-  "captured_at": "2026-08-28T11:05:55+09:00",
+  "captured_at": "2026-08-28T11:11:06+09:00",
   "date": "2026-08-28",
-  "services_up": 5,
-  "services_expected": 6,
+  "services_up": 7,
+  "services_expected": 7,
   "unhealthy": [],
-  "uptime_h": 12.39,
+  "uptime_h": 0.01,
   "throughput": {
-    "feedd_seq": 5759036,
-    "rows_written": 5804381,
-    "bars_written": 14054,
-    "signals": 398
+    "feedd_seq": 7657,
+    "rows_written": 6755,
+    "bars_written": 82,
+    "signals": 0
   },
   "integrity": {
-    "gap_count": 1,
-    "lost_messages": 2343,
+    "gap_count": 0,
+    "lost_messages": 0,
     "duplicate_count": 0,
-    "bus_dropped": 11535
+    "bus_dropped": 0
   },
   "quality": {
-    "checked": 5942264,
-    "critical": 1132,
-    "warning": 215,
-    "critical_rate_pct": 0.019,
+    "checked": 7307,
+    "critical": 10,
+    "warning": 0,
+    "critical_rate_pct": 0.1369,
     "by_check": {
-      "price_jump:CRITICAL": 1132,
-      "price_jump:WARNING": 204,
-      "stale_value:WARNING": 11
+      "price_jump:CRITICAL": 10
     }
   },
   "upstreams": [
     {
-      "venue": "upbit",
-      "messages": 156484,
+      "venue": "upbit(feedd)",
+      "messages": 600,
       "reconnects": 0,
       "errors": 0,
-      "last_msg_age_s": 34958.9,
-      "stale": true
+      "last_msg_age_s": 0.0,
+      "stale": false
     },
     {
-      "venue": "binance",
-      "messages": 5594245,
-      "reconnects": 9,
-      "errors": 9,
-      "last_msg_age_s": 0.0,
+      "venue": "binance(feedd)",
+      "messages": 5982,
+      "reconnects": 0,
+      "errors": 0,
+      "last_msg_age_s": 0.2,
+      "stale": false
+    },
+    {
+      "venue": "kis(krx)",
+      "messages": 848,
+      "reconnects": 0,
+      "errors": 0,
+      "last_msg_age_s": 0.2,
+      "stale": false
+    },
+    {
+      "venue": "kis_rest(krx)",
+      "messages": 180,
+      "reconnects": 0,
+      "errors": 0,
+      "last_msg_age_s": 2.3,
+      "stale": false
+    },
+    {
+      "venue": "kis_macro(krx)",
+      "messages": 27,
+      "reconnects": 0,
+      "errors": 0,
+      "last_msg_age_s": 4.6,
       "stale": false
     }
   ],
+  "inactive_upstreams": [],
   "memory_mb": {
-    "feedd": 40.4,
-    "rest-api": 29.0,
-    "writer": 31.3,
-    "strategy": 27.8,
-    "quality": 29.7
+    "feedd": 39.8,
+    "feedd:krx": 43.2,
+    "ws-gateway": 29.9,
+    "rest-api": 28.7,
+    "writer": 29.5,
+    "strategy": 28.3,
+    "quality": 29.3
   }
 }

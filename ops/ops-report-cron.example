@@ -1,0 +1,6 @@
+# systemd 타이머를 못 쓰는 환경(macOS·컨테이너)용.
+# 한국 정규장 마감 이후 평일 16:00 에 그날 운영 기록을 남긴다.
+#
+#   crontab -e  후 아래 한 줄. DATE 는 실행 시점에 채워진다.
+#
+0 16 * * 1-5 cd /opt/mdfeed && D=$(date +\%F) && python3 scripts/ops_report.py --json docs/data/ops/$D.json --out docs/data/ops/$D.md

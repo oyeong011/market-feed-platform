@@ -25,8 +25,11 @@ from datetime import datetime, timezone, timedelta
 KST = timezone(timedelta(hours=9))
 # 9101 은 tcp-gateway 의 MDFP 데이터 포트다. HTTP 가 아니라서 여기 없다.
 # 처음에 넣었다가 헬스 조회에 바이너리 프레임이 돌아왔다.
+# 샤딩하면 feedd 가 venue 그룹마다 하나씩 뜬다(9100 crypto / 9200 krx).
+# 처음엔 9100 만 봤다가 KRX 샤드를 통째로 놓쳤다. 단일 노드를 가정한 리포트는
+# 샤딩된 배포에서 조용히 절반만 보고한다.
 PORTS = {
-    9100: "feedd", 9102: "ws-gateway", 9103: "rest-api",
+    9100: "feedd", 9200: "feedd:krx", 9102: "ws-gateway", 9103: "rest-api",
     9104: "writer", 9105: "strategy", 9106: "quality",
 }
 
@@ -64,7 +67,20 @@ def collect() -> dict:
     # 업스트림 — 정체와 재접속은 따로 본다.
     # 재접속 0 이면서 정체면 재접속이 안 도는 것이다. 이게 실제로 있었다.
     ups = []
-    for u in feedd.get("upstreams", []) or []:
+    feedds = [(n, h) for n, h in services.items() if n.startswith("feedd")]
+    for shard, h in feedds:
+        for u in h.get("upstreams", []) or []:
+            u = dict(u, venue=f"{u.get('venue')}({shard.split(':')[-1]})"
+                     if len(feedds) > 1 else u.get("venue"))
+            ups.append({
+                "venue": u.get("venue"),
+                "messages": u.get("messages", 0),
+                "reconnects": u.get("reconnects", 0),
+                "errors": u.get("errors", 0),
+                "last_msg_age_s": u.get("last_msg_age_s"),
+                "stale": u.get("stale", False),
+            })
+    for u in []:
         ups.append({
             "venue": u.get("venue"),
             "messages": u.get("messages", 0),
@@ -73,6 +89,15 @@ def collect() -> dict:
             "last_msg_age_s": u.get("last_msg_age_s"),
             "stale": u.get("stale", False),
         })
+
+    # 꺼진 업스트림은 리포트에서 제일 먼저 보여야 한다. 실제로 KRX 샤드가
+    # 자격증명 미설정으로 통째로 꺼져 있었는데, 활성만 찍던 리포트에는
+    # "이상 없음"으로 보였다. 안 보이는 것과 없는 것은 다르다.
+    inactive = []
+    for n, h in services.items():
+        for u in h.get("inactive_upstreams", []) or []:
+            inactive.append({"shard": n, "venue": u.get("venue"),
+                             "reason": u.get("reason")})
 
     checked = quality.get("checked", 0)
     critical = quality.get("critical", 0)
@@ -85,14 +110,16 @@ def collect() -> dict:
         "unhealthy": [n for n, h in services.items() if h.get("healthy") is False],
         "uptime_h": round(min(up) / 3600, 2) if up else 0.0,
         "throughput": {
-            "feedd_seq": feedd.get("seq", 0),
+            "feedd_seq": sum(h.get("seq", 0) for n, h in services.items()
+                             if n.startswith("feedd")),
             "rows_written": writer.get("rows_written", 0),
             "bars_written": writer.get("bars_written", 0),
             "signals": services.get("strategy", {}).get("signals_emitted", 0),
         },
         "integrity": {
             "gap_count": gaps, "lost_messages": lost, "duplicate_count": dups,
-            "bus_dropped": feedd.get("bus_dropped", 0),
+            "bus_dropped": sum(h.get("bus_dropped", 0) for n, h in services.items()
+                               if n.startswith("feedd")),
         },
         "quality": {
             "checked": checked, "critical": critical,
@@ -101,6 +128,7 @@ def collect() -> dict:
             "by_check": quality.get("by_check", {}),
         },
         "upstreams": ups,
+        "inactive_upstreams": inactive,
         "memory_mb": {
             n: (h.get("resources") or {}).get("rss_mb")
             for n, h in services.items() if (h.get("resources") or {}).get("rss_mb")
@@ -130,6 +158,12 @@ def render(r: dict) -> str:
         mark = " ⚠" if u["stale"] else ""
         L.append(f"| {u['venue']} | {u['messages']:,} | {u['reconnects']} | "
                  f"{age if age is None else f'{age:.0f}s'} | {u['stale']}{mark} |")
+    if r.get("inactive_upstreams"):
+        L += ["", "## 꺼져 있는 수집 경로", "",
+              "| 샤드 | 경로 | 이유 |", "|---|---|---|"]
+        for u in r["inactive_upstreams"]:
+            L.append(f"| {u['shard']} | {u['venue']} | {u['reason']} |")
+        L += ["", "> 꺼진 경로는 조용하다. 활성만 세면 이상 없음으로 보인다."]
     if any(u["stale"] and u["reconnects"] == 0 for u in r["upstreams"]):
         L += ["", "> 정체인데 재접속이 0 이면 재접속 경로가 안 도는 것이다. "
               "소켓 recv 타임아웃만으로는 이 상태를 못 잡는다."]
