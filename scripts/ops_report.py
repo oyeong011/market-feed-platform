@@ -28,9 +28,11 @@ KST = timezone(timedelta(hours=9))
 # 샤딩하면 feedd 가 venue 그룹마다 하나씩 뜬다(9100 crypto / 9200 krx).
 # 처음엔 9100 만 봤다가 KRX 샤드를 통째로 놓쳤다. 단일 노드를 가정한 리포트는
 # 샤딩된 배포에서 조용히 절반만 보고한다.
+# 9111 은 tcp_gateway 의 admin 이다. 데이터 포트(9101)와 번호가 떨어져 있어
+# 목록에서 빠져 있었고, 그래서 리포트는 8개 중 7개만 보고 "전부 정상"이라 했다.
 PORTS = {
     9100: "feedd", 9200: "feedd:krx", 9102: "ws-gateway", 9103: "rest-api",
-    9104: "writer", 9105: "strategy", 9106: "quality",
+    9104: "writer", 9105: "strategy", 9106: "quality", 9111: "tcp-gateway",
 }
 
 
@@ -79,16 +81,9 @@ def collect() -> dict:
                 "errors": u.get("errors", 0),
                 "last_msg_age_s": u.get("last_msg_age_s"),
                 "stale": u.get("stale", False),
+                # 휴장 중이라 조용한 것인지, 죽어서 조용한 것인지 구분한다.
+                "expects_data": u.get("expects_data", True),
             })
-    for u in []:
-        ups.append({
-            "venue": u.get("venue"),
-            "messages": u.get("messages", 0),
-            "reconnects": u.get("reconnects", 0),
-            "errors": u.get("errors", 0),
-            "last_msg_age_s": u.get("last_msg_age_s"),
-            "stale": u.get("stale", False),
-        })
 
     # 꺼진 업스트림은 리포트에서 제일 먼저 보여야 한다. 실제로 KRX 샤드가
     # 자격증명 미설정으로 통째로 꺼져 있었는데, 활성만 찍던 리포트에는
@@ -152,18 +147,32 @@ def render(r: dict) -> str:
           f"| 버스 드롭 | {i['bus_dropped']:,} |",
           f"| 품질 검사 | {q['checked']:,}건 · CRITICAL {q['critical']:,} ({q['critical_rate_pct']}%) |",
           ""]
-    L += ["| 거래소 | 메시지 | 재접속 | 마지막 수신 | 정체 |", "|---|---|---|---|---|"]
+    L += ["| 거래소 | 메시지 | 재접속 | 마지막 수신 | 데이터 기대 | 정체 |",
+          "|---|---|---|---|---|---|"]
     for u in r["upstreams"]:
         age = u["last_msg_age_s"]
         mark = " ⚠" if u["stale"] else ""
+        exp = "개장" if u.get("expects_data", True) else "휴장"
         L.append(f"| {u['venue']} | {u['messages']:,} | {u['reconnects']} | "
-                 f"{age if age is None else f'{age:.0f}s'} | {u['stale']}{mark} |")
+                 f"{age if age is None else f'{age:.0f}s'} | {exp} | {u['stale']}{mark} |")
     if r.get("inactive_upstreams"):
         L += ["", "## 꺼져 있는 수집 경로", "",
               "| 샤드 | 경로 | 이유 |", "|---|---|---|"]
         for u in r["inactive_upstreams"]:
             L.append(f"| {u['shard']} | {u['venue']} | {u['reason']} |")
         L += ["", "> 꺼진 경로는 조용하다. 활성만 세면 이상 없음으로 보인다."]
+    # 정체를 못 잡는 것과 반대 방향의 실패: 멀쩡한데 계속 끊는 경우.
+    # 휴장 중 워치독이 "조용함"을 고장으로 읽어 30초마다 재접속한 적이 있다.
+    hours = max(r["uptime_h"], 0.1)
+    storm = [u for u in r["upstreams"] if u["reconnects"] / hours > 10]
+    if storm:
+        L += ["", "## 재접속이 잦은 경로", "", "| 거래소 | 재접속 | 시간당 |",
+              "|---|---|---|"]
+        for u in storm:
+            L.append(f"| {u['venue']} | {u['reconnects']} | "
+                     f"{u['reconnects'] / hours:.0f}회 |")
+        L += ["", "> 시간당 10회를 넘으면 재접속이 복구가 아니라 증상이다. "
+              "브로커 쪽에서 키 단위로 차단될 수 있다."]
     if any(u["stale"] and u["reconnects"] == 0 for u in r["upstreams"]):
         L += ["", "> 정체인데 재접속이 0 이면 재접속 경로가 안 도는 것이다. "
               "소켓 recv 타임아웃만으로는 이 상태를 못 잡는다."]

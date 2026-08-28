@@ -145,15 +145,25 @@ class Registry:
         with self._lock:
             self._gauges[_key(name, labels)] = value
 
-    def histogram(self, name: str) -> Histogram:
+    def histogram(self, name: str, **labels) -> Histogram:
+        key = _key(name, labels)
         with self._lock:
-            h = self._hists.get(name)
+            h = self._hists.get(key)
             if h is None:
-                h = self._hists[name] = Histogram(name)
+                h = self._hists[key] = Histogram(key)
             return h
 
-    def observe(self, name: str, us: float) -> None:
-        self.histogram(name).record(us)
+    def observe(self, name: str, us: float, **labels) -> None:
+        """라벨을 주면 그 라벨의 히스토그램에만 기록한다.
+
+        카운터는 venue 로 나뉘는데 지연 히스토그램만 전체 합산이면,
+        "p99 가 1.3초"를 보고도 어느 업스트림 탓인지 알 수 없다.
+        실측에서 p99 1,333ms / max 32.8s 가 나왔지만 귀속이 안 됐다.
+        """
+        self.histogram(name, **labels).record(us)
+        if labels:
+            # 전체 분포도 같이 남긴다 — 서비스 수준 목표는 합산으로 본다
+            self.histogram(name).record(us)
 
     @property
     def uptime_s(self) -> float:
@@ -186,15 +196,18 @@ class Registry:
             lines.append(f"{_prom(key, self.service)} {v:g}")
         for key, v in sorted(self._gauges.items()):
             lines.append(f"{_prom(key, self.service)} {v:g}")
-        for name in sorted(self._hists):
-            snap = self._hists[name].snapshot()
+        for key in sorted(self._hists):
+            snap = self._hists[key].snapshot()
+            # key 는 'ingest_latency' 또는 'ingest_latency{venue="UPBIT"}'
+            name, _, rest = key.partition("{")
+            extra = ("," + rest.rstrip("}")) if rest else ""
             for q in ("p50", "p95", "p99", "p999"):
                 lines.append(
-                    f'mdfeed_{name}_microseconds{{service="{self.service}",quantile="{q}"}} '
-                    f'{snap[q + "_us"]:g}'
+                    f'mdfeed_{name}_microseconds{{service="{self.service}"{extra},'
+                    f'quantile="{q}"}} {snap[q + "_us"]:g}'
                 )
             lines.append(
-                f'mdfeed_{name}_count{{service="{self.service}"}} {snap["count"]:g}'
+                f'mdfeed_{name}_count{{service="{self.service}"{extra}}} {snap["count"]:g}'
             )
         return "\n".join(lines) + "\n"
 

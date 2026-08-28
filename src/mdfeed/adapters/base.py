@@ -63,6 +63,16 @@ class Adapter(abc.ABC):
     def disabled_reason(self) -> str:
         return ""
 
+    def expects_data(self) -> bool:
+        """지금 이 업스트림에서 데이터가 와야 정상인가.
+
+        24시간 도는 암호화폐는 항상 True. 국내 주식은 장이 열려 있을 때만 True다.
+        정체 판정은 반드시 이 훅을 거친다 — 장이 닫혀 조용한 것과
+        피드가 죽어 조용한 것은 겉보기가 같아서, 구분하지 않으면
+        휴장 중에 30초마다 재접속하는 폭풍이 된다.
+        """
+        return True
+
     # ── 공통 ──────────────────────────────────────────────────────────────
     def _mark(self, msg) -> None:
         """어댑터가 정규화 메시지를 하나 만들 때마다 호출."""
@@ -75,8 +85,9 @@ class Adapter(abc.ABC):
                 raw = msg.latency_us
                 # 원시값과 시계 보정값을 둘 다 남긴다. 보정 로직이 틀렸을 때
                 # 원시값이 없으면 그 사실조차 알 수 없다.
-                self.registry.observe("ingest_latency_raw", abs(raw))
-                self.registry.observe("ingest_latency", CLOCK.observe(venue, raw))
+                self.registry.observe("ingest_latency_raw", abs(raw), venue=venue)
+                self.registry.observe("ingest_latency", CLOCK.observe(venue, raw),
+                                      venue=venue)
         self.emit(msg)
 
     async def _stale_watchdog(self) -> None:
@@ -94,6 +105,12 @@ class Adapter(abc.ABC):
         deadline = time.time() + self.stale_after_s
         while True:
             await asyncio.sleep(min(self.stale_after_s / 2, 15.0))
+            if not self.expects_data():
+                # 휴장 중엔 조용한 게 정상이다. 기한을 미뤄 두지 않으면
+                # 개장 직후 첫 체결이 오기도 전에 한 번 끊고 들어간다.
+                deadline = time.time() + self.stale_after_s
+                self.last_msg_at = 0.0
+                continue
             last = self.last_msg_at or deadline
             idle = time.time() - last
             if idle > self.stale_after_s:
@@ -160,6 +177,8 @@ class Adapter(abc.ABC):
 
     @property
     def is_stale(self) -> bool:
+        if not self.expects_data():
+            return False
         return bool(self.last_msg_at) and (time.time() - self.last_msg_at) > self.stale_after_s
 
     def health(self) -> dict:
@@ -172,6 +191,7 @@ class Adapter(abc.ABC):
             "errors": self.errors,
             "last_msg_age_s": round(age, 1) if age is not None else None,
             "stale": self.is_stale,
+            "expects_data": self.expects_data(),
             "measures_latency": self.measures_latency,
         }
 

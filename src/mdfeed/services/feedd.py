@@ -124,6 +124,34 @@ class FeedDaemon:
                 "reason": None if ok else "아직 첫 틱 수신 전"}
 
     # ── 실행 ──────────────────────────────────────────────────────────────
+    async def _keep_running(self, adapter, stop) -> None:
+        """어댑터 루프가 죽으면 되살린다.
+
+        create_task 로 띄우고 아무도 결과를 안 보면, run() 이 예외로 끝났을 때
+        태스크만 조용히 사라진다. 예외는 태스크 안에 담긴 채 아무도 안 읽고,
+        서비스는 계속 healthy 를 보고하며 그 업스트림만 영원히 멎는다.
+
+        실측(2026-08-28): upbit 이 2.97시간 멎었는데 재접속은 8회에서 멈춰
+        있었다. 재접속 로직이 안 돈 게 아니라 재접속을 돌릴 주체가 없었다.
+        """
+        deaths = 0
+        while not stop.is_set():
+            try:
+                await adapter.run()
+                return                                  # stop 요청에 의한 정상 종료
+            except asyncio.CancelledError:
+                raise
+            except BaseException as e:                  # noqa: BLE001
+                deaths += 1
+                log.exception("[%s] 어댑터 루프가 죽었다(%d번째) — 되살린다: %s",
+                              adapter.name, deaths, e)
+                self.registry.counter("adapter_task_deaths_total",
+                                      venue=adapter.name.upper())
+            with contextlib.suppress(asyncio.TimeoutError):
+                # 되살리기도 폭주하면 안 된다. 지수 백오프로 벌린다.
+                await asyncio.wait_for(
+                    stop.wait(), timeout=min(0.5 * 2 ** (deaths - 1), 30.0))
+
     async def run(self, stop: asyncio.Event) -> None:
         cfg = self.cfg
         if cfg.ring_enabled:
@@ -158,7 +186,8 @@ class FeedDaemon:
         http.route("GET", "/stats", lambda r: Response.json(self.registry.snapshot()))
         await http.start()
 
-        tasks = [asyncio.create_task(a.run(), name=f"adapter:{a.name}")
+        tasks = [asyncio.create_task(self._keep_running(a, stop),
+                                     name=f"adapter:{a.name}")
                  for a in self.adapters]
         tasks.append(asyncio.create_task(self._heartbeat(stop), name="heartbeat"))
         tasks.append(asyncio.create_task(self._gauges(stop), name="gauges"))

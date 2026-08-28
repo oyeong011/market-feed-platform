@@ -110,3 +110,36 @@ class TestSkewEstimator:
         assert rep["BINANCE"]["local_clock_behind"] is True
         assert rep["UPBIT"]["local_clock_behind"] is False
         assert m.any_suspicious() is True
+
+
+# ── 지연 히스토그램 귀속 ────────────────────────────────────────────────────
+# 실측에서 ingest_latency p99 1,333ms / max 32.8s 가 나왔는데, 히스토그램에
+# 라벨이 없어 어느 업스트림 탓인지 알 수 없었다. 카운터는 venue 로 나뉘는데
+# 지연만 합산이면 그 지표로는 아무 조치도 할 수 없다.
+
+def test_지연은_업스트림별로_귀속된다():
+    from mdfeed.metrics import Registry
+    r = Registry("t")
+    for _ in range(50):
+        r.observe("ingest_latency", 1_000.0, venue="FAST")
+    for _ in range(50):
+        r.observe("ingest_latency", 5_000_000.0, venue="SLOW")
+
+    fast = r.histogram("ingest_latency", venue="FAST").snapshot()
+    slow = r.histogram("ingest_latency", venue="SLOW").snapshot()
+    total = r.histogram("ingest_latency").snapshot()
+
+    assert fast["max_us"] < slow["max_us"]
+    assert total["count"] == 100          # 합산도 그대로 남는다
+
+
+def test_라벨_히스토그램이_프로메테우스로_나간다():
+    from mdfeed.metrics import Registry
+    r = Registry("feedd")
+    r.observe("ingest_latency", 1234.0, venue="UPBIT")
+    out = r.prometheus()
+    assert 'venue="UPBIT"' in out
+    assert 'quantile="p99"' in out
+    # 라벨 블록이 두 번 열리면 파싱이 깨진다
+    for line in out.splitlines():
+        assert line.count("{") == 1, line

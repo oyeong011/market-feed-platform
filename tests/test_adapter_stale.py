@@ -63,3 +63,64 @@ async def test_첫_메시지를_못_받아도_기한이_적용된다():
     a.last_msg_at = 0.0
     with pytest.raises(StaleSessionError):
         await a._session_with_watchdog()
+
+
+# ── 휴장 중 재접속 폭풍 회귀 ────────────────────────────────────────────────
+# 2026-08-28 실측: KRX 샤드에서 kis 재접속 94회, kis_macro 91회가 났다.
+# 세 어댑터 모두 is_stale 에 장시간 가드를 갖고 있었는데, 워치독이 그 가드를
+# 거치지 않고 idle 을 직접 계산해 전부 무력화됐다. 가드가 있는데 안 불리는
+# 구조였다 — 그래서 판정 경로를 expects_data() 하나로 합쳤다.
+
+class ClosedMarket(Adapter):
+    """장이 닫혀 있어 데이터가 오지 않는 업스트림."""
+
+    name = "closed"
+
+    def __init__(self, emit=lambda m: None):
+        super().__init__(cfg=None, emit=emit)
+        self.stale_after_s = 0.4
+        self.open_now = False
+
+    def expects_data(self) -> bool:
+        return self.open_now
+
+    async def session(self) -> None:
+        while True:
+            await asyncio.sleep(0.02)
+
+
+@pytest.mark.asyncio
+async def test_휴장_중에는_조용해도_세션을_끊지_않는다():
+    a = ClosedMarket()
+    try:
+        await asyncio.wait_for(a._session_with_watchdog(), timeout=1.5)
+    except asyncio.TimeoutError:
+        pass                              # 안 끊긴 것이 정상
+    except StaleSessionError:
+        pytest.fail("휴장 중인데 재접속을 유발했다")
+    assert a.is_stale is False
+
+
+@pytest.mark.asyncio
+async def test_개장_중_정체는_그대로_잡는다():
+    a = ClosedMarket()
+    a.open_now = True
+    with pytest.raises(StaleSessionError):
+        await a._session_with_watchdog()
+
+
+@pytest.mark.asyncio
+async def test_개장_직후_첫_체결_전에_끊지_않는다():
+    """휴장 내내 last_msg_at 이 비어 있다가 개장하면 기한이 새로 시작돼야 한다."""
+    a = ClosedMarket()
+    task = asyncio.ensure_future(a._session_with_watchdog())
+    await asyncio.sleep(1.0)              # 휴장 상태로 기한을 여러 번 넘긴다
+    a.open_now = True                     # 개장
+    await asyncio.sleep(0.3)              # 기한(0.4s) 안 — 아직 끊기면 안 된다
+    alive = not task.done()
+    task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):
+        pass
+    assert alive, "개장하자마자 첫 체결도 오기 전에 세션을 끊었다"

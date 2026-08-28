@@ -183,9 +183,8 @@ class KISRestAdapter(Adapter):
         return (f"종목 유니버스 없음: {self.universe_path} "
                 f"(python scripts/fetch_krx_symbols.py 로 생성)")
 
-    @property
-    def is_stale(self) -> bool:
-        return False if not market_is_open() else super().is_stale
+    def expects_data(self) -> bool:
+        return market_is_open()
 
     # ── 인증 ──────────────────────────────────────────────────────────────
     def _load_cached_token(self) -> str | None:

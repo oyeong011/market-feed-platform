@@ -156,9 +156,8 @@ class KISMacroAdapter(Adapter):
     def disabled_reason(self) -> str:
         return "KIS_APP_KEY / KIS_APP_SECRET 미설정"
 
-    @property
-    def is_stale(self) -> bool:
-        return False if not self.is_market_open() else super().is_stale
+    def expects_data(self) -> bool:
+        return self.is_market_open()
 
     def is_market_open(self) -> bool:
         """휴장일 캘린더를 반영한 개장 판정.

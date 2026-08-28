@@ -160,12 +160,9 @@ class KISAdapter(Adapter):
     def disabled_reason(self) -> str:
         return "KIS_APP_KEY / KIS_APP_SECRET 미설정"
 
-    @property
-    def is_stale(self) -> bool:
+    def expects_data(self) -> bool:
         # 장이 닫혀 있으면 데이터가 없는 게 정상이다. 재접속을 유발하지 않는다.
-        if not market_is_open():
-            return False
-        return super().is_stale
+        return market_is_open()
 
     # ── 접속키 ────────────────────────────────────────────────────────────
     async def _get_approval_key(self) -> str:
