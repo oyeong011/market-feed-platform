@@ -26,8 +26,8 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: 의존성 설치
-        # 핵심 경로는 표준 라이브러리만 쓴다. 테스트 러너만 설치하면 된다.
-        run: pip install pytest
+        # 핵심 경로는 표준 라이브러리만 쓴다. 테스트 러너와 async 플러그인만 설치한다.
+        run: pip install pytest pytest-asyncio
 
       - name: 문법·임포트 점검
         run: make lint
