@@ -158,7 +158,24 @@ class Config:
     bar_interval_s: int = field(default_factory=lambda: _int("BAR_INTERVAL_S", 60))
     write_batch: int = field(default_factory=lambda: _int("WRITE_BATCH", 500))
     write_flush_s: float = field(default_factory=lambda: float(_env("WRITE_FLUSH_S", "2.0")))
-    retention_days: int = field(default_factory=lambda: _int("RETENTION_DAYS", 30))
+    # 원시 체결·호가 보존 일수. 0 = 끄기.
+    #
+    # 이 설정은 원래 선언만 있고 아무 데서도 쓰이지 않았다. 운영자가
+    # RETENTION_DAYS=7 로 두면 7일 뒤 지워진다고 믿는데 실제로는 계속 쌓였다.
+    # **아무것도 안 하는 설정은 없는 것보다 나쁘다** — 디스크가 찰 때까지
+    # 아무도 이상을 못 느낀다.
+    #
+    # 이제 writer 가 실제로 지운다(mdfeed/retention.py). 그래서 기본값을
+    # 30 에서 0 으로 내렸다. 구현이 붙는 순간 기존 배포에서 30일 넘은 데이터가
+    # 조용히 삭제되기 때문이다. 지우는 기능은 명시적으로 켜야 한다.
+    retention_days: float = field(
+        default_factory=lambda: float(_env("RETENTION_DAYS", "0")))
+    retention_interval_s: float = field(
+        default_factory=lambda: float(_env("RETENTION_INTERVAL_S", "3600")))
+    # 이 시간 안에 디스크가 찰 것으로 보이면 경고한다. 보존을 꺼 뒀어도
+    # 디스크 감시는 항상 돈다 — 재는 것과 지우는 것은 별개다.
+    disk_warn_hours: float = field(
+        default_factory=lambda: float(_env("DISK_WARN_HOURS", "24")))
 
     # ── 전략엔진 ───────────────────────────────────────────────────────────
     strategies: list[str] = field(default_factory=lambda: _list("STRATEGIES", "sma_cross,rsi_revert"))

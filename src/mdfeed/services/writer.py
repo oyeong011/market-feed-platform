@@ -58,7 +58,11 @@ class Writer:
         self.cfg = cfg
         self.registry = Registry(SERVICE)
         self.registry.declare_counters(
-            "gap_messages_total", "rows_written_total", "bars_written_total", "db_errors_total")
+            "gap_messages_total", "rows_written_total", "bars_written_total",
+            "db_errors_total",
+            # 보존이 꺼져 있어도 0 으로 존재해야 한다. 사건이 나야 생기는
+            # 지표에는 그 전에 알람을 걸 수 없다.
+            "rows_pruned_total")
         self.storage = None
         # 샤드마다 seq 공간이 독립이다. 하나로 추적하면 샤드 전환마다
         # 거짓 갭이 잡힌다 — 구독자별 재넘버링 때 겪은 것과 같은 문제다.
@@ -75,6 +79,10 @@ class Writer:
         self.upstream_ok = False
         self.db_errors = 0
         self.clock = ClockMonitor()
+        from ..retention import DiskWatch
+        self.disk = DiskWatch(cfg.sqlite_path)
+        self.pruned_rows = 0
+        self.prune_runs = 0
         # DB 를 만지는 모든 스레드가 이 락을 통과한다 (위 주석 참고)
         self._db_lock = threading.Lock()
         from ..runtime import make_tracker
@@ -191,6 +199,46 @@ class Writer:
         with self._db_lock:
             self.storage.close()
 
+    async def _retention_loop(self, stop: asyncio.Event) -> None:
+        """디스크를 재고, 보존 기간이 지난 원시 데이터를 지운다.
+
+        지우는 것보다 재는 게 먼저다. 보존을 꺼 둬도(기본) 디스크가 언제
+        차는지는 항상 봐야 한다 — 차고 나서 알면 이미 프로세스가 죽어 있다.
+        """
+        from ..retention import prune
+        cfg = self.cfg
+        interval = max(cfg.retention_interval_s, 60.0)
+        while not stop.is_set():
+            self.disk.sample()
+            r = self.disk.report()
+            self.registry.gauge("db_bytes", r["db_bytes"])
+            self.registry.gauge("disk_free_bytes", r["disk_free_bytes"])
+            # 증가율은 항상 낸다. 조건부로 내면 "안 늘고 있다"와 "계측이 안 된다"가
+            # 구분되지 않고, 알람은 지표가 없는 동안 평가 자체가 안 된다.
+            self.registry.gauge("db_growth_bytes_per_hour",
+                                self.disk.growth_bytes_per_hour())
+            if r["hours_until_full"] is not None:
+                self.registry.gauge("disk_hours_until_full", r["hours_until_full"])
+                if r["hours_until_full"] < cfg.disk_warn_hours:
+                    log.warning("디스크가 약 %.1f시간 뒤에 찬다 "
+                                "(여유 %.1fGB · 증가 %.0fMB/h). 보존 일수를 줄이거나 "
+                                "MDFEED_RETENTION_DAYS 를 켜라",
+                                r["hours_until_full"], r["disk_free_bytes"] / 1e9,
+                                r["growth_mb_per_hour"])
+
+            if cfg.retention_days > 0 and self.storage:
+                # 삭제는 블로킹이다. 이벤트 루프에서 직접 돌리면 적재가 멈춘다.
+                deleted = await asyncio.to_thread(
+                    prune, self.storage, cfg.retention_days)
+                n = sum(deleted.values())
+                if n:
+                    self.pruned_rows += n
+                    self.registry.counter("rows_pruned_total", value=n)
+                self.prune_runs += 1
+
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(stop.wait(), timeout=interval)
+
     def health(self) -> dict:
         age = time.time() - self.last_frame_at if self.last_frame_at else None
         return {
@@ -207,6 +255,9 @@ class Writer:
             "pending_rows": len(self._trades) + len(self._books),
             "open_bars": len(self._bars),
             "db_errors": self.db_errors,
+            "storage": {**self.disk.report(),
+                        "retention_days": self.cfg.retention_days,
+                        "pruned_rows": self.pruned_rows},
             "sequence": {k: v.stats() for k, v in self.seqtracks.items()},
             "clock": self.clock.report(),
         }
@@ -226,6 +277,7 @@ class Writer:
                  ", ".join(os.path.basename(p) for p in sources))
         tasks = [asyncio.create_task(self._consume(p, stop)) for p in sources] + [
             asyncio.create_task(self._flush_loop(stop)),
+            asyncio.create_task(self._retention_loop(stop)),
         ]
         from ..runtime import sample_resources
         res_task = asyncio.create_task(sample_resources(self.tracker, stop))

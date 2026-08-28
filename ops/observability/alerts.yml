@@ -117,9 +117,84 @@ groups:
           action: "느린 구독자 격리가 동작 중. :9111/subscribers 에서 어느 구독자인지 확인"
 
       - alert: IngestLatencyHigh
-        expr: mdfeed_ingest_latency_microseconds{quantile="p99"} > 1000000
+        # venue 라벨이 붙은 계열만 본다. 합산 계열(venue 없음)도 같이 매칭되면
+        # 같은 문구가 업스트림 수 + 1 번 울린다. 그리고 합산으로는 어차피
+        # 어느 업스트림 탓인지 몰라 조치할 수 없다.
+        expr: mdfeed_ingest_latency_microseconds{quantile="p99", venue!=""} > 1000000
         for: 10m
         labels: { severity: warning }
         annotations:
-          summary: "{{ $labels.service }} 수집 지연 p99 {{ $value }}µs"
-          action: "거래소 쪽 혼잡인지 우리 쪽인지 venue 별로 비교"
+          summary: "{{ $labels.venue }} 수집 지연 p99 {{ $value }}µs"
+          action: "다른 venue 도 같이 높으면 우리 쪽, 하나만 높으면 그 거래소 쪽.
+            구독 직후 스냅샷은 지연에서 빠져 있으므로(snapshot_msgs_total) 실제 지연이다"
+
+  # ── 조용히 멎는 실패 ──────────────────────────────────────────────────
+  # 2026-08-28 장중 운전에서 실제로 겪은 것들이다. 지표는 그때 만들었는데
+  # 알람을 안 걸어 뒀다. 지표만 있고 알람이 없으면 사람이 대시보드를 열어
+  # 볼 때만 보인다 — 이 프로젝트가 계속 마주친 "조용히 틀린" 실패다.
+  - name: mdfeed-silent-failures
+    rules:
+      - alert: AdapterTaskDied
+        # 어댑터 루프가 예외로 끝나면 태스크만 사라지고 서비스는 healthy 를
+        # 계속 보고한다. 실측: upbit 이 2.97시간 멎었는데 재접속은 8회에서
+        # 멈춰 있었다. 이제 되살리지만, 되살아난 사실 자체가 조사할 신호다.
+        expr: increase(mdfeed_adapter_task_deaths_total[15m]) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.venue }} 어댑터 루프가 죽어 재기동됨 ({{ $value }}회/15분)"
+          action: "journalctl 에서 '어댑터 루프가 죽었다' 스택트레이스를 볼 것.
+            되살리기는 임시 조치이고 예외 자체를 고쳐야 한다"
+
+      - alert: ReconnectStorm
+        # 정체를 못 잡는 것과 반대 방향의 실패: 멀쩡한데 계속 끊는 경우.
+        # 실측: 휴장 중 워치독이 조용함을 고장으로 읽어 시간당 18회 재접속했다.
+        # 증권사 API 는 이런 패턴에서 키 단위로 차단할 수 있다.
+        expr: increase(mdfeed_reconnects_total[1h]) > 10
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.venue }} 재접속 {{ $value }}회/시간 — 복구가 아니라 증상"
+          action: "정체 판정이 맞는지 본다. /healthz 의 expects_data 가 false 면
+            휴장인데 감시가 도는 것이다. 브로커 차단 전에 멈춰야 한다"
+
+      - alert: SymbolTruncated
+        # 심볼이 전송 폭을 넘으면 잘린다. 서로 다른 두 종목이 같은 바이트로
+        # 잘리면 하류에서 한 계열로 섞이고, 품질 검사가 거짓 급등으로 잡는다.
+        # 실측: KRX 지수명이 전부 빈 문자열이 돼 CRITICAL 2,262건이 났다.
+        expr: mdfeed_symbol_truncated_kinds > 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "심볼 {{ $value }}종이 전송 폭(16바이트)에서 잘리는 중"
+          action: ":9100/symbols/truncated 로 어느 심볼인지 확인.
+            잘린 이름이 서로 겹치면 데이터가 섞이는 중이므로 즉시 조치"
+
+  # ── 용량 ──────────────────────────────────────────────────────────────
+  - name: mdfeed-capacity
+    rules:
+      - alert: DiskFillingSoon
+        # 남은 GB 가 아니라 남은 시간으로 건다. 40GB 남았다는 게 하루치인지
+        # 한 달치인지는 유량을 모르면 해석할 수 없다.
+        # 실측: 688종목에서 하루 약 2,460만 행이 쌓인다.
+        # disk_hours_until_full 은 증가율이 0 이면 계산되지 않아 지표가 사라진다.
+        # 알람은 항상 존재하는 지표 위에 세워야 평가가 끊기지 않는다.
+        expr: mdfeed_disk_free_bytes / mdfeed_db_growth_bytes_per_hour < 24
+        for: 15m
+        labels: { severity: critical }
+        annotations:
+          summary: "디스크가 약 {{ $value }}시간 뒤에 찬다"
+          action: "MDFEED_RETENTION_DAYS 를 켜거나 줄인다. 봉과 품질 이벤트는
+            보존되고 원시 체결·호가만 지워진다"
+
+      - alert: RetentionNotRunning
+        # 보존을 켜 뒀는데 아무것도 안 지워지면 정책이 안 도는 것이다.
+        # 디스크가 차기 전엔 티가 안 난다.
+        expr: mdfeed_disk_free_bytes / mdfeed_db_growth_bytes_per_hour < 72
+          and increase(mdfeed_rows_pruned_total[6h]) == 0
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "디스크가 {{ $value }}시간 남았는데 6시간째 삭제된 행이 없다"
+          action: "writer 의 MDFEED_RETENTION_DAYS 가 0 이면 꺼져 있는 것이다.
+            켜져 있는데도 0 이면 journalctl 에서 '[retention]' 를 볼 것"

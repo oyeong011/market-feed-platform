@@ -41,6 +41,9 @@ class Storage:
     def upsert_bars(self, rows: Sequence[tuple]) -> int: ...
     def insert_signals(self, rows: Sequence[tuple]) -> int: ...
     def query(self, sql: str, params: Sequence = ()) -> list[dict]: ...
+    def execute(self, sql: str, params: Sequence = ()) -> int: ...
+    def delete_older_than(self, table: str, col: str, cutoff: int,
+                          limit: int) -> int: ...
     def close(self) -> None: ...
 
     # ── 공통 조회 (백엔드 무관) ───────────────────────────────────────────
@@ -132,6 +135,21 @@ class SQLiteStorage(Storage):
     def query(self, sql: str, params: Sequence = ()) -> list[dict]:
         cur = self.conn.execute(sql, tuple(params))
         return [dict(r) for r in cur.fetchall()]
+
+    def execute(self, sql: str, params: Sequence = ()) -> int:
+        """쓰기용. query() 로 DELETE 를 돌리면 커밋이 안 돼 아무 일도 안 일어난다.
+        조회 경로와 쓰기 경로를 나누지 않으면 이런 게 조용히 통과한다."""
+        cur = self.conn.execute(sql, tuple(params))
+        self.conn.commit()
+        return cur.rowcount
+
+    def delete_older_than(self, table: str, col: str, cutoff: int,
+                          limit: int) -> int:
+        # 한 번에 다 지우면 락을 오래 잡아 적재가 밀린다. rowid 로 끊어 지운다.
+        return self.execute(
+            f"DELETE FROM {table} WHERE rowid IN "
+            f"(SELECT rowid FROM {table} WHERE {col} < ? LIMIT {int(limit)})",
+            (cutoff,))
 
     def close(self) -> None:
         try:
@@ -226,6 +244,20 @@ class PostgresStorage(Storage):
         with self.conn.cursor(cursor_factory=self._extras.RealDictCursor) as cur:
             cur.execute(sql, tuple(params))
             return [dict(r) for r in cur.fetchall()]
+
+    def execute(self, sql: str, params: Sequence = ()) -> int:
+        with self.conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            return cur.rowcount
+
+    def delete_older_than(self, table: str, col: str, cutoff: int,
+                          limit: int) -> int:
+        # Postgres 에는 rowid 가 없다. SQLite 용 rowid 쿼리를 그대로 보내면
+        # 여기서만 조용히 실패한다 — 백엔드 차이는 저장소 계층이 흡수해야 한다.
+        return self.execute(
+            f"DELETE FROM {table} WHERE ctid IN "
+            f"(SELECT ctid FROM {table} WHERE {col} < %s LIMIT {int(limit)})",
+            (cutoff,))
 
     def close(self) -> None:
         try:

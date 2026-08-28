@@ -124,6 +124,26 @@ class FeedDaemon:
                 "reason": None if ok else "아직 첫 틱 수신 전"}
 
     # ── 실행 ──────────────────────────────────────────────────────────────
+    def _declare_venue_counters(self) -> None:
+        """업스트림별 카운터를 0으로 미리 만든다.
+
+        사건이 나야 생기는 지표에는 그 전에 알람을 걸 수 없다. Prometheus 는
+        없는 지표에 오류를 내지 않고 조용히 no data 를 주므로,
+        `increase(mdfeed_reconnects_total[1h]) > 10` 같은 규칙이 영원히
+        평가되지 않는다. 재접속이 0회인 것과 계측이 안 되는 것은 다르다.
+        """
+        venues = [{"venue": a.name.upper()} for a in self.adapters]
+        if not venues:
+            return
+        self.registry.declare_counters(
+            ticks_total=venues,
+            reconnects_total=venues,
+            adapter_errors_total=venues,
+            stale_restarts_total=venues,
+            adapter_task_deaths_total=venues,
+            snapshot_msgs_total=venues,
+        )
+
     async def _keep_running(self, adapter, stop) -> None:
         """어댑터 루프가 죽으면 되살린다.
 
@@ -198,6 +218,7 @@ class FeedDaemon:
         http.route("GET", "/symbols/truncated", _trunc)
         await http.start()
 
+        self._declare_venue_counters()
         tasks = [asyncio.create_task(self._keep_running(a, stop),
                                      name=f"adapter:{a.name}")
                  for a in self.adapters]
