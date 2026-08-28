@@ -42,15 +42,47 @@ class Storage:
     def insert_signals(self, rows: Sequence[tuple]) -> int: ...
     def query(self, sql: str, params: Sequence = ()) -> list[dict]: ...
     def execute(self, sql: str, params: Sequence = ()) -> int: ...
+    def upsert_latest(self, rows: Sequence[tuple]) -> int: ...
+
+    # ── latest 유지 (백엔드 공통) ─────────────────────────────────────────
+    @staticmethod
+    def _latest_rows(trades: Sequence[tuple]) -> list[tuple]:
+        """체결 배치에서 종목별 최신 한 줄만 추린다.
+
+        행 수가 아니라 종목 수에 비례한다. 이걸 writer 에 두면 다른 경로로
+        적재할 때(백필·복구 도구) latest 가 조용히 뒤처진다. 그래서
+        insert_trades 안에서 항상 같이 갱신한다.
+        """
+        newest: dict[tuple, tuple] = {}
+        for r in trades:
+            # (ts,venue,symbol,price,qty,side,recv_ts,latency_us,seq)
+            k = (r[1], r[2])
+            if k not in newest or r[0] > newest[k][0]:
+                newest[k] = r
+        return [(r[1], r[2], r[0], r[3], r[4], r[5], r[7]) for r in newest.values()]
     def delete_older_than(self, table: str, col: str, cutoff: int,
                           limit: int) -> int: ...
     def close(self) -> None: ...
 
     # ── 공통 조회 (백엔드 무관) ───────────────────────────────────────────
-    def latest(self, limit: int = 100) -> list[dict]:
+    def latest(self, limit: int = 100, venue: str | None = None,
+               symbol: str | None = None) -> list[dict]:
+        """종목별 최신 시세. 뷰가 아니라 적재 때 갱신해 둔 테이블을 읽는다.
+
+        걸러내기도 SQL 에서 한다. 전부 읽어 온 뒤 파이썬에서 거르면
+        symbol 하나를 물어도 비용은 전체 조회와 같다.
+        """
+        p = self.placeholder
+        where, params = [], []
+        if venue:
+            where.append(f"venue={p}"); params.append(venue.upper())
+        if symbol:
+            where.append(f"symbol={p}"); params.append(symbol)
+        cond = (" WHERE " + " AND ".join(where)) if where else ""
         return self.query(
             "SELECT venue, symbol, ts, price, qty, side, latency_us "
-            "FROM v_latest ORDER BY venue, symbol LIMIT " + str(int(limit)))
+            f"FROM latest{cond} ORDER BY venue, symbol LIMIT {int(limit)}",
+            params)
 
     def bars(self, venue: str, symbol: str, limit: int = 200) -> list[dict]:
         p = self.placeholder
@@ -98,7 +130,30 @@ class SQLiteStorage(Storage):
         with open(os.path.join(HERE, "schema_sqlite.sql"), encoding="utf-8") as fh:
             self.conn.executescript(fh.read())
         self.conn.commit()
+        self._backfill_latest()
         log.info("SQLite 스키마 준비 완료: %s", self.path)
+
+    def _backfill_latest(self) -> None:
+        """기존 DB 에 latest 테이블을 처음 만들면 비어 있다.
+
+        비워 두면 다음 체결이 올 때까지 /api/v1/quotes 가 그 종목을 못 준다.
+        거래가 뜸한 종목은 몇 시간씩 안 보인다 — 배포하자마자 조회가 비는
+        건 장애로 보인다. 히스토리에서 한 번 채운다.
+        """
+        n = self.conn.execute("SELECT COUNT(*) FROM latest").fetchone()[0]
+        if n:
+            return
+        rows = self.conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+        if not rows:
+            return
+        t0 = time.time()
+        self.conn.execute(
+            "INSERT INTO latest (venue,symbol,ts,price,qty,side,latency_us) "
+            "SELECT venue, symbol, MAX(ts), price, qty, side, latency_us "
+            "FROM trades GROUP BY venue, symbol")
+        self.conn.commit()
+        got = self.conn.execute("SELECT COUNT(*) FROM latest").fetchone()[0]
+        log.info("latest 백필: %d종목 (%d행 스캔, %.1fs)", got, rows, time.time() - t0)
 
     def _many(self, sql: str, rows: Sequence[tuple]) -> int:
         if not rows:
@@ -108,9 +163,12 @@ class SQLiteStorage(Storage):
         return len(rows)
 
     def insert_trades(self, rows):
-        return self._many(
+        n = self._many(
             "INSERT INTO trades (ts,venue,symbol,price,qty,side,recv_ts,latency_us,seq) "
             "VALUES (?,?,?,?,?,?,?,?,?)", rows)
+        if rows:
+            self.upsert_latest(self._latest_rows(rows))
+        return n
 
     def insert_book(self, rows):
         return self._many(
@@ -131,6 +189,17 @@ class SQLiteStorage(Storage):
         return self._many(
             "INSERT INTO signals (ts,venue,symbol,strategy,action,strength,ref_price) "
             "VALUES (?,?,?,?,?,?,?)", rows)
+
+    def upsert_latest(self, rows: Sequence[tuple]) -> int:
+        # ts 가 더 최신일 때만 덮는다. 샤드나 재생이 섞이면 과거 값이
+        # 최신을 밀어낼 수 있다.
+        return self._many(
+            "INSERT INTO latest (venue,symbol,ts,price,qty,side,latency_us) "
+            "VALUES (?,?,?,?,?,?,?) "
+            "ON CONFLICT(venue,symbol) DO UPDATE SET "
+            "ts=excluded.ts, price=excluded.price, qty=excluded.qty, "
+            "side=excluded.side, latency_us=excluded.latency_us "
+            "WHERE excluded.ts >= latest.ts", rows)
 
     def query(self, sql: str, params: Sequence = ()) -> list[dict]:
         cur = self.conn.execute(sql, tuple(params))
@@ -216,9 +285,12 @@ class PostgresStorage(Storage):
         return 0
 
     def insert_trades(self, rows):
-        return self._many(
+        n = self._many(
             "INSERT INTO trades (ts,venue,symbol,price,qty,side,recv_ts,latency_us,seq) "
             "VALUES (to_timestamp(%s/1e6),%s,%s,%s,%s,%s,to_timestamp(%s/1e6),%s,%s)", rows)
+        if rows:
+            self.upsert_latest(self._latest_rows(rows))
+        return n
 
     def insert_book(self, rows):
         return self._many(
@@ -239,6 +311,17 @@ class PostgresStorage(Storage):
         return self._many(
             "INSERT INTO signals (ts,venue,symbol,strategy,action,strength,ref_price) "
             "VALUES (to_timestamp(%s/1e6),%s,%s,%s,%s,%s,%s)", rows)
+
+    def upsert_latest(self, rows: Sequence[tuple]) -> int:
+        # trades.ts 가 timestamptz 이므로 latest 도 같은 타입이다.
+        # 한쪽만 정수로 두면 두 테이블의 시각을 비교할 수 없다.
+        return self._many(
+            "INSERT INTO latest (venue,symbol,ts,price,qty,side,latency_us) "
+            "VALUES (%s,%s,to_timestamp(%s/1e6),%s,%s,%s,%s) "
+            "ON CONFLICT (venue,symbol) DO UPDATE SET "
+            "ts=EXCLUDED.ts, price=EXCLUDED.price, qty=EXCLUDED.qty, "
+            "side=EXCLUDED.side, latency_us=EXCLUDED.latency_us "
+            "WHERE EXCLUDED.ts >= latest.ts", rows)
 
     def query(self, sql: str, params: Sequence = ()) -> list[dict]:
         with self.conn.cursor(cursor_factory=self._extras.RealDictCursor) as cur:

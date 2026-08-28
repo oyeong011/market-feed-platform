@@ -67,6 +67,22 @@ CREATE TABLE IF NOT EXISTS feed_stats (
     PRIMARY KEY (ts, service, venue)
 );
 
+-- 종목별 최신 시세. 뷰(v_latest)로 MAX(ts) 를 매번 계산하면 조회 비용이
+-- 누적 행수에 비례한다. 실측: 274만 행에서 1,299ms, /api/v1/quotes 가 358ms.
+-- 마켓데이터에서 가장 자주 쓰는 조회가 히스토리가 쌓일수록 느려지면 안 된다.
+-- 적재할 때 종목당 한 줄만 갱신하면 조회는 종목 수에 비례한다(수천 행).
+CREATE TABLE IF NOT EXISTS latest (
+    venue      TEXT    NOT NULL,
+    symbol     TEXT    NOT NULL,
+    ts         INTEGER NOT NULL,
+    price      REAL    NOT NULL,
+    qty        REAL    NOT NULL,
+    side       INTEGER NOT NULL DEFAULT 0,
+    latency_us INTEGER,
+    PRIMARY KEY (venue, symbol)
+);
+
+-- 뷰는 남긴다. 임시 조회와 과거 호환용이고, 서비스 경로에서는 쓰지 않는다.
 CREATE VIEW IF NOT EXISTS v_latest AS
 SELECT venue, symbol, MAX(ts) AS ts, price, qty, side, latency_us
 FROM trades GROUP BY venue, symbol;

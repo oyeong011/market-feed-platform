@@ -75,3 +75,65 @@ def test_open_storage_falls_back_to_sqlite_on_bad_dsn(tmp_path):
         assert s.counts()["trades"] == 0
     finally:
         s.close()
+
+
+# ── latest 테이블 ───────────────────────────────────────────────────────────
+# v_latest 뷰는 MAX(ts) 를 매번 계산해 조회 비용이 누적 행수에 비례한다.
+# 실측: 274만 행에서 1,299ms, /api/v1/quotes 가 358ms. 마켓데이터에서
+# 가장 자주 쓰는 조회가 히스토리가 쌓일수록 느려지면 안 된다.
+
+def test_적재하면_latest_가_같이_갱신된다(store):
+    t = us_now()
+    store.insert_trades([(t, "UPBIT", "KRW-BTC", 100.0, 1.0, 1, t, 10, 1)])
+    (row,) = store.query("SELECT * FROM latest")
+    assert row["symbol"] == "KRW-BTC" and row["price"] == 100.0
+
+
+def test_과거_체결이_최신을_밀어내지_않는다(store):
+    """샤드나 재생이 섞이면 순서가 뒤집힌 배치가 들어올 수 있다."""
+    t = us_now()
+    store.insert_trades([(t, "UPBIT", "KRW-BTC", 200.0, 1.0, 1, t, 10, 2)])
+    store.insert_trades([(t - 60_000_000, "UPBIT", "KRW-BTC", 100.0, 1.0, 1, t, 10, 1)])
+    (row,) = store.query("SELECT * FROM latest")
+    assert row["price"] == 200.0
+
+
+def test_한_배치_안의_최신만_남는다(store):
+    t = us_now()
+    store.insert_trades([
+        (t, "UPBIT", "KRW-BTC", 100.0, 1.0, 1, t, 10, 1),
+        (t + 5000, "UPBIT", "KRW-BTC", 300.0, 1.0, 1, t, 10, 2),
+        (t + 1000, "UPBIT", "KRW-BTC", 200.0, 1.0, 1, t, 10, 3),
+    ])
+    (row,) = store.query("SELECT * FROM latest")
+    assert row["price"] == 300.0
+
+
+def test_조회가_SQL_에서_걸러진다(store):
+    t = us_now()
+    store.insert_trades([
+        (t, "UPBIT", "KRW-BTC", 100.0, 1.0, 1, t, 10, 1),
+        (t, "UPBIT", "KRW-ETH", 50.0, 1.0, 1, t, 10, 2),
+        (t, "BINANCE", "BTCUSDT", 300.0, 1.0, 1, t, 10, 3),
+    ])
+    assert len(store.latest(venue="UPBIT")) == 2
+    assert len(store.latest(symbol="KRW-BTC")) == 1
+    # limit 이 거르기 전에 잘리면 원하는 종목이 빠진다
+    assert len(store.latest(limit=1, symbol="BTCUSDT")) == 1
+
+
+def test_기존_DB_는_히스토리에서_백필된다(tmp_path):
+    """latest 를 처음 만들면 비어 있다. 다음 체결이 올 때까지 조회가 비면
+    거래가 뜸한 종목은 몇 시간씩 안 보인다."""
+    import sqlite3
+    from mdfeed.storage.db import SQLiteStorage
+    path = str(tmp_path / "old.db")
+    s1 = SQLiteStorage(path); s1.ensure_schema()
+    t = us_now()
+    s1.insert_trades([(t, "UPBIT", "KRW-BTC", 100.0, 1.0, 1, t, 10, 1)])
+    s1.execute("DELETE FROM latest")               # latest 없던 시절 DB 를 흉내
+    s1.close()
+
+    s2 = SQLiteStorage(path); s2.ensure_schema()   # 재기동
+    assert len(s2.latest()) == 1
+    s2.close()

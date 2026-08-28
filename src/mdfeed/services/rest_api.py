@@ -55,12 +55,12 @@ class RestAPI:
         return Response.json({"count": len(rows), "items": rows})
 
     async def quotes(self, req: Request) -> Response:
-        rows = await self._q(self.storage.latest, req.q_int("limit", 200, 1, 2000))
-        venue, sym = req.query.get("venue"), req.query.get("symbol")
-        if venue:
-            rows = [r for r in rows if r["venue"] == venue.upper()]
-        if sym:
-            rows = [r for r in rows if r["symbol"] == sym]
+        # 걸러내기를 SQL 로 내린다. 전부 읽은 뒤 파이썬에서 거르면
+        # symbol 하나를 물어도 비용이 전체 조회와 같고, limit 도 거르기 전에
+        # 잘려서 원하는 종목이 빠질 수 있다.
+        rows = await self._q(self.storage.latest,
+                             req.q_int("limit", 200, 1, 2000),
+                             req.query.get("venue"), req.query.get("symbol"))
         return Response.json({"ts": time.time(), "count": len(rows), "items": rows})
 
     async def bars(self, req: Request) -> Response:
