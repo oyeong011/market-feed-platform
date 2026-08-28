@@ -91,6 +91,12 @@ class Config:
     krx_universe_limit: int = field(default_factory=lambda: _int("KRX_UNIVERSE_LIMIT", 0))
     # 실측 한도는 초당 5건. 4건에서도 실패가 나와 3건으로 둔다.
     kis_rest_rate: float = field(default_factory=lambda: float(_env("KIS_REST_RATE", "3.0")))
+    # AIMD 가 올라갈 수 있는 상한. 0 = kis_rest_rate 와 같음(탐색 안 함).
+    # 문서·실측 한도는 5 req/s 다. 3 에 묶어 두면 1,783종목 한 바퀴가 594초,
+    # 5 까지 올라가면 357초다 — 종목당 갱신 주기가 그만큼 짧아진다.
+    # 요청을 더 보내는 변경이라 기본으로 켜지 않는다.
+    kis_rest_rate_max: float = field(
+        default_factory=lambda: float(_env("KIS_REST_RATE_MAX", "0")))
     kis_rank_interval_s: float = field(
         default_factory=lambda: float(_env("KIS_RANK_INTERVAL_S", "10")))
     kis_index_interval_s: float = field(default_factory=lambda: float(_env("KIS_INDEX_INTERVAL_S", "10")))

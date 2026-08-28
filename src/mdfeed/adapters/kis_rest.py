@@ -96,16 +96,30 @@ class AdaptiveRateLimiter:
     (60초 15회 → 5회) 속도가 1 req/s 까지 떨어져 전체 처리량이 오히려 나빠졌다.
     거절 한 번의 비용은 요청 슬롯 하나뿐이라, 거절을 완전히 피하는 것보다
     **성공 요청 수를 최대화**하는 쪽이 맞다.
+
+    max_per_second
+    ---------------
+    원래 덧셈 증가가 설정 속도(base)에서 멈췄다. 이름은 AIMD 인데 실제로는
+    설정값을 천장으로 삼고 그 아래에서만 움직이는 반쪽이었다 — 서버에 여유가
+    생겨도 알아낼 방법이 없다. 문서·실측 한도가 5 req/s 인데 3 으로 두고 있었으니
+    KRX 1,783종목 한 바퀴가 594초였다(5 라면 357초).
+
+    max_per_second 를 주면 거기까지 올라가며 실제 한도를 찾는다. 기본값은
+    base 와 같아서 켜기 전엔 동작이 바뀌지 않는다 — 요청을 더 보내는 변경이
+    기본으로 켜져 있으면 안 된다.
     """
 
-    def __init__(self, per_second: float, max_interval: float = 2.0):
+    def __init__(self, per_second: float, max_interval: float = 2.0,
+                 max_per_second: float | None = None):
         self.base_interval = 1.0 / per_second
+        self.min_interval = 1.0 / max(max_per_second or per_second, per_second)
         self.interval = self.base_interval
         self.max_interval = max_interval
         self._next = 0.0
         self._ok_streak = 0
         self._lock = asyncio.Lock()
         self.backoffs = 0
+        self.attempts = 0
 
     async def acquire(self) -> None:
         async with self._lock:
@@ -118,19 +132,27 @@ class AdaptiveRateLimiter:
 
     def on_success(self) -> None:
         self._ok_streak += 1
-        if self._ok_streak >= 8 and self.interval > self.base_interval:
-            self.interval = max(self.base_interval, self.interval * 0.90)
+        self.attempts += 1
+        if self._ok_streak >= 8 and self.interval > self.min_interval:
+            self.interval = max(self.min_interval, self.interval * 0.90)
             self._ok_streak = 0
 
     def on_rate_limited(self) -> None:
         self._ok_streak = 0
         self.backoffs += 1
+        self.attempts += 1
         self.interval = min(self.max_interval, self.interval * 1.15)
         self._next = max(self._next, time.monotonic() + self.interval)
 
     @property
     def current_rate(self) -> float:
         return 1.0 / self.interval
+
+    @property
+    def reject_pct(self) -> float:
+        """거절 비율. 이 값 없이는 유량 설정이 맞는지 알 수 없다.
+        너무 높으면 슬롯을 버리는 것이고, 0 에 가까우면 여유를 안 쓰는 것이다."""
+        return (self.backoffs / self.attempts * 100.0) if self.attempts else 0.0
 
 
 
@@ -151,7 +173,9 @@ class KISRestAdapter(Adapter):
         self.universe = load_universe(self.universe_path, markets,
                                       getattr(cfg, "krx_universe_limit", 0))
         self.names = dict(self.universe)
-        self.limiter = AdaptiveRateLimiter(getattr(cfg, "kis_rest_rate", 3.0))
+        self.limiter = AdaptiveRateLimiter(
+            getattr(cfg, "kis_rest_rate", 3.0),
+            max_per_second=getattr(cfg, "kis_rest_rate_max", 0) or None)
         self.rank_interval_s = getattr(cfg, "kis_rank_interval_s", 10.0)
         self.token_cache = os.path.expanduser(
             getattr(cfg, "kis_token_cache", "~/.mdfeed/kis_token.json"))
@@ -348,7 +372,9 @@ class KISRestAdapter(Adapter):
                 len(self.universe) / max(self.limiter.current_rate, 0.1), 1),
             "rate_limited": self.rate_limited,
             "current_rate_per_s": round(self.limiter.current_rate, 2),
+            "max_rate_per_s": round(1.0 / self.limiter.min_interval, 2),
             "backoffs": self.limiter.backoffs,
+            "reject_pct": round(self.limiter.reject_pct, 2),
             "market_open": market_is_open(),
         })
         return d

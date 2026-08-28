@@ -311,3 +311,57 @@ class TestMacroAdapter:
         a.holidays = {today: False}
         assert a.is_market_open() is False
         assert a.is_stale is False      # 휴장일엔 정체로 판정하지 않는다
+
+
+# ── 유량 조절기가 실제로 한도를 찾는지 ─────────────────────────────────────
+# 원래 덧셈 증가가 설정 속도에서 멈췄다. 이름은 AIMD 인데 설정값을 천장으로
+# 삼고 그 아래에서만 움직이는 반쪽이었다. 문서·실측 한도가 5 req/s 인데
+# 3 으로 두고 있었으니 KRX 1,783종목 한 바퀴가 594초였다(5 라면 357초).
+
+def test_상한을_안_주면_설정_속도를_안_넘는다():
+    from mdfeed.adapters.kis_rest import AdaptiveRateLimiter
+    lim = AdaptiveRateLimiter(3.0)
+    for _ in range(500):
+        lim.on_success()
+    assert lim.current_rate == pytest.approx(3.0, rel=0.01)
+
+
+def test_상한을_주면_거기까지_올라간다():
+    from mdfeed.adapters.kis_rest import AdaptiveRateLimiter
+    lim = AdaptiveRateLimiter(3.0, max_per_second=5.0)
+    for _ in range(500):
+        lim.on_success()
+    assert lim.current_rate == pytest.approx(5.0, rel=0.01)
+
+
+def test_거절당하면_다시_내려간다():
+    from mdfeed.adapters.kis_rest import AdaptiveRateLimiter
+    lim = AdaptiveRateLimiter(3.0, max_per_second=5.0)
+    for _ in range(500):
+        lim.on_success()
+    fast = lim.current_rate
+    for _ in range(5):
+        lim.on_rate_limited()
+    assert lim.current_rate < fast
+
+
+def test_상한이_설정값보다_낮으면_무시한다():
+    """설정을 잘못 줘서 오히려 느려지면 안 된다."""
+    from mdfeed.adapters.kis_rest import AdaptiveRateLimiter
+    lim = AdaptiveRateLimiter(3.0, max_per_second=1.0)
+    for _ in range(500):
+        lim.on_success()
+    assert lim.current_rate == pytest.approx(3.0, rel=0.01)
+
+
+def test_거절률을_계산한다():
+    """이 값 없이는 유량 설정이 맞는지 알 수 없다.
+    높으면 슬롯을 버리는 것이고, 0 이면 여유를 안 쓰는 것이다."""
+    from mdfeed.adapters.kis_rest import AdaptiveRateLimiter
+    lim = AdaptiveRateLimiter(3.0)
+    assert lim.reject_pct == 0.0                  # 표본 없음 → 0
+    for _ in range(97):
+        lim.on_success()
+    for _ in range(3):
+        lim.on_rate_limited()
+    assert lim.reject_pct == pytest.approx(3.0, rel=0.01)
