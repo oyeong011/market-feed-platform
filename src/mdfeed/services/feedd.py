@@ -229,6 +229,13 @@ class FeedDaemon:
             for a in self.adapters:
                 self.registry.gauge("upstream_stale", 1 if a.is_stale else 0,
                                     venue=a.name.upper())
+            # 심볼이 전송 폭에 안 들어가면 하류에서 두 종목이 한 계열로 섞인다.
+            # 실제로 KRX 지수명이 전부 빈 문자열이 돼 "한 틱에 709% 이동"
+            # CRITICAL 이 쌓였다. 잘림은 조용하면 안 된다.
+            from ..models import truncated_symbols
+            trunc = truncated_symbols()
+            self.registry.gauge("symbol_truncated_kinds", len(trunc))
+            self.registry.gauge("symbol_truncated_total", sum(trunc.values()))
             # 시계 오프셋을 지표로도 내보낸다. /healthz 에만 있으면 사람이 볼 때만
             # 보이고, 알람은 걸 수 없다.
             for venue, c in CLOCK.report().items():

@@ -58,3 +58,43 @@ class TestBar:
 
     def test_empty_bar_vwap_falls_back_to_close(self):
         assert Bar("U", "S", 0, 60).vwap == 0.0
+
+
+# ── 심볼 인코딩 회귀 ────────────────────────────────────────────────────────
+# 실측(2026-08-28): KRX 지수명이 전송 폭에서 전부 사라졌다.
+# _fix 가 encode("ascii", "ignore") 를 써서 한글이 통째로 버려졌고,
+# '코스피 대형주'와 '코스피 중형주'가 똑같이 b' ' 하나로 뭉개졌다.
+# 두 지수의 가격이 한 계열로 섞여 품질 검사에 CRITICAL 이 쌓였다.
+
+def test_한글_심볼이_왕복한다():
+    from mdfeed.models import _fix, _unfix
+    for s in ("코스피", "코스닥", "코스피200"):
+        assert _unfix(_fix(s, 16)) == s
+
+
+def test_서로_다른_지수가_같은_바이트로_뭉개지지_않는다():
+    from mdfeed.models import _fix
+    a = _fix("코스피 대형주", 16)
+    b = _fix("코스피 중형주", 16)
+    c = _fix("코스피 소형주", 16)
+    assert len({a, b, c}) == 3
+
+
+def test_폭에서_자를_때_문자_경계를_지킨다():
+    from mdfeed.models import _fix, _unfix
+    # 한글 한 자는 3바이트다. 16바이트 경계가 글자 중간에 걸린다.
+    out = _unfix(_fix("가나다라라마바사", 16))
+    assert "�" not in out       # 깨진 바이트가 남으면 안 된다
+    assert out == "가나다라라"
+
+
+def test_잘린_심볼은_기록된다():
+    from mdfeed.models import _fix, truncated_symbols
+    _fix("아주아주아주긴심볼이름입니다", 16)
+    assert any("아주아주" in k for k in truncated_symbols())
+
+
+def test_ascii_심볼은_그대로다():
+    from mdfeed.models import _fix, _unfix
+    for s in ("BTCUSDT", "KRW-BTC", "005930"):
+        assert _unfix(_fix(s, 16)) == s

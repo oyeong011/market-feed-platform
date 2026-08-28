@@ -57,13 +57,41 @@ def now_ns() -> int:
     return time.time_ns()
 
 
+# 폭을 넘어 잘린 심볼을 기록한다. 잘림은 조용하면 안 된다 —
+# 서로 다른 두 심볼이 같은 바이트로 잘리면 하류에서 한 종목처럼 섞인다.
+_TRUNCATED: dict[str, int] = {}
+
+
+def truncated_symbols() -> dict[str, int]:
+    """폭 초과로 잘린 심볼과 횟수. 지표로 내보내기 위한 읽기 창구."""
+    return dict(_TRUNCATED)
+
+
 def _fix(s: str, n: int) -> bytes:
-    """문자열을 n바이트 고정폭으로. 초과분은 자른다(정규화 심볼은 16자 이내)."""
-    return s.encode("ascii", "ignore")[:n].ljust(n, b"\x00")
+    """문자열을 n바이트 고정폭으로.
+
+    ascii 인코딩에 "ignore" 를 쓰면 한글이 통째로 사라진다. 실제로
+    KRX 지수명이 전부 빈 문자열이 됐고, '코스피 대형주'와 '코스피 중형주'가
+    똑같이 b' ' 하나로 뭉개졌다. 두 지수의 가격이 한 계열로 섞여
+    품질 검사에 "한 틱에 709% 이동" CRITICAL 이 쌓였다.
+
+    UTF-8 로 인코딩하되 폭에서 자를 때 문자 경계를 지킨다. 바이트 중간에서
+    자르면 디코딩이 깨져 결국 같은 자리로 돌아온다.
+    """
+    b = s.encode("utf-8")
+    if len(b) > n:
+        # 문자 경계까지만 남긴다 — 깨진 바이트는 뒤에서 버려진다
+        b = b[:n]
+        while b and (b[-1] & 0xC0) == 0x80:
+            b = b[:-1]
+        if b and (b[-1] & 0xC0) == 0xC0:
+            b = b[:-1]
+        _TRUNCATED[s] = _TRUNCATED.get(s, 0) + 1
+    return b.ljust(n, b"\x00")
 
 
 def _unfix(b: bytes) -> str:
-    return b.rstrip(b"\x00").decode("ascii", "ignore")
+    return b.rstrip(b"\x00").decode("utf-8", "ignore")
 
 
 @dataclass(slots=True)
