@@ -36,7 +36,6 @@
 |---|---|
 | **30초** | 아래 "무엇을 풀려고 만들었나" 와 "개발 중 잡아낸 결함" 표 |
 | **3분** | 위 + [데모 대시보드](https://oyeong011.github.io/market-feed-platform/) |
-| **3분 · PDF** | [지원용 패킷 (A4 2쪽)](docs/assets/%EA%B6%8C%EC%98%A4%EC%98%81_%ED%8F%AC%ED%8A%B8%ED%8F%B4%EB%A6%AC%EC%98%A4_MarketDataFeed.pdf) — 대표 프로젝트 2개 · 상황/행동/확인 |
 | **10분** | + [PORTFOLIO.md](PORTFOLIO.md) — 채용 요건별 STAR 정리 |
 | **30분** | + [DETAILS.md](DETAILS.md) 계층별 설계·실측 |
 | **더** | [DESIGN.md](DESIGN.md) 판단 근거 · [RUNBOOK.md](RUNBOOK.md) 장애 대응 |
