@@ -100,10 +100,19 @@ class FeedDaemon:
     # ── 헬스 ──────────────────────────────────────────────────────────────
     def health(self) -> dict:
         ups = [a.health() for a in self.adapters]
-        # 활성 업스트림이 하나도 없거나 전부 정체면 unhealthy
+        # 활성 업스트림이 하나도 없거나 전부 정체면 unhealthy.
+        # any 가 아니라 all 인 이유: 거래소 하나가 죽었다고 프로세스를 재시작해도
+        # 그 거래소는 살아나지 않는다. 재시작이 고치지 못하는 것으로 생존 판정을
+        # 뒤집으면 재시작만 반복된다.
         healthy = bool(ups) and not all(u["stale"] for u in ups)
+        # 다만 "한 거래소가 죽었다"가 healthy:true 뒤에 숨으면 안 된다.
+        # 실측(2026-08-29): upbit 이 11.2시간 멎어 있는 동안 이 응답은 계속
+        # healthy:true 였다. 정체 지표와 경보는 제대로 돌았지만, 헬스를 눈으로
+        # 보는 사람에게는 아무 표시도 없었다. 목록으로 표면에 올린다.
+        degraded = [u["venue"] for u in ups if u["stale"]]
         return {
             "service": SERVICE, "healthy": healthy,
+            "degraded_upstreams": degraded,
             "uptime_s": round(time.time() - self._started, 1),
             "seq": self.seq,
             "subscribers": self.bus.subscriber_count,
@@ -142,6 +151,7 @@ class FeedDaemon:
             stale_restarts_total=venues,
             adapter_task_deaths_total=venues,
             snapshot_msgs_total=venues,
+            session_cancel_timeouts_total=venues,
         )
 
     async def _keep_running(self, adapter, stop) -> None:

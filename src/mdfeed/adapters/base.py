@@ -196,6 +196,44 @@ class Adapter(abc.ABC):
                 await asyncio.wait_for(self._stop.wait(), timeout=delay)
             backoff = min(backoff * 2, 30.0)
 
+    CANCEL_TIMEOUT_S = 5.0
+
+    async def _abandon(self, task: asyncio.Future, what: str) -> None:
+        """취소를 기다리되 기한을 두고, 안 끝나면 버리고 진행한다.
+
+        **복구가 정리의 성공에 의존하면 안 된다.** 취소한 코루틴의 ``finally``
+        가 죽은 소켓에서 멈추면, 그걸 기다리는 재접속 경로도 같이 멈춘다.
+        asyncio 는 이미 취소를 처리 중인 태스크에 CancelledError 를 다시
+        보내지 않으므로, 그 대기는 **스스로 풀리지 않는다.**
+
+        실측(2026-08-29): upbit 이 11.2시간 멎었는데 재접속은 3회,
+        태스크 사망 0, 정체 판정은 켜져 있었다. 감시도 지표도 경보도 전부
+        제대로 돌았는데 **복구만 안 됐다.** 원인은 `await session` 이
+        기한 없이 서 있었던 것이다.
+
+        여기서는 취소를 두 번 시도한다. 두 번째 취소는 ``finally`` 안에서
+        기다리던 지점을 깨울 수 있다. 그래도 안 끝나면 태스크를 버리고
+        재접속으로 넘어간다. 버린 태스크는 지표에 남긴다 — 조용히 새는
+        태스크가 있다는 사실 자체가 알려져야 한다.
+        """
+        for attempt in (1, 2):
+            task.cancel()
+            _done, pending = await asyncio.wait({task}, timeout=self.CANCEL_TIMEOUT_S)
+            if not pending:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    task.result()             # 예외를 읽어 경고 로그를 막는다
+                return
+            if attempt == 2:
+                log.error(
+                    "[%s] %s 취소가 %.0fs 안에 안 끝났다 — 버리고 재접속한다",
+                    self.name, what, self.CANCEL_TIMEOUT_S * 2)
+                # 버린 태스크의 예외는 아무도 안 읽으므로 여기서 삼킨다
+                task.add_done_callback(
+                    lambda t: t.cancelled() or t.exception())
+                if self.registry:
+                    self.registry.counter("session_cancel_timeouts_total",
+                                          venue=self.name.upper())
+
     async def _session_with_watchdog(self):
         """세션과 정체 감시를 나란히 돌린다. 감시가 먼저 끝나면 세션을 취소한다."""
         session = asyncio.ensure_future(self.session())
@@ -205,19 +243,15 @@ class Adapter(abc.ABC):
                 {session, guard}, return_when=asyncio.FIRST_COMPLETED
             )
             if guard in done and session not in done:
-                session.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await session
+                await self._abandon(session, "세션")
                 raise StaleSessionError(
                     f"{self.name}: 업무 메시지 {self.stale_after_s:.0f}s 이상 정체"
                 )
             return session.result()
         finally:
-            for t in (session, guard):
+            for t, what in ((session, "세션"), (guard, "정체 감시")):
                 if not t.done():
-                    t.cancel()
-                    with contextlib.suppress(asyncio.CancelledError, Exception):
-                        await t
+                    await self._abandon(t, what)
 
     def stop(self) -> None:
         self._stop.set()

@@ -159,3 +159,113 @@ async def test_스냅샷도_메시지_수와_정체_판정에는_들어간다():
     a._mark(_Fake(), measure=False)
     assert a.messages == 1
     assert a.last_msg_at > 0
+
+
+# ── 정리가 복구를 막는 경우 ────────────────────────────────────────────────
+# 실측(2026-08-29): upbit 이 11.2시간 멎었는데 재접속 3회, 태스크 사망 0,
+# 정체 지표는 1, 경보 규칙도 존재했다. 감시·지표·경보가 전부 제대로 돌았는데
+# **복구만 안 됐다.** 취소한 세션의 finally 가 죽은 소켓에서 drain 을 무기한
+# 기다렸고, 재접속 경로가 그 뒤에 서 있었다.
+
+class CleanupHangs(Adapter):
+    """취소돼도 정리가 안 끝나는 세션. 반쯤 죽은 소켓의 close 를 흉내낸다."""
+
+    name = "hang"
+
+    def __init__(self, emit=lambda m: None):
+        super().__init__(cfg=None, emit=emit)
+        self.stale_after_s = 0.3
+        self.CANCEL_TIMEOUT_S = 0.2
+        self.session_starts = 0
+        self.cleanup_entered = 0
+
+    async def session(self) -> None:
+        self.session_starts += 1
+        try:
+            while True:
+                await asyncio.sleep(0.02)
+        finally:
+            # 취소 처리 중에는 CancelledError 가 다시 오지 않는다.
+            # 이 대기는 스스로 풀리지 않는다.
+            self.cleanup_entered += 1
+            await asyncio.sleep(3600)
+
+
+@pytest.mark.asyncio
+async def test_정리가_안_끝나도_재접속으로_넘어간다():
+    """복구가 정리의 성공에 의존하면 안 된다."""
+    a = CleanupHangs()
+    t0 = time.time()
+    with pytest.raises(StaleSessionError):
+        await asyncio.wait_for(a._session_with_watchdog(), timeout=5.0)
+    took = time.time() - t0
+    assert a.cleanup_entered == 1, "정리에 들어가긴 해야 한다"
+    assert took < 3.0, f"{took:.1f}s 걸렸다 — 정리를 무기한 기다리고 있다"
+
+
+class CleanupSwallowsCancel(CleanupHangs):
+    """취소를 삼키는 정리. 두 번째 취소로도 안 깨지는 최악의 경우.
+
+    ``release`` 를 풀어 주기 전까지는 어떤 취소도 이 태스크를 못 끝낸다.
+    (시험이 불멸의 태스크를 남기지 않도록 마지막에 풀어 준다.)
+    """
+
+    name = "swallow"
+
+    def __init__(self, emit=lambda m: None):
+        super().__init__(emit)
+        self.release = asyncio.Event()
+
+    async def session(self) -> None:
+        self.session_starts += 1
+        try:
+            while True:
+                await asyncio.sleep(0.02)
+        finally:
+            self.cleanup_entered += 1
+            while not self.release.is_set():
+                try:
+                    await asyncio.wait_for(self.release.wait(), timeout=0.05)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass      # 넓게 잡는 정리 코드가 실제로 이렇게 생긴다
+
+
+@pytest.mark.asyncio
+async def test_두_번_취소해도_안_끝나면_버리고_지표에_남긴다():
+    """조용히 새는 태스크가 있다는 사실 자체가 알려져야 한다."""
+    from mdfeed.metrics import Registry
+
+    reg = Registry("test")
+    a = CleanupSwallowsCancel()
+    a.registry = reg
+    t0 = time.time()
+    with pytest.raises(StaleSessionError):
+        await asyncio.wait_for(a._session_with_watchdog(), timeout=5.0)
+    took = time.time() - t0
+    assert took < 3.0, f"{took:.1f}s — 버리지 않고 계속 기다리고 있다"
+    assert "session_cancel_timeouts_total" in reg.prometheus()
+    a.release.set()
+    await asyncio.sleep(0.1)
+
+
+@pytest.mark.asyncio
+async def test_정리가_정상이면_기다려_준다():
+    """기한은 도망갈 구멍이지 기본 경로가 아니다. 멀쩡한 정리는 끝까지 본다."""
+    done = []
+
+    class CleanupOK(ChattyButDead):
+        name = "ok"
+
+        async def session(self) -> None:
+            self.session_starts += 1
+            try:
+                while True:
+                    await asyncio.sleep(0.02)
+            finally:
+                await asyncio.sleep(0.05)
+                done.append(True)
+
+    a = CleanupOK()
+    with pytest.raises(StaleSessionError):
+        await a._session_with_watchdog()
+    assert done == [True], "정상 정리가 중간에 잘렸다"

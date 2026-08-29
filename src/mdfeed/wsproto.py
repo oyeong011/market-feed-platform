@@ -260,11 +260,28 @@ class WSClient:
                 else:
                     self._pending.append((op, payload))
 
-    async def close(self) -> None:
+    CLOSE_TIMEOUT_S = 3.0
+
+    async def close(self, timeout: float | None = None) -> None:
+        """닫기 프레임을 보내되, 기한을 둔다.
+
+        상대가 사라졌는데 RST 가 안 온 반쯤 죽은 연결에서는 송신 버퍼가 차서
+        ``drain()`` 이 무기한 멈춘다. 이 대기가 세션 정리 경로에 있으면
+        **재접속이 그 뒤에 줄을 서서 영원히 시작되지 않는다.**
+        실측(2026-08-29): upbit 이 11.2시간 멎었는데 재접속은 3회에서
+        멈춰 있었다. 어댑터 태스크는 살아 있었고, 정리가 안 끝나고 있었다.
+
+        닫기 프레임은 예의이고 **소켓을 닫는 것이 목적**이다.
+        예의를 지키느라 목적을 못 이루면 안 된다.
+        """
         self.closed = True
+        t = self.CLOSE_TIMEOUT_S if timeout is None else timeout
         try:
             self.writer.write(encode_frame(OP_CLOSE, struct.pack("!H", 1000), mask=True))
-            await self.writer.drain()
+            await asyncio.wait_for(self.writer.drain(), timeout=t)
+        except asyncio.CancelledError:
+            # 이미 취소 중이어도 아래 finally 로 소켓은 반드시 닫는다
+            pass
         except Exception:
             pass
         finally:
