@@ -187,6 +187,10 @@ class Config:
     # 자동으로 길어진다(실제 소요의 10배 아래로는 안 돈다).
     stats_ttl_s: float = field(
         default_factory=lambda: float(_env("STATS_TTL_S", "60")))
+    # 정지 요청 뒤 정리에 주는 시간. systemd TimeoutStopSec=30 보다 짧아야
+    # 의미가 있다 — 더 길면 우리가 판단하기 전에 SIGKILL 이 먼저 온다.
+    shutdown_grace_s: float = field(
+        default_factory=lambda: float(_env("SHUTDOWN_GRACE_S", "20")))
 
     # ── 전략엔진 ───────────────────────────────────────────────────────────
     strategies: list[str] = field(default_factory=lambda: _list("STRATEGIES", "sma_cross,rsi_revert"))
