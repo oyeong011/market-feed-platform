@@ -84,7 +84,15 @@ up-bg:  ## 전체 스택 백그라운드 기동
 down:  ## 전체 스택 종료
 	@pkill -f "mdfeed.cli up" 2>/dev/null || true
 	@pkill -f "mdfeed.services" 2>/dev/null || true
-	@sleep 1; echo "종료 완료"
+	@# 감독 프로세스는 자식 종료에 10초 기한을 준다. 1초 뒤에 "완료"를 찍으면
+	@# 아직 살아 있는 프로세스를 종료됐다고 보고하는 것이다. 실제로 확인한다.
+	@for i in $$(seq 1 15); do \
+	  pgrep -f "mdfeed.cli up|mdfeed.services" >/dev/null 2>&1 || break; \
+	  sleep 1; \
+	done; \
+	left=$$(pgrep -f "mdfeed.cli up|mdfeed.services" 2>/dev/null | wc -l | tr -d " "); \
+	if [ "$$left" = "0" ]; then echo "종료 완료"; \
+	else echo "종료 미완: $$left개 남음"; pgrep -af "mdfeed.cli up|mdfeed.services"; exit 1; fi
 
 status:  ## 서비스 상태
 	@bash ops/ops.sh status
