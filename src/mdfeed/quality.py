@@ -66,21 +66,42 @@ class PriceJumpCheck:
 
     name = "price_jump"
 
-    def __init__(self, abs_pct: float = 10.0, sigma: float = 8.0, window: int = 64):
+    def __init__(self, abs_pct: float = 10.0, sigma: float = 8.0, window: int = 64,
+                 max_gap_s: float = 60.0):
         self.abs_pct = abs_pct
         self.sigma = sigma
         self.window = window
-        self._last: dict[str, float] = {}
+        # 두 틱이 이만큼 떨어져 있으면 "한 틱에" 라고 부를 수 없다. 아래 참고.
+        self.max_gap_s = max_gap_s
+        self._last: dict[str, tuple[float, int]] = {}     # 가격, 시각
         self._moves: dict[str, deque] = {}
+        self.ref_resets = 0
 
     def check(self, venue: str, symbol: str, price: float, ts_ns: int) -> QualityEvent | None:
         key = f"{venue}:{symbol}"
         prev = self._last.get(key)
-        self._last[key] = price
-        if prev is None or prev <= 0 or price <= 0:
+        self._last[key] = (price, ts_ns)
+        if prev is None or prev[0] <= 0 or price <= 0:
             return None
 
-        pct = abs(price - prev) / prev * 100.0
+        prev_px, prev_ts = prev
+        # 경과 시간을 안 보면 "한 틱에 X% 이동"이 사실은 "11시간 만의 첫 틱"일 수 있다.
+        #
+        # 실측(2026-08-29): upbit 이 11.2시간 멎었다가 돌아온 직후 CRITICAL 2건이
+        # 났다. 데이터에는 아무 문제가 없었다 — 기준가가 11시간 전 값이었다.
+        # 이 검사는 ts_ns 를 받아 놓고 간격에 쓰지 않아, **스스로 이름 붙인 조건을
+        # 확인하지 않고 있었다.**
+        #
+        # 크립토는 몇 초만 비어도 이상하고, KRX 는 밤새 비는 게 정상이다.
+        # 어느 쪽이든 그 간격을 건너뛴 두 값은 "한 틱"이 아니므로 비교하지 않는다.
+        # 조용히 넘기면 안 되니 횟수를 세어 지표로 낸다 — 이 값이 튀는 것은
+        # 데이터 이상이 아니라 **수집이 끊겼다**는 신호다.
+        if abs(ts_ns - prev_ts) > self.max_gap_s * 1e9:
+            self.ref_resets += 1
+            self._moves.pop(key, None)          # 변동성 문맥도 같이 낡았다
+            return None
+
+        pct = abs(price - prev_px) / prev_px * 100.0
         moves = self._moves.setdefault(key, deque(maxlen=self.window))
 
         typical = None
@@ -92,7 +113,9 @@ class PriceJumpCheck:
 
         if pct >= self.abs_pct:
             return QualityEvent(ts_ns, self.name, SEV_CRITICAL, venue, symbol,
-                                f"한 틱에 {pct:.2f}% 이동 ({prev:,.4g} → {price:,.4g})", pct)
+                                f"한 틱에 {pct:.2f}% 이동 "
+                                f"({prev_px:,.4g} → {price:,.4g}, "
+                                f"{(ts_ns - prev_ts) / 1e9:.1f}초 간격)", pct)
         if typical and typical > 0 and pct > max(typical * self.sigma, 0.5):
             return QualityEvent(ts_ns, self.name, SEV_WARNING, venue, symbol,
                                 f"{pct:.3f}% 이동 — 평소 중앙값 {typical:.3f}% 의 "
@@ -318,5 +341,8 @@ class QualityMonitor:
             "warning": warn,
             "by_check": dict(sorted(self.counts.items())),
             "implied_fx": {k: round(v, 1) for k, v in self.cross.implied.items()},
+            # 시세 기준가를 버린 횟수. 이 값이 튀면 데이터 이상이 아니라
+            # 수집이 끊겼다는 신호다 — 검사 결과와 다른 축이라 따로 낸다.
+            "price_ref_resets": self.jump.ref_resets,
             "recent": list(reversed(self.recent[-20:])),
         }

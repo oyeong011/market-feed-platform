@@ -174,3 +174,66 @@ class TestMonitor:
         rep = m.report()
         for k in ("checked", "critical", "warning", "by_check", "implied_fx", "recent"):
             assert k in rep
+
+
+class TestPriceJump시간간격:
+    """`한 틱에 X% 이동` 은 두 틱이 붙어 있을 때만 참이다.
+
+    실측(2026-08-29): upbit 이 11.2시간 멎었다가 돌아온 직후 CRITICAL 2건이 났다.
+    데이터에는 아무 문제가 없었다 — 기준가가 11시간 전 값이었다.
+    이 검사는 ts_ns 를 받아 놓고 간격에 쓰지 않아, 스스로 이름 붙인 조건을
+    확인하지 않고 있었다.
+    """
+
+    SEC = 1_000_000_000
+
+    def test_오래_비었다_돌아오면_비교하지_않는다(self):
+        c = PriceJumpCheck(abs_pct=10.0, max_gap_s=60.0)
+        t = 1_700_000_000 * self.SEC
+        assert c.check("UPBIT", "KRW-BTC", 100.0, t) is None
+        # 11.2시간 뒤 첫 틱. 값은 정상인데 기준가가 낡았다.
+        later = t + int(11.2 * 3600 * self.SEC)
+        assert c.check("UPBIT", "KRW-BTC", 130.0, later) is None
+        assert c.ref_resets == 1
+
+    def test_재설정_뒤에는_다시_정상_판정한다(self):
+        """기준을 버리는 것이지 검사를 끄는 게 아니다."""
+        c = PriceJumpCheck(abs_pct=10.0, max_gap_s=60.0)
+        t = 1_700_000_000 * self.SEC
+        c.check("UPBIT", "KRW-BTC", 100.0, t)
+        c.check("UPBIT", "KRW-BTC", 130.0, t + 3600 * self.SEC)   # 재설정
+        ev = c.check("UPBIT", "KRW-BTC", 200.0, t + 3601 * self.SEC)
+        assert ev is not None and ev.severity == "CRITICAL"
+
+    def test_간격이_짧으면_그대로_잡는다(self):
+        c = PriceJumpCheck(abs_pct=10.0, max_gap_s=60.0)
+        t = 1_700_000_000 * self.SEC
+        c.check("UPBIT", "KRW-BTC", 100.0, t)
+        ev = c.check("UPBIT", "KRW-BTC", 130.0, t + self.SEC // 2)
+        assert ev is not None and ev.severity == "CRITICAL"
+        assert c.ref_resets == 0
+
+    def test_경보_문구에_간격을_적는다(self):
+        """읽는 사람이 '한 틱'이 몇 초인지 알아야 판단할 수 있다."""
+        c = PriceJumpCheck(abs_pct=10.0, max_gap_s=60.0)
+        t = 1_700_000_000 * self.SEC
+        c.check("UPBIT", "KRW-BTC", 100.0, t)
+        ev = c.check("UPBIT", "KRW-BTC", 130.0, t + 2 * self.SEC)
+        assert "2.0초 간격" in ev.detail
+
+    def test_시각이_거꾸로_와도_기준을_버린다(self):
+        """샤드나 재생이 섞이면 과거 시각이 뒤에 올 수 있다."""
+        c = PriceJumpCheck(abs_pct=10.0, max_gap_s=60.0)
+        t = 1_700_000_000 * self.SEC
+        c.check("UPBIT", "KRW-BTC", 100.0, t)
+        assert c.check("UPBIT", "KRW-BTC", 130.0, t - 3600 * self.SEC) is None
+        assert c.ref_resets == 1
+
+    def test_재설정_횟수가_보고에_나온다(self):
+        from mdfeed.quality import QualityMonitor
+
+        m = QualityMonitor()
+        t = 1_700_000_000 * self.SEC
+        m.on_trade("UPBIT", "KRW-BTC", 100.0, t)
+        m.on_trade("UPBIT", "KRW-BTC", 130.0, t + 3600 * self.SEC)
+        assert m.report()["price_ref_resets"] == 1

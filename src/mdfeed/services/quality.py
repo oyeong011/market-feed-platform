@@ -85,6 +85,17 @@ class QualityService:
                 return
             self._ingest(frame)
 
+    async def _gauges(self, stop: asyncio.Event) -> None:
+        """검사 결과와 다른 축의 값을 주기적으로 낸다.
+
+        기준가 재설정은 "데이터가 이상하다"가 아니라 "수집이 끊겼다"는 뜻이다.
+        같은 quality_events 카운터에 섞으면 두 사건이 구분되지 않는다.
+        """
+        while not stop.is_set():
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(stop.wait(), timeout=5.0)
+            self.registry.gauge("price_ref_resets", self.monitor.jump.ref_resets)
+
     async def _flush_loop(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
             await asyncio.sleep(3.0)
@@ -122,6 +133,7 @@ class QualityService:
             "warning": rep["warning"],
             "by_check": rep["by_check"],
             "implied_fx_krw_per_usd": rep["implied_fx"],
+            "price_ref_resets": rep["price_ref_resets"],
             "pending_writes": len(self._pending),
         }
 
@@ -144,6 +156,7 @@ class QualityService:
         log.info("품질 검사 시작 — 구독 %d개", len(sources))
         tasks = [asyncio.create_task(self._consume(p, stop)) for p in sources]
         tasks.append(asyncio.create_task(self._flush_loop(stop)))
+        tasks.append(asyncio.create_task(self._gauges(stop)))
         from ..runtime import sample_resources
         res_task = asyncio.create_task(sample_resources(self.tracker, stop))
         await stop.wait()
