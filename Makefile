@@ -42,6 +42,7 @@ lint:  ## 문법·임포트 점검 (외부 린터 없이)
 	         mdfeed.services.ws_gateway, mdfeed.services.rest_api, \
 	         mdfeed.services.writer, mdfeed.services.strategy; print('임포트 OK')"
 	@bash -n ops/ops.sh ops/watchdog.sh && echo "셸 문법 OK"
+	@$(PY) scripts/find_unused_params.py --check && echo "안 쓰는 인자 OK"
 
 bench: venv  ## 성능 벤치마크 → docs/data/bench.json
 	$(BIN)/python bench/latency_bench.py --out docs/data/bench.json

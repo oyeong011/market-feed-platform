@@ -76,6 +76,12 @@ jobs:
           grep -q "데이터 무결성: 100" /tmp/client.log || {
             echo "::error::구독자 데이터 무결성 100% 미달"; cat /tmp/client.log; exit 1; }
 
+      - name: 받아 놓고 안 쓰는 인자 검증
+        # PriceJumpCheck 가 ts_ns 를 받아 놓고 간격 판정에 안 써서
+        # "한 틱에 30% 이동"이 사실은 11시간 만의 첫 틱이었다(2026-08-29).
+        # 인자를 받는다는 건 그 값이 판단에 필요하다는 선언이다.
+        run: PYTHONPATH=src python scripts/find_unused_params.py --check
+
       - name: 알람이 실재하는 지표를 참조하는지 검증
         # 존재하지 않는 지표를 참조하는 알람은 영원히 울리지 않는데
         # Prometheus 는 오류를 내지 않는다. 여기서 잡는다.

@@ -75,7 +75,8 @@ def cmd_up(args) -> int:
         last_start[name] = time.time()
         print(f"[supervisor] {name} 기동 pid={p.pid}", flush=True)
 
-    def shutdown(signum=None, frame=None):
+    # signal.signal 콜백 규약이라 받는다. 값은 안 쓴다
+    def shutdown(_signum=None, _frame=None):
         nonlocal stopping
         if stopping:
             return

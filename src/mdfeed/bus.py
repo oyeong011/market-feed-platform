@@ -77,7 +77,8 @@ class UDSPublisher:
         os.chmod(self.path, 0o660)          # 같은 그룹만 구독 가능
         log.info("bus publisher listening on %s", self.path)
 
-    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    # reader 는 안 쓰지만 start_unix_server 콜백 규약이라 받는다
+    async def _handle(self, _reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         cid = self._next_id
         self._next_id += 1
         q: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size)
