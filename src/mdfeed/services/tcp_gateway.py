@@ -74,12 +74,31 @@ class Subscriber:
     def wants(self, key: str) -> bool:
         return self.symbols is None or key in self.symbols
 
+    def wire_bytes(self) -> int:
+        """아직 소켓으로 못 나간 바이트. 우리 큐가 아니라 transport 안이다.
+
+        큐 깊이만 보면 밀림을 놓친다. write() 는 소켓이 느려도 즉시 반환하고
+        asyncio 가 내부 버퍼에 쌓아 두기 때문이다. drain() 도 상한(기본 64KB)
+        아래에서는 그냥 통과한다. 실측: 구독자 100명 부하에서 큐 깊이는
+        20초 내내 0 이었는데 클라이언트가 잰 p99 는 363ms 였다 —
+        밀린 데이터가 전부 여기 있었다.
+        """
+        try:
+            # 속성 접근 자체도 터질 수 있다 — 닫힌 연결의 transport 를 훑다가
+            # 헬스 응답 전체가 죽으면 안 된다. getattr 을 try 밖에 두면
+            # 그 경로가 안 덮인다.
+            tr = getattr(self.writer, "transport", None)
+            return tr.get_write_buffer_size() if tr is not None else 0
+        except Exception:                         # noqa: BLE001
+            return 0
+
     def info(self) -> dict:
         return {
             "id": self.id, "peer": self.peer,
             "symbols": sorted(self.symbols) if self.symbols else "ALL",
             "sent": self.sent, "dropped": self.dropped,
             "out_seq": self.out_seq, "backlog": self.queue.qsize(),
+            "wire_bytes": self.wire_bytes(),
             "uptime_s": round(time.time() - self.connected_at, 1),
         }
 
@@ -258,6 +277,8 @@ class TCPGateway:
             "subscribers": len(self.subs),
             "cached_symbols": len(self.last),
             "total_dropped": sum(s.dropped for s in self.subs.values()),
+            "max_backlog": max((s.queue.qsize() for s in self.subs.values()), default=0),
+            "max_wire_bytes": max((s.wire_bytes() for s in self.subs.values()), default=0),
         }
 
     async def run(self, stop: asyncio.Event) -> None:
@@ -299,6 +320,9 @@ class TCPGateway:
             self.registry.gauge("subscribers", len(self.subs))
             self.registry.gauge("max_backlog",
                                 max((s.queue.qsize() for s in self.subs.values()), default=0))
+            # 큐 깊이만으로는 밀림을 못 본다. Subscriber.wire_bytes 참고.
+            self.registry.gauge("max_wire_bytes",
+                                max((s.wire_bytes() for s in self.subs.values()), default=0))
 
 
 def _key_of(frame) -> str | None:
