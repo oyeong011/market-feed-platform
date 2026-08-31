@@ -43,13 +43,15 @@ Buy&Hold 대비 초과수익. 샤프는 봉 주기에 맞춰 연율화한다.
 from __future__ import annotations
 
 import math
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from mdfeed.strategies import BUY, HOLD, SELL, REGISTRY  # noqa: E402
+from mdfeed.strategies import (BUY, HOLD, REGISTRY, SELL,  # noqa: E402
+                               SignalGate)
 
 FEE_RATE = 0.0005          # 편도 0.05%
 SLIPPAGE_BP = 5.0          # 5bp
@@ -95,6 +97,9 @@ class Result:
     end_equity: float
     fills: list = field(default_factory=list)
     equity_curve: list = field(default_factory=list)
+    # 실시간 엔진과 같은 규칙으로 억제한 시그널 수. 0 이 아니면 그만큼
+    # "전략은 내라고 했지만 배포된 시스템은 안 냈을" 시그널이 있었다는 뜻이다.
+    suppressed: int = 0
 
     @property
     def total_return(self) -> float:
@@ -159,6 +164,7 @@ class Result:
     def summary(self, bar_seconds: int = 60) -> dict:
         return {
             "strategy": self.strategy,
+            "suppressed_signals": self.suppressed,
             "symbol": self.symbol,
             "bars": self.bars,
             "trades": self.trades,
@@ -176,12 +182,19 @@ class Result:
 def run(bars: list[BarRow], strategy_name: str, symbol: str = "",
         equity: float = 1_000_000.0, fee: float = FEE_RATE,
         slippage_bp: float = SLIPPAGE_BP, lot: float | None = None,
-        cash_fraction: float = 1.0, **params) -> Result:
+        cash_fraction: float = 1.0, cooldown_s: float | None = None,
+        **params) -> Result:
     """봉 리스트에 전략 하나를 돌린다.
 
     체결 규칙: t 봉 종가로 판단 → **t+1 봉 시가**로 체결.
     lot 을 주지 않으면 symbol 의 venue 로 자동 판별한다 (주식 1주, 크립토 소수점).
     cash_fraction 은 매수 시 투입할 현금 비율. 기준 엔진과 조건을 맞출 때 쓴다.
+
+    cooldown_s 는 실시간 엔진의 시그널 간격 제한이다. **같은 구현**
+    (`strategies.SignalGate`)을 쓴다 — 예전엔 실시간에만 있어서 백테스트가
+    보고하는 성과가 배포된 시스템의 성과가 아니었다. 지표·전략을 공유해 놓고
+    그 뒤에 붙은 규칙이 갈리면 공유한 의미가 없다.
+    기본값은 설정의 SIGNAL_COOLDOWN_S 를 따른다.
     """
     if lot is None:
         lot = lot_size_for(symbol)
@@ -189,6 +202,9 @@ def run(bars: list[BarRow], strategy_name: str, symbol: str = "",
     if cls is None:
         raise ValueError(f"알 수 없는 전략: {strategy_name}")
     strat = cls(**params) if params else cls()
+    if cooldown_s is None:
+        cooldown_s = float(os.environ.get("MDFEED_SIGNAL_COOLDOWN_S", "30"))
+    gate = SignalGate(cooldown_s)
 
     res = Result(strategy_name, symbol, len(bars), equity, equity)
     cash, position = equity, 0.0
@@ -222,6 +238,8 @@ def run(bars: list[BarRow], strategy_name: str, symbol: str = "",
 
         # ── 이번 봉으로 지표 갱신 → 다음 봉에 체결할 시그널 ──────────────
         sig = strat.on_bar(bar)
+        if sig != HOLD and not gate.allow(symbol or "?", strategy_name, bar.bucket_ns):
+            sig = HOLD                       # 실시간이 억제했을 시그널은 여기서도 억제
         if sig != HOLD and i < len(bars) - 1:
             pending = sig
 
@@ -236,6 +254,7 @@ def run(bars: list[BarRow], strategy_name: str, symbol: str = "",
         res.fills.append(Fill(bars[-1].bucket_ns, "SELL", px, position, f, cash))
         position = 0.0
     res.end_equity = cash
+    res.suppressed = gate.suppressed
     return res
 
 

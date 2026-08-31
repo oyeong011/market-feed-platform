@@ -29,7 +29,7 @@ from ..httpd import HTTPServer, Response, health_routes
 from ..metrics import Registry
 from ..models import MSG_SIGNAL, MSG_TRADE, Bar, Signal, Trade, now_ns
 from ..protocol import encode
-from ..strategies import HOLD, REGISTRY as STRAT_REGISTRY
+from ..strategies import HOLD, REGISTRY as STRAT_REGISTRY, SignalGate
 
 log = logging.getLogger("mdfeed.strategy")
 SERVICE = "strategy"
@@ -45,7 +45,17 @@ class StrategyEngine:
         self.seq = 0
         self._bars: dict[str, Bar] = {}                 # key → 진행 중인 봉
         self._strats: dict[str, dict[str, object]] = {} # key → {전략명: 인스턴스}
-        self._last_signal_at: dict[tuple[str, str], float] = {}
+        # 쿨다운은 백테스트와 **같은 구현**을 쓴다. strategies.SignalGate 참고.
+        self.gate = SignalGate(cfg.signal_cooldown_s)
+        # 쿨다운은 시장 시각으로 잰다. 봉 간격보다 짧으면 같은 (종목, 전략)의
+        # 두 시그널이 항상 그보다 멀리 떨어져 있어 **절대 발동하지 않는다.**
+        # 켜 뒀다고 믿는 장치가 실은 꺼져 있는 상태라 기동 때 밝힌다.
+        if 0 < cfg.signal_cooldown_s < cfg.bar_interval_s:
+            log.warning(
+                "SIGNAL_COOLDOWN_S=%.0f초가 BAR_INTERVAL_S=%d초보다 짧다 — "
+                "봉 마감 간격이 항상 더 크므로 이 설정은 발동하지 않는다. "
+                "억제하려면 봉 간격보다 크게 잡을 것",
+                cfg.signal_cooldown_s, cfg.bar_interval_s)
         self.signals_emitted = 0
         self.bars_closed = 0
         self.frames_in = 0
@@ -90,12 +100,11 @@ class StrategyEngine:
                 continue
             if action == HOLD:
                 continue
-            now = time.time()
-            ck = (key, name)
-            if now - self._last_signal_at.get(ck, 0.0) < self.cfg.signal_cooldown_s:
+            # 시장 시각으로 잰다. 벽시계로 재면 같은 테이프를 다시 흘려도
+            # 결과가 달라져 백테스트와 대조가 성립하지 않는다.
+            if not self.gate.allow(key, name, bar.bucket_ns):
                 self.registry.counter("signals_suppressed_total")
                 continue
-            self._last_signal_at[ck] = now
             self._emit(bar, name, action)
 
     def _emit(self, bar: Bar, strategy: str, action: int) -> None:

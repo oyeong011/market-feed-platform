@@ -19,6 +19,38 @@ from .indicators import ATR, RSI, SMA, Bollinger, Crossover
 BUY, SELL, HOLD = 1, -1, 0
 
 
+class SignalGate:
+    """같은 (종목, 전략)의 시그널을 최소 간격 이상 벌린다.
+
+    **시장 시각(봉의 버킷)으로 잰다. 벽시계가 아니다.**
+
+    벽시계로 재면 같은 테이프를 다시 흘려도 결과가 달라진다. 평시에는
+    봉 간격(60초)이 쿨다운(30초)보다 길어 거의 안 걸리지만, 재생이나
+    밀린 구간을 따라잡을 때는 봉이 몇 ms 간격으로 닫혀 **전부 억제된다.**
+    정확히 그때가 백테스트와 실시간을 비교하는 순간이다.
+
+    이 게이트를 실시간 엔진과 백테스트가 **같이 쓴다.** 예전엔 실시간에만
+    있어서, 백테스트가 보고하는 성과가 배포된 시스템의 성과가 아니었다.
+    지표·전략 클래스를 공유해 놓고 그 뒤에 붙은 규칙이 갈리면 공유한 의미가 없다.
+    """
+
+    def __init__(self, cooldown_s: float = 0.0):
+        self.cooldown_s = float(cooldown_s)
+        self.suppressed = 0
+        self._last: dict[tuple, int] = {}
+
+    def allow(self, key: str, strategy: str, bar_ts_ns: int) -> bool:
+        if self.cooldown_s <= 0:
+            return True
+        ck = (key, strategy)
+        prev = self._last.get(ck)
+        if prev is not None and (bar_ts_ns - prev) < self.cooldown_s * 1e9:
+            self.suppressed += 1
+            return False
+        self._last[ck] = bar_ts_ns
+        return True
+
+
 class Strategy:
     name = "base"
 
