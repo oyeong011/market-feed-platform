@@ -3,9 +3,9 @@
 [![CI](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml)
 [![Pages](https://github.com/oyeong011/market-feed-platform/actions/workflows/pages.yml/badge.svg)](https://oyeong011.github.io/market-feed-platform/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![tests](https://img.shields.io/badge/tests-179%20passing-brightgreen)
-![obs](https://img.shields.io/badge/알람-11개%20지표%20검증-blue)
-![venues](https://img.shields.io/badge/거래소-4개%20경로%20실연결-blue)
+![tests](https://img.shields.io/badge/tests-268%20passing-brightgreen)
+![obs](https://img.shields.io/badge/알람-18개%20지표%20검증-blue)
+![venues](https://img.shields.io/badge/수집경로-5개%20실연결-blue)
 
 거래소 실시간 시세를 **수집 → 정규화 → 멀티프로토콜 배포**하는 마켓데이터 피드 서비스와
 그것을 리눅스에서 운영하기 위한 자동화 스택.
@@ -67,7 +67,7 @@ make demo        # 6개 프로세스 기동 + 대시보드 안내
 make status      # 서비스 상태 (프로세스 + HTTP 헬스 + 포트)
 make client      # 참조 TCP 구독 클라이언트 (갭 탐지 포함)
 make diag        # 장애 진단 원스톱
-make test        # 179개 테스트 — 네트워크 불필요
+make test        # 268개 테스트 — 네트워크 불필요
 ```
 
 인터넷이 없어도 됩니다. 저장소에 든 녹화 파일로 전 구간을 재현합니다:
@@ -105,7 +105,7 @@ MDFEED_ADAPTERS=replay make demo
 | 20 | **국내 금리 종목명이 복원 불가하게 손상돼 옴** | 응답 바이트가 `\xef\xbf\xbd`(U+FFFD). 서버가 보내기 전에 이미 원본을 잃었다. 게다가 키·값 대응도 행마다 어긋나 짝짓기를 믿을 수 없다 | **발행 중단.** 그럴듯한 숫자를 내보내는 대신 안 내보내고 사유·손상 건수를 `/healthz` 에 노출 |
 | 21 | 지수 폴링이 예산을 다 써서 금리 호출이 통째로 거절됨 | 새 어댑터에 유량 제한기를 안 붙였다. 같은 계정 예산을 공유하는데 한쪽만 제한을 지켰다 | 같은 `AdaptiveRateLimiter` 공유, 지수 루프 간격 확대 |
 | 22 | **설계 문서에 적은 병목 가설이 틀림** | "구독자 수백 명이면 재인코딩이 병목"이라고 적었으나 재보지 않은 추정이었다. 실측하니 100명·6,376 msg/s 에서 CPU 0.28% | 단계별로 쪼개 재측정 → 진짜 비용은 소켓 쓰기(59%). 문서 교정하고 확장 방향을 `writev`·프로세스 분리·멀티캐스트로 수정 |
-| 23 | **알람 11개 중 4개가 영원히 안 울릴 상태** | 카운터를 0으로 초기화하지 않아 첫 사건 전까지 지표가 없었다. Prometheus 는 오류 없이 조용히 no data 를 준다 | `declare_counters()` 로 사전 초기화. `scripts/verify_alerts.py` 로 CI에서 검증 |
+| 23 | **알람 4개가 영원히 안 울릴 상태** | 카운터를 0으로 초기화하지 않아 첫 사건 전까지 지표가 없었다. Prometheus 는 오류 없이 조용히 no data 를 준다 | `declare_counters()` 로 사전 초기화. `scripts/verify_alerts.py` 로 CI에서 검증 |
 | 24 | 누수 알람이 기동 때마다 울림 | 3분 표본으로 "시간당" 기울기를 내면 한 번의 흔들림이 증폭된다 | 15분 미만이면 0 보고. soak 도구도 20분 미만이면 판정 보류 |
 | 25 | "발행량 0" 알람이 매일 밤 울림 | 국내 장 마감 후 0 은 정상인데 알람이 장 시간을 몰랐다 | `market_open` 지표 노출 후 조건에 반영. 크립토/국내 알람 분리 |
 | 26 | **장애 주입 테스트가 안 돌고 통과** | CRC 시나리오의 주입 조건이 안 맞아 오염을 거의 안 넣었는데 "재동기화 0회" 로 통과 처리 | 주입 횟수를 판정 조건에 포함 — 안 돌았으면 실패 |
@@ -124,7 +124,7 @@ MDFEED_ADAPTERS=replay make demo
 |---|---|---|
 | 금융 데이터 FEED 개발·운영 | 수집 경로 5개, 배포 프로토콜 3종 | 무결성 48.5% → **100.0000%** |
 | Linux 서비스·프로세스 점검·안정화 | systemd 6유닛 + 자동 검증 + 장애 주입 | 11항목 · 복구 4종 확인 |
-| 파이프라인·배포·점검 자동화 | Makefile · CI 6잡 · Pages 자동 갱신 | 테스트 **179개** |
+| 파이프라인·배포·점검 자동화 | Makefile · CI 6잡 · Pages 자동 갱신 | 테스트 **268개** |
 | Python | 소스 8,835줄 | 핵심 의존성 **0** |
 | SQL · 관계형 DB | 복합 인덱스 · 사전 집계 · 하이퍼테이블 | 적재 **480,586 rows/s** |
 | Linux 명령·프로세스·로그 | `ops.sh diag` · RUNBOOK 8종 | 1차 진단 한 줄 |
@@ -218,7 +218,8 @@ src/mdfeed/
 
 ops/     systemd 유닛 6종 · ops.sh · watchdog.sh · healthcheck.py · logrotate
 quant/   backtest.py · run_backtest.py · integrations.py · factor_screen.py
-tests/   179개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E)
+tests/   268개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
+         복구 경로 · 종료 기한 · 컨플레이션 · 토큰 발급 · 운영 기록 환산)
 bench/   계층별 성능 측정 → docs/data/bench.json
 docs/    GitHub Pages 대시보드 (정적/실시간 겸용)
 ```
