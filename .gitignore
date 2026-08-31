@@ -20,3 +20,6 @@ data/reference/*
 
 # 녹화 샘플은 커밋한다 (오프라인 데모·CI 재현에 필요)
 !data/replay/sample.mdf
+
+# 품질 검사 회귀용 실데이터 표본은 저장소에 넣는다 (공개 시장가격, 자격증명 없음)
+!data/quality_corpus.jsonl.gz
