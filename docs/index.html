@@ -681,7 +681,12 @@ function connectLive(){
   ws.onopen = () => { clearTimeout(timer); setMode(true, "LIVE — ws-gateway 연결됨 (100ms 병합 스트림)"); };
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
-    if(m.type === "snapshot"){ qbody.innerHTML=""; rows.clear(); m.items.forEach(renderRow); sortRows(); }
+    if(m.type === "snapshot"){
+      qbody.innerHTML=""; rows.clear(); m.items.forEach(renderRow); sortRows();
+      // 서버가 이 클라이언트에게 배치를 버렸다는 뜻이다. WS 에는 시퀀스가 없어
+      // 서버가 말해 주지 않으면 알 방법이 없다 — 조용히 낡은 값을 보고 있게 된다.
+      if(m.reason === "dropped"){ setMode(true, `LIVE — 갱신 ${m.dropped}건 놓쳐 전체 재동기화`); }
+    }
     else if(m.type === "tick"){ m.items.forEach(renderRow); }
     else if(m.type === "signal"){ setMode(true, `LIVE — 시그널: ${m.symbol} ${m.action_name} @ ${m.ref_price}`); }
   };

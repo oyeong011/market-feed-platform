@@ -44,7 +44,7 @@ COALESCE_MS = 100
 
 class WSClientConn:
     __slots__ = ("id", "writer", "queue", "mode", "symbols", "sent", "dropped",
-                 "connected_at", "peer")
+                 "connected_at", "peer", "needs_resync", "resyncs")
 
     def __init__(self, cid, writer, queue_size, peer):
         self.id = cid
@@ -54,6 +54,12 @@ class WSClientConn:
         self.symbols: set[str] | None = None
         self.sent = 0
         self.dropped = 0
+        # 이 클라이언트에게 배치를 버렸다는 표시. 다음 주기에 전체 스냅샷을 보낸다.
+        # 안 그러면 놓친 종목은 **다음 체결이 올 때까지** 낡은 값이 화면에 떠 있다.
+        # 거래가 뜸한 종목이면 몇 시간이다. WS 경로에는 시퀀스가 없어서
+        # 클라이언트가 스스로 갭을 알아챌 방법도 없다.
+        self.needs_resync = False
+        self.resyncs = 0
         self.connected_at = time.time()
         self.peer = peer
 
@@ -61,6 +67,7 @@ class WSClientConn:
         return {"id": self.id, "peer": self.peer, "mode": self.mode,
                 "symbols": sorted(self.symbols) if self.symbols else "ALL",
                 "sent": self.sent, "dropped": self.dropped,
+                "resyncs": self.resyncs, "needs_resync": self.needs_resync,
                 "uptime_s": round(time.time() - self.connected_at, 1)}
 
 
@@ -69,7 +76,8 @@ class WSGateway:
         self.cfg = cfg
         self.registry = Registry(SERVICE)
         self.registry.declare_counters(
-            "dropped_total", "connections_total", "coalesced_batches_total")
+            "dropped_total", "connections_total", "coalesced_batches_total",
+            "resyncs_total")
         self.clients: dict[int, WSClientConn] = {}
         self._next_id = 0
         self.snapshot: dict[str, dict] = {}
@@ -153,6 +161,7 @@ class WSGateway:
             with contextlib.suppress(asyncio.QueueEmpty):
                 c.queue.get_nowait()
             c.dropped += 1
+            c.needs_resync = True          # 버렸으면 다음 주기에 되맞춘다
             self.registry.counter("dropped_total")
         with contextlib.suppress(asyncio.QueueFull):
             c.queue.put_nowait(data)
@@ -166,15 +175,50 @@ class WSGateway:
                 continue
             keys = list(self._dirty)
             self._dirty.clear()
+            shared = None                  # 필터 없는 클라이언트끼리 재사용
             for c in list(self.clients.values()):
                 if c.mode == "raw":
                     continue
-                items = [self.snapshot[k] for k in keys
-                         if k in self.snapshot and (not c.symbols or k in c.symbols)]
-                if not items:
+                if c.needs_resync:
+                    # 배치를 버린 클라이언트에게는 바뀐 것만 보내면 안 된다.
+                    # 놓친 종목이 그 안에 없으면 영영 안 고쳐진다. 전부 다시 준다.
+                    c.needs_resync = False
+                    c.resyncs += 1
+                    self.registry.counter("resyncs_total")
+                    items = [v for k, v in self.snapshot.items()
+                             if not c.symbols or k in c.symbols]
+                    if not items:
+                        continue
+                    # 전체 스냅샷은 대기 중인 델타를 전부 무의미하게 만든다.
+                    # 비우지 않으면 스냅샷 자체가 큐를 넘쳐 또 드롭이 되고,
+                    # 그 드롭이 다음 주기 재동기화를 부른다 — 매 주기 전체를
+                    # 보내는 되맞춤 폭주가 된다. (시험이 이걸 잡았다.)
+                    while not c.queue.empty():
+                        with contextlib.suppress(asyncio.QueueEmpty):
+                            c.queue.get_nowait()
+                    self._enqueue(c, server_frame(OP_TEXT, json.dumps(
+                        {"type": "snapshot", "ts": time.time(), "items": items,
+                         "reason": "dropped", "dropped": c.dropped},
+                        ensure_ascii=False).encode()))
+                    c.needs_resync = False     # 비우고 넣었으니 다시 서지 않는다
                     continue
-                msg = json.dumps({"type": "tick", "ts": time.time(), "items": items},
-                                 ensure_ascii=False).encode()
+                if c.symbols:
+                    items = [self.snapshot[k] for k in keys
+                             if k in self.snapshot and k in c.symbols]
+                    if not items:
+                        continue
+                    msg = json.dumps({"type": "tick", "ts": time.time(),
+                                      "items": items}, ensure_ascii=False).encode()
+                else:
+                    if shared is None:
+                        items = [self.snapshot[k] for k in keys if k in self.snapshot]
+                        if not items:
+                            break
+                        shared = server_frame(OP_TEXT, json.dumps(
+                            {"type": "tick", "ts": time.time(), "items": items},
+                            ensure_ascii=False).encode())
+                    self._enqueue(c, shared)
+                    continue
                 self._enqueue(c, server_frame(OP_TEXT, msg))
             self.registry.counter("coalesced_batches_total")
 
