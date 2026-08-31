@@ -170,40 +170,62 @@ class QuoteSanityCheck:
 
 
 class StaleValueCheck:
-    """같은 값이 계속 오는 상태.
+    """상류가 **같은 기록을 반복**하고 있는 상태.
 
     업스트림이 캐시된 값을 주거나, 우리가 갱신을 놓치고 있다는 신호다.
     **연결은 살아 있고 메시지도 오는데 내용이 안 바뀐다** — 정체 감지가 못 잡는
     종류의 정지다.
+
+    가격만 보면 안 된다 (2026-08-31 실측으로 고침)
+    ----------------------------------------------
+    예전엔 "같은 가격이 20건 이상 2분 넘게" 로 판정했다. 그 결과 9,700건이
+    쌓였는데, 상위가 EURUSDT · BTTCUSDT 처럼 **원래 가격이 잘 안 움직이는**
+    종목이었다. 실제로 EURUSDT 의 최장 동일가 구간을 뜯어 보니
+    20건이 8.1초에 걸쳐 있고 **체결시각 10개 · 수량 12개가 서로 달랐다.**
+    진짜로 별개의 체결이 같은 가격에 난 것이다 — 상류는 멀쩡했다.
+
+    조용한 시장을 상류 고장이라고 부르면, 정작 진짜 고장 때 아무도 안 본다.
+
+    그래서 판정 기준을 **기록의 동일성**으로 바꿨다. 가격뿐 아니라
+    체결시각까지 같아야 한다. 서로 다른 체결이 우연히 같은 가격에 나는 건
+    정상이지만, **같은 시각·같은 가격이 스무 번 반복되는 건** 상류가 같은
+    레코드를 다시 주고 있다는 뜻이다.
+
+    기록이 얼어 있으면 그 시각으로는 경과를 잴 수 없으므로 벽시계를 쓴다.
+    (재생·백테스트에서 결정론을 지키려고 now_fn 을 주입할 수 있게 뒀다.)
 
     호가는 원래 잘 안 바뀌므로 체결가에만 적용한다.
     """
 
     name = "stale_value"
 
-    def __init__(self, after_s: float = 120.0, min_updates: int = 20):
+    def __init__(self, after_s: float = 120.0, min_updates: int = 20,
+                 now_fn=None):
         self.after_s = after_s
         self.min_updates = min_updates
-        self._state: dict[str, tuple[float, float, int]] = {}   # 값, 최초시각, 횟수
+        self._now = now_fn or time.time
+        self._state: dict[str, tuple] = {}      # (가격, 체결시각), 최초 벽시계, 횟수
         self._fired: set[str] = set()
 
     def check(self, venue: str, symbol: str, price: float,
               ts_ns: int) -> QualityEvent | None:
         key = f"{venue}:{symbol}"
-        now = ts_ns / 1e9
+        ident = (price, ts_ns)                  # 가격만이 아니라 **기록**이다
+        now = self._now()
         prev = self._state.get(key)
-        if prev is None or prev[0] != price:
-            self._state[key] = (price, now, 1)
+        if prev is None or prev[0] != ident:
+            self._state[key] = (ident, now, 1)
             self._fired.discard(key)
             return None
-        value, since, count = prev
-        self._state[key] = (value, since, count + 1)
+        _same, since, count = prev
+        self._state[key] = (ident, since, count + 1)
         held = now - since
         if held >= self.after_s and count + 1 >= self.min_updates and key not in self._fired:
             self._fired.add(key)                       # 한 번만 알린다
             return QualityEvent(ts_ns, self.name, SEV_WARNING, venue, symbol,
-                                f"{held:.0f}초 동안 {count + 1}건이 모두 같은 값 "
-                                f"{price:,.4g} — 업스트림 캐시 의심", held)
+                                f"{held:.0f}초 동안 {count + 1}건이 모두 같은 기록 "
+                                f"(가격 {price:,.4g} · 체결시각 동일) — 업스트림이 "
+                                f"같은 레코드를 반복하고 있다", held)
         return None
 
 

@@ -86,21 +86,63 @@ class TestQuoteSanity:
 
 
 class TestStaleValue:
-    def test_repeated_value_warns_once(self):
-        c = StaleValueCheck(after_s=10.0, min_updates=5)
-        base = NS
-        events = [c.check("T", "S", 100.0, base + i * 3_000_000_000) for i in range(8)]
+    """가격이 안 변하는 것과 **기록**이 안 변하는 것은 다르다.
+
+    실측(2026-08-31): 옛 판정(가격만 비교)으로 9,700건이 쌓였는데 상위가
+    EURUSDT · BTTCUSDT 처럼 원래 가격이 잘 안 움직이는 종목이었다.
+    EURUSDT 최장 동일가 구간 20건은 8.1초에 걸쳐 있고 체결시각 10개 ·
+    수량 12개가 서로 달랐다 — 진짜 별개 체결이었고 상류는 멀쩡했다.
+
+    조용한 시장을 상류 고장이라 부르면, 진짜 고장 때 아무도 안 본다.
+    """
+
+    def _clock(self):
+        """벽시계를 주입한다. 기록이 얼면 체결시각으로는 경과를 못 잰다."""
+        t = [0.0]
+
+        def now():
+            return t[0]
+        return t, now
+
+    def test_같은_기록이_반복되면_한_번_알린다(self):
+        t, now = self._clock()
+        c = StaleValueCheck(after_s=10.0, min_updates=5, now_fn=now)
+        events = []
+        for i in range(8):
+            t[0] = i * 3.0                       # 벽시계는 흐른다
+            events.append(c.check("T", "S", 100.0, NS))   # 체결시각은 그대로
         fired = [e for e in events if e]
         assert len(fired) == 1, "같은 이상으로 반복 알람하면 무시하게 된다"
         assert fired[0].severity == SEV_WARNING
+        assert "같은 레코드를 반복" in fired[0].detail
 
-    def test_change_resets(self):
-        c = StaleValueCheck(after_s=10.0, min_updates=3)
-        base = NS
+    def test_조용한_시장은_알리지_않는다(self):
+        """같은 가격이라도 체결시각이 다르면 별개 체결이다. 정상이다."""
+        t, now = self._clock()
+        c = StaleValueCheck(after_s=10.0, min_updates=5, now_fn=now)
+        for i in range(30):
+            t[0] = i * 3.0
+            ev = c.check("T", "S", 100.0, NS + i * 1_000_000)   # 시각이 전진
+            assert ev is None, f"{i}번째에서 조용한 시장을 고장이라 했다"
+
+    def test_값이_바뀌면_기준이_풀린다(self):
+        t, now = self._clock()
+        c = StaleValueCheck(after_s=10.0, min_updates=3, now_fn=now)
         for i in range(6):
-            c.check("T", "S", 100.0, base + i * 3_000_000_000)
-        c.check("T", "S", 101.0, base + 30_000_000_000)          # 값이 바뀜
-        assert c.check("T", "S", 101.0, base + 33_000_000_000) is None
+            t[0] = i * 3.0
+            c.check("T", "S", 100.0, NS)
+        t[0] = 30.0
+        c.check("T", "S", 101.0, NS)                  # 값이 바뀜
+        t[0] = 33.0
+        assert c.check("T", "S", 101.0, NS) is None
+
+    def test_짧게_반복되는_건_안_알린다(self):
+        """after_s 를 안 넘기면 그냥 빠른 연속 체결이다."""
+        t, now = self._clock()
+        c = StaleValueCheck(after_s=120.0, min_updates=5, now_fn=now)
+        for i in range(50):
+            t[0] = i * 0.1                            # 5초 안에 50건
+            assert c.check("T", "S", 100.0, NS) is None
 
 
 class TestBarIntegrity:
