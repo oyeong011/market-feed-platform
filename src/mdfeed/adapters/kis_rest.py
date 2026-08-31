@@ -47,6 +47,7 @@ import urllib.request
 
 from ..models import BookTop, Trade, SIDE_UNKNOWN, now_ns
 from .base import Adapter, load_universe
+from .kis_token import TokenStore
 from .kis import ENDPOINTS, market_is_open
 
 log = logging.getLogger("mdfeed.adapter.kis_rest")
@@ -179,6 +180,8 @@ class KISRestAdapter(Adapter):
         self.rank_interval_s = getattr(cfg, "kis_rank_interval_s", 10.0)
         self.token_cache = os.path.expanduser(
             getattr(cfg, "kis_token_cache", "~/.mdfeed/kis_token.json"))
+        self._tokens = TokenStore.get(self.app_key, self.app_secret,
+                                      self.rest_base, self.token_cache)
         self._token: str | None = None
         self._token_exp = 0.0
         self._last_vol: dict[str, float] = {}
@@ -205,44 +208,11 @@ class KISRestAdapter(Adapter):
         return market_is_open()
 
     # ── 인증 ──────────────────────────────────────────────────────────────
-    def _load_cached_token(self) -> str | None:
-        try:
-            with open(self.token_cache, encoding="utf-8") as fh:
-                d = json.load(fh)
-            if d.get("expires_at", 0) > time.time() + 600:
-                self._token_exp = d["expires_at"]
-                return d["access_token"]
-        except Exception:                            # noqa: BLE001
-            pass
-        return None
-
+    # 토큰은 kis_macro 와 **공유**한다. 예전엔 둘이 각자 발급해서,
+    # 캐시가 만료된 콜드 스타트마다 재기동 한 번에 두 번씩 받았다.
+    # KIS 는 1일 1회 발급이 원칙이고 잦으면 이용이 제한된다.
     async def _token_get(self) -> str:
-        if self._token and self._token_exp > time.time() + 60:
-            return self._token
-        cached = self._load_cached_token()
-        if cached:
-            self._token = cached
-            return cached
-
-        def _issue() -> tuple[str, float]:
-            body = json.dumps({"grant_type": "client_credentials",
-                               "appkey": self.app_key,
-                               "appsecret": self.app_secret}).encode()
-            req = urllib.request.Request(f"{self.rest_base}/oauth2/tokenP", data=body,
-                                         headers={"content-type": "application/json"})
-            with urllib.request.urlopen(req, timeout=10) as r:
-                d = json.loads(r.read())
-            return d["access_token"], time.time() + int(d.get("expires_in", 86400)) - 120
-
-        # access_token 발급에도 자체 제한이 있다. 캐시를 파일로 두어 재기동 시 재사용한다.
-        tok, exp = await asyncio.to_thread(_issue)
-        self._token, self._token_exp = tok, exp
-        os.makedirs(os.path.dirname(self.token_cache), exist_ok=True)
-        with open(self.token_cache, "w", encoding="utf-8") as fh:
-            json.dump({"access_token": tok, "expires_at": exp}, fh)
-        os.chmod(self.token_cache, 0o600)
-        log.info("[kis_rest] access_token 발급 (캐시: %s)", self.token_cache)
-        return tok
+        return await self._tokens.token()
 
     # ── HTTP ──────────────────────────────────────────────────────────────
     async def _call(self, path: str, tr_id: str, params: dict) -> dict | None:

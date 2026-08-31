@@ -59,6 +59,7 @@ import urllib.request
 
 from ..models import Trade, SIDE_UNKNOWN, now_ns
 from .base import Adapter
+from .kis_token import TokenStore
 from .kis import ENDPOINTS, market_is_open
 from .kis_rest import AdaptiveRateLimiter
 
@@ -136,6 +137,8 @@ class KISMacroAdapter(Adapter):
         self.rate_interval_s = float(getattr(cfg, "kis_rate_interval_s", 300.0))
         self.token_cache = os.path.expanduser(
             getattr(cfg, "kis_token_cache", "~/.mdfeed/kis_token.json"))
+        self._tokens = TokenStore.get(self.app_key, self.app_secret,
+                                      self.rest_base, self.token_cache)
         self._token: str | None = None
         self._token_exp = 0.0
         self.limiter = AdaptiveRateLimiter(float(getattr(cfg, "kis_rest_rate", 3.0)))
@@ -174,35 +177,10 @@ class KISMacroAdapter(Adapter):
         return market_is_open()
 
     # ── 인증 ──────────────────────────────────────────────────────────────
+    # 토큰은 kis_rest 와 **공유**한다. adapters/kis_token.py 참고.
     async def _token_get(self) -> str:
-        if self._token and self._token_exp > time.time() + 60:
-            return self._token
-        try:
-            with open(self.token_cache, encoding="utf-8") as fh:
-                d = json.load(fh)
-            if d.get("expires_at", 0) > time.time() + 600:
-                self._token, self._token_exp = d["access_token"], d["expires_at"]
-                return self._token
-        except Exception:                            # noqa: BLE001
-            pass
+        return await self._tokens.token()
 
-        def _issue():
-            body = json.dumps({"grant_type": "client_credentials",
-                               "appkey": self.app_key,
-                               "appsecret": self.app_secret}).encode()
-            req = urllib.request.Request(f"{self.rest_base}/oauth2/tokenP", data=body,
-                                         headers={"content-type": "application/json"})
-            with urllib.request.urlopen(req, timeout=10) as r:
-                d = json.loads(r.read())
-            return d["access_token"], time.time() + int(d.get("expires_in", 86400)) - 120
-
-        tok, exp = await asyncio.to_thread(_issue)
-        self._token, self._token_exp = tok, exp
-        os.makedirs(os.path.dirname(self.token_cache), exist_ok=True)
-        with open(self.token_cache, "w", encoding="utf-8") as fh:
-            json.dump({"access_token": tok, "expires_at": exp}, fh)
-        os.chmod(self.token_cache, 0o600)
-        return tok
 
     async def _call(self, path: str, tr_id: str, params: dict) -> dict | None:
         await self.limiter.acquire()
