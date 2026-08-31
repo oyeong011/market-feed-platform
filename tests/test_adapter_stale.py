@@ -269,3 +269,40 @@ async def test_정리가_정상이면_기다려_준다():
     with pytest.raises(StaleSessionError):
         await a._session_with_watchdog()
     assert done == [True], "정상 정리가 중간에 잘렸다"
+
+
+@pytest.mark.asyncio
+async def test_이미_버린_태스크를_또_기다리지_않는다():
+    """정체 복구가 기한을 두 번 소모하면 안 된다.
+
+    정체 경로에서 세션을 버린 뒤 finally 가 `not done()` 만 보고 또 버리면,
+    복구가 10초가 아니라 20초 걸리고 버림 지표도 두 번 오른다.
+    그 지표가 SessionCancelTimeout 경보를 움직인다.
+
+    release 해제를 try/finally 에 두는 이유: 단언이 실패하면 불멸의 태스크가
+    남아 **시험이 실패하는 대신 멈춘다.** 오늘 고친 결함과 같은 모양이다.
+    """
+    from mdfeed.metrics import Registry
+
+    reg = Registry("test")
+    a = CleanupSwallowsCancel()
+    a.registry = reg
+    # 감시자 탐지 시간(약 0.15s)과 버림 시간을 크게 벌려 둔다.
+    # 버림 1회 = 0.5s × 2시도 = 1.0s, 2회면 2.0s 라 사이가 넉넉히 벌어진다.
+    a.stale_after_s = 0.1
+    a.CANCEL_TIMEOUT_S = 0.5
+    try:
+        t0 = time.time()
+        with pytest.raises(StaleSessionError):
+            await asyncio.wait_for(a._session_with_watchdog(), timeout=8.0)
+        took = time.time() - t0
+        line = [x for x in reg.prometheus().splitlines()
+                if "session_cancel_timeouts_total" in x]
+        assert line, reg.prometheus()
+        count = float(line[0].rsplit(" ", 1)[1])
+        assert count == 1, f"버림이 {count}회 — 같은 태스크를 두 번 버렸다"
+        # 탐지 0.15s + 버림 1.0s ≈ 1.15s. 두 번 버리면 2.15s 가 된다.
+        assert took < 1.6, f"{took:.2f}s — 기한을 두 번 기다렸다"
+    finally:
+        a.release.set()
+        await asyncio.sleep(0.15)

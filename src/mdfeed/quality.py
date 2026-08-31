@@ -67,11 +67,14 @@ class PriceJumpCheck:
     name = "price_jump"
 
     def __init__(self, abs_pct: float = 10.0, sigma: float = 8.0, window: int = 64,
-                 max_gap_s: float = 60.0):
+                 max_gap_s: float = 300.0):
         self.abs_pct = abs_pct
         self.sigma = sigma
         self.window = window
         # 두 틱이 이만큼 떨어져 있으면 "한 틱에" 라고 부를 수 없다. 아래 참고.
+        # 60초로 뒀다가 300초로 올렸다 — KRX 의 거래가 뜸한 종목은 장중에도
+        # 몇 분씩 체결이 없다. 너무 짧게 잡으면 **정작 큰 움직임이 중요한
+        # 비유동 종목에서만** 판정이 꺼진다.
         self.max_gap_s = max_gap_s
         self._last: dict[str, tuple[float, int]] = {}     # 가격, 시각
         self._moves: dict[str, deque] = {}
@@ -96,9 +99,20 @@ class PriceJumpCheck:
         # 어느 쪽이든 그 간격을 건너뛴 두 값은 "한 틱"이 아니므로 비교하지 않는다.
         # 조용히 넘기면 안 되니 횟수를 세어 지표로 낸다 — 이 값이 튀는 것은
         # 데이터 이상이 아니라 **수집이 끊겼다**는 신호다.
-        if abs(ts_ns - prev_ts) > self.max_gap_s * 1e9:
+        gap_s = abs(ts_ns - prev_ts) / 1e9
+        if gap_s > self.max_gap_s:
             self.ref_resets += 1
             self._moves.pop(key, None)          # 변동성 문맥도 같이 낡았다
+            pct = abs(price - prev_px) / prev_px * 100.0
+            if pct >= self.abs_pct:
+                # 조용히 버리지 않는다. 간격이 벌어졌다고 큰 움직임을 아예
+                # 안 보면, 거래가 뜸한 종목의 상한가가 통째로 안 보인다.
+                # 다만 "한 틱에"가 아니므로 CRITICAL 은 아니다 — 봐야 하는 값이지
+                # 쓰면 안 되는 값이 아니다.
+                return QualityEvent(ts_ns, self.name, SEV_WARNING, venue, symbol,
+                                    f"{gap_s:,.0f}초 만의 첫 틱에서 {pct:.2f}% 이동 "
+                                    f"({prev_px:,.4g} → {price:,.4g}) — "
+                                    f"기준가가 낡아 한 틱 판정은 하지 않는다", pct)
             return None
 
         pct = abs(price - prev_px) / prev_px * 100.0
@@ -293,7 +307,8 @@ class QualityMonitor:
 
     def __init__(self, cfg=None):
         g = lambda n, d: float(getattr(cfg, n, d)) if cfg else d      # noqa: E731
-        self.jump = PriceJumpCheck(g("qc_jump_abs_pct", 10.0), g("qc_jump_sigma", 8.0))
+        self.jump = PriceJumpCheck(g("qc_jump_abs_pct", 10.0), g("qc_jump_sigma", 8.0),
+                                   max_gap_s=g("qc_jump_max_gap_s", 300.0))
         self.quote = QuoteSanityCheck(g("qc_max_spread_bp", 1000.0))
         self.stale = StaleValueCheck(g("qc_stale_after_s", 120.0))
         self.bar = BarIntegrityCheck()

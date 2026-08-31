@@ -175,13 +175,21 @@ class QualityService:
     def _ensure_table(self) -> None:
         ts_type = "TIMESTAMPTZ" if self.storage.kind == "postgres" else "INTEGER"
         num = "DOUBLE PRECISION" if self.storage.kind == "postgres" else "REAL"
-        self.storage.query(
+        # DDL 은 반드시 쓰기 경로로 보낸다. query() 는 이제 읽기 전용 커넥션을
+        # 쓰므로 CREATE 가 "attempt to write a readonly database" 로 죽는다.
+        # 이미 있는 테이블이면 쓰기가 없어 통과하기 때문에 **신규 설치와 CI
+        # 에서만** 터진다 — 돌고 있는 배포에서는 안 보이는 종류의 결함이다.
+        self.storage.execute(
             f"CREATE TABLE IF NOT EXISTS quality_events ("
             f" ts {ts_type} NOT NULL, check_name TEXT NOT NULL, severity TEXT NOT NULL,"
             f" venue TEXT, symbol TEXT, detail TEXT, value {num})")
-        with contextlib.suppress(Exception):
-            self.storage.query(
+        # 인덱스는 실패해도 서비스는 돌아야 한다. 다만 조용히 넘기지는 않는다 —
+        # 예전엔 suppress 안에 있어서 신규 DB 에 인덱스가 영영 안 생겼다.
+        try:
+            self.storage.execute(
                 "CREATE INDEX IF NOT EXISTS idx_quality_ts ON quality_events (ts DESC)")
+        except Exception as e:                       # noqa: BLE001
+            log.warning("quality_events 인덱스를 못 만들었다: %s", e)
 
 
 def main() -> int:

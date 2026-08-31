@@ -225,7 +225,10 @@ class SQLiteStorage(Storage):
         언젠가 깨지는데, 커넥션이 거부하면 그때 바로 드러난다.
         """
         if self._closed:
-            return self.conn
+            # 닫힌 뒤에 본 커넥션으로 폴백하면, 방금 close() 한 커넥션을 다른
+            # 스레드가 만지게 된다. 그게 예전에 락을 걸었던 이유다.
+            # 폴백 대신 거부한다 — 종료 중 조회는 실패하는 게 맞다.
+            raise RuntimeError("저장소가 이미 닫혔다 — 조회를 받지 않는다")
         tid = threading.get_ident()
         conn = self._readers.get(tid)
         if conn is not None:

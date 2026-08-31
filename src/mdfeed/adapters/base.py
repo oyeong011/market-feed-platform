@@ -238,19 +238,24 @@ class Adapter(abc.ABC):
         """세션과 정체 감시를 나란히 돌린다. 감시가 먼저 끝나면 세션을 취소한다."""
         session = asyncio.ensure_future(self.session())
         guard = asyncio.ensure_future(self._stale_watchdog())
+        abandoned: set = set()
         try:
             done, _ = await asyncio.wait(
                 {session, guard}, return_when=asyncio.FIRST_COMPLETED
             )
             if guard in done and session not in done:
                 await self._abandon(session, "세션")
+                abandoned.add(session)
                 raise StaleSessionError(
                     f"{self.name}: 업무 메시지 {self.stale_after_s:.0f}s 이상 정체"
                 )
             return session.result()
         finally:
+            # 이미 버린 태스크를 여기서 또 버리면 기한을 두 번 기다린다.
+            # 정체 복구가 10초가 아니라 20초가 되고, 버림 지표도 두 번 오른다
+            # (그 지표가 SessionCancelTimeout 경보를 움직인다).
             for t, what in ((session, "세션"), (guard, "정체 감시")):
-                if not t.done():
+                if t not in abandoned and not t.done():
                     await self._abandon(t, what)
 
     def stop(self) -> None:

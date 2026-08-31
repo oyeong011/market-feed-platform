@@ -149,6 +149,10 @@ class Config:
     # 품질 검사 임계값. 오탐이 잦으면 사람이 알람을 무시하게 되므로 보수적으로.
     qc_jump_abs_pct: float = field(default_factory=lambda: float(_env("QC_JUMP_ABS_PCT", "10")))
     qc_jump_sigma: float = field(default_factory=lambda: float(_env("QC_JUMP_SIGMA", "8")))
+    # 두 틱이 이만큼 넘게 떨어져 있으면 "한 틱에 X% 이동" 판정을 하지 않는다.
+    # 크립토는 몇 초만 비어도 이상하고 KRX 비유동 종목은 장중에도 몇 분씩 비어서,
+    # 짧게 잡으면 정작 큰 움직임이 중요한 종목에서만 판정이 꺼진다.
+    qc_jump_max_gap_s: float = field(default_factory=lambda: float(_env("QC_JUMP_MAX_GAP_S", "300")))
     qc_max_spread_bp: float = field(default_factory=lambda: float(_env("QC_MAX_SPREAD_BP", "1000")))
     qc_stale_after_s: float = field(default_factory=lambda: float(_env("QC_STALE_AFTER_S", "120")))
     qc_divergence_pct: float = field(default_factory=lambda: float(_env("QC_DIVERGENCE_PCT", "3")))

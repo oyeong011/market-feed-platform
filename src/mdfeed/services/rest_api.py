@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import threading
 import time
 
 from ..httpd import HTTPServer, Request, Response, health_routes
@@ -23,6 +22,8 @@ from ..storage.db import open_storage
 
 log = logging.getLogger("mdfeed.rest_api")
 SERVICE = "rest-api"
+# /api/v1/symbols 기본 상한. 넘으면 응답에 truncated 로 밝힌다.
+SYMBOL_LIST_CAP = 5000
 
 
 class RestAPI:
@@ -39,8 +40,9 @@ class RestAPI:
         # 이 프로세스를 실시간 경로와 따로 뗀 이유가 "무거운 조회 한 방이
         # 나머지를 막지 않게"인데, 정작 프로세스 안에서 그 일이 벌어지고 있었다.
         # 이제 저장소가 스레드마다 조회 커넥션을 준다(SQLite WAL 은 읽기 동시성이
-        # 있다). 락은 종료 경로에만 남긴다.
-        self._close_lock = threading.Lock()
+        # 있다). 종료는 HTTP 를 먼저 닫아 새 조회를 막는 것으로 처리하고,
+        # 닫힌 뒤 들어온 조회는 저장소가 거부한다 — 락은 없앴다.
+        # (아무도 잡지 않는 락은 아무것도 지키지 않는다.)
         # 적재 통계는 요청 경로에서 세지 않는다. 아래 _counts_loop 참고.
         self._counts: dict | None = None
         self._counts_at = 0.0
@@ -70,9 +72,13 @@ class RestAPI:
         if req.query.get("bars") in ("1", "true"):
             rows = await self._q(self.storage.symbols)
         else:
-            rows = await self._q(self.storage.latest, 5000, None, None)
+            cap = req.q_int("limit", SYMBOL_LIST_CAP, 1, 50_000)
+            rows = await self._q(self.storage.latest, cap, None, None)
             rows = [{"venue": r["venue"], "symbol": r["symbol"], "last_ts": r["ts"]}
                     for r in rows]
+            # 잘렸는데 count 만 주면 그게 전체인 줄 안다. 잘림은 조용하면 안 된다.
+            return Response.json({"count": len(rows), "limit": cap,
+                                  "truncated": len(rows) >= cap, "items": rows})
         return Response.json({"count": len(rows), "items": rows})
 
     async def quotes(self, req: Request) -> Response:
@@ -120,7 +126,19 @@ class RestAPI:
         주는 편이 낫다. 그래서 ``as_of`` 와 ``age_s`` 를 같이 낸다.
         """
         # 아직 한 번도 못 셌으면 진행 중인 첫 집계를 기다린다. 그 뒤로는 즉시.
-        await self._counts_ready.wait()
+        # **기한을 둔다.** 종료가 집계 태스크를 취소하면 이 이벤트는 영영 안 켜지고,
+        # 그러면 이 요청이 http.close() 를 붙잡은 채 안 끝난다.
+        # 오늘 고친 결함들과 같은 모양이라 여기도 막는다.
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(self._counts_ready.wait(),
+                                   timeout=self.cfg.stats_ttl_s)
+        if self._counts is None:
+            return Response.json({
+                "backend": self.storage.kind, "counts": None,
+                "pending": True,
+                "reason": "적재 통계를 아직 한 번도 세지 못했다",
+                "uptime_s": round(time.time() - self._started, 1),
+            }, 503)
         return Response.json({
             "backend": self.storage.kind,
             "counts": self._counts,
@@ -196,8 +214,7 @@ class RestAPI:
             await counts_task
         # HTTP 를 먼저 닫아 새 조회가 안 들어오게 한 뒤에 저장소를 닫는다.
         await http.close()
-        with self._close_lock:
-            await asyncio.to_thread(self.storage.close)
+        await asyncio.to_thread(self.storage.close)
 
 
 def main() -> int:

@@ -164,14 +164,28 @@ def _spawn_workers(host: str, port: int, n: int, seconds: float,
         on_start()
 
     results = []
-    for proc, path in zip(procs, outs):
-        _, err = proc.communicate(timeout=seconds + 120)
-        try:
-            with open(path, encoding="utf-8") as fh:
-                results.append(json.load(fh))
-        except Exception as e:                       # noqa: BLE001
-            print(f"  [경고] 워커 결과를 못 읽었다: {e} {err[-200:]!r}")
-        finally:
+    try:
+        for proc, path in zip(procs, outs):
+            try:
+                _, err = proc.communicate(timeout=seconds + 120)
+            except subprocess.TimeoutExpired:
+                # 하나가 안 끝났다고 나머지를 고아로 남기면 다음 회차가 오염된다.
+                print(f"  [경고] 워커 {proc.pid} 가 안 끝났다 — 죽인다")
+                proc.kill()
+                proc.communicate()
+                continue
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    results.append(json.load(fh))
+            except Exception as e:                   # noqa: BLE001
+                print(f"  [경고] 워커 결과를 못 읽었다: {e} {(err or b'')[-200:]!r}")
+    finally:
+        for proc in procs:                           # 예외로 빠져나가도 남기지 않는다
+            if proc.poll() is None:
+                with contextlib.suppress(Exception):
+                    proc.kill()
+                    proc.communicate(timeout=5)
+        for path in outs:
             with contextlib.suppress(OSError):
                 os.unlink(path)
     return results
@@ -214,6 +228,39 @@ def _run_subscribers(host: str, port: int, n: int, seconds: float,
     }
 
 
+class _PeakSampler(threading.Thread):
+    """부하가 도는 **동안** 게이트웨이 밀림의 최고점을 잡는다.
+
+    회차가 끝난 뒤에 재면 구독자가 이미 다 끊겨 `max(...)` 가 빈 집합이 되고
+    무조건 0 이 나온다. 그 0 을 근거로 "서버는 안 밀렸다"고 판정하면,
+    **아무것도 안 재고 서버를 무죄 방면하는 것**이다.
+    실제로 이 표의 "서버 큐 0" 열이 한동안 그런 값이었다.
+    """
+
+    def __init__(self, admin: int, interval: float = 0.5):
+        super().__init__(daemon=True)
+        self.admin = admin
+        self.interval = interval
+        self.peak_backlog = 0
+        self.peak_wire = 0
+        self.samples = 0
+        self._stop = threading.Event()
+
+    def run(self) -> None:
+        while not self._stop.is_set():
+            g = gateway_stats(self.admin)
+            if g:
+                self.samples += 1
+                self.peak_backlog = max(self.peak_backlog, g.get("max_backlog") or 0)
+                self.peak_wire = max(self.peak_wire, g.get("max_wire_bytes") or 0)
+            self._stop.wait(self.interval)
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self.is_alive():
+            self.join(timeout=3)
+
+
 def run_round(host: str, port: int, n: int, seconds: float, admin: int,
               processes: int = 1) -> dict:
     # 상류 유량을 회차마다 같이 잰다. 이게 없으면 회차 간 비교가 성립하지 않는다.
@@ -223,17 +270,23 @@ def run_round(host: str, port: int, n: int, seconds: float, admin: int,
     procs = max(1, min(processes, n))
     win: dict = {}
 
-    if procs == 1:
-        win["g0"] = gateway_stats(admin)
-        win["t0"] = time.perf_counter()
-        parts = [_run_subscribers(host, port, n, seconds)]
-    else:
-        def _mark_start() -> None:
+    sampler = _PeakSampler(admin)
+    try:
+        if procs == 1:
             win["g0"] = gateway_stats(admin)
             win["t0"] = time.perf_counter()
+            sampler.start()
+            parts = [_run_subscribers(host, port, n, seconds)]
+        else:
+            def _mark_start() -> None:
+                win["g0"] = gateway_stats(admin)
+                win["t0"] = time.perf_counter()
+                sampler.start()
 
-        parts = _spawn_workers(host, port, n, seconds, procs,
-                               start_at=time.time() + 3.0, on_start=_mark_start)
+            parts = _spawn_workers(host, port, n, seconds, procs,
+                                   start_at=time.time() + 3.0, on_start=_mark_start)
+    finally:
+        sampler.stop()
     g0 = win.get("g0", {})
     elapsed = time.perf_counter() - win["t0"]
 
@@ -274,10 +327,12 @@ def run_round(host: str, port: int, n: int, seconds: float, admin: int,
         if elapsed and g.get("frames_in") is not None
            and g0.get("frames_in") is not None else None,
         "upstream_symbols": g.get("cached_symbols"),
-        # 서버가 실제로 밀렸는지. 이 둘이 0 인데 지연이 크면 그 지연은
-        # 서버 것이 아니다 — 측정 도구나 커널을 봐야 한다.
-        "gateway_max_backlog": g.get("max_backlog"),
-        "gateway_max_wire_bytes": g.get("max_wire_bytes"),
+        # 서버가 실제로 밀렸는지. **회차가 도는 동안** 0.5초마다 재서 최고점을 쓴다.
+        # 끝난 뒤에 재면 구독자가 다 끊겨 항상 0 이 나온다.
+        # 이 둘이 0 인데 지연이 크면 그 지연은 서버 것이 아니다.
+        "gateway_max_backlog": sampler.peak_backlog,
+        "gateway_max_wire_bytes": sampler.peak_wire,
+        "gateway_samples": sampler.samples,
     }
 
 
@@ -344,17 +399,20 @@ def main() -> int:
         bl = r.get("gateway_max_backlog")
         wb = r.get("gateway_max_wire_bytes")
         # 서버가 안 밀렸는데 지연만 크면 그 지연은 서버 것이 아니다.
-        idle_server = (bl in (0, None)) and (wb in (0, None))
+        # 표본이 없으면 "밀리지 않았다"고 말할 수 없다. 안 잰 것과 0 은 다르다.
+        sampled = (r.get("gateway_samples") or 0) >= 3
+        idle_server = sampled and (bl in (0, None)) and (wb in (0, None))
         slow = r["latency_p99_us"] > 100_000
         verdict = ("클라이언트 의심 — 프로세스를 늘려 재볼 것"
                    if idle_server and slow and r["processes"] * 40 < r["subscribers"]
                    else "클라이언트 의심 — 서버 큐가 비었다" if idle_server and slow
                    else "")
+        note = "" if sampled else " (표본없음)"
         print(f"{r['subscribers']:>6} "
               f"{(f'{keep:.1f}%' if keep is not None else '-'):>20} "
               f"{r['latency_p99_us'] / p99base:>10.1f}x "
               f"{str(bl if bl is not None else '-'):>9} "
-              f"{(f'{wb:,}B' if wb is not None else '-'):>11}   {verdict}")
+              f"{(f'{wb:,}B' if wb is not None else '-')}{note:>11}   {verdict}")
 
     payload = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),

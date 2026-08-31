@@ -280,8 +280,11 @@ class WSClient:
             self.writer.write(encode_frame(OP_CLOSE, struct.pack("!H", 1000), mask=True))
             await asyncio.wait_for(self.writer.drain(), timeout=t)
         except asyncio.CancelledError:
-            # 이미 취소 중이어도 아래 finally 로 소켓은 반드시 닫는다
-            pass
+            # 소켓은 아래 finally 로 반드시 닫되, **취소는 다시 던진다.**
+            # 여기서 삼키면 코루틴이 아무 일 없었다는 듯 이어져 뒤의 await 들이
+            # 취소되지 않은 채로 돈다. 어댑터의 재취소(_abandon 2차 시도)가
+            # 정확히 이 wait_for 로 배달되므로, 삼키면 그 탈출구까지 막는다.
+            raise
         except Exception:
             pass
         finally:

@@ -187,14 +187,38 @@ class TestPriceJump시간간격:
 
     SEC = 1_000_000_000
 
-    def test_오래_비었다_돌아오면_비교하지_않는다(self):
+    def test_오래_비었다_돌아오면_한_틱_판정을_안_한다(self):
+        """CRITICAL 이 아니어야 한다. 그렇다고 조용히 버려서도 안 된다."""
         c = PriceJumpCheck(abs_pct=10.0, max_gap_s=60.0)
         t = 1_700_000_000 * self.SEC
         assert c.check("UPBIT", "KRW-BTC", 100.0, t) is None
         # 11.2시간 뒤 첫 틱. 값은 정상인데 기준가가 낡았다.
         later = t + int(11.2 * 3600 * self.SEC)
-        assert c.check("UPBIT", "KRW-BTC", 130.0, later) is None
+        ev = c.check("UPBIT", "KRW-BTC", 130.0, later)
         assert c.ref_resets == 1
+        assert ev is not None and ev.severity == "WARNING", "조용히 버리면 안 된다"
+        assert "첫 틱" in ev.detail and "40,320초" in ev.detail
+
+    def test_간격이_벌어져도_작은_움직임은_안_낸다(self):
+        """벌어진 간격 자체가 사건은 아니다. 큰 움직임일 때만 알린다."""
+        c = PriceJumpCheck(abs_pct=10.0, max_gap_s=60.0)
+        t = 1_700_000_000 * self.SEC
+        c.check("UPBIT", "KRW-BTC", 100.0, t)
+        assert c.check("UPBIT", "KRW-BTC", 101.0, t + 3600 * self.SEC) is None
+        assert c.ref_resets == 1
+
+    def test_비유동_종목의_큰_움직임을_통째로_놓치지_않는다(self):
+        """거래가 뜸한 종목은 장중에도 몇 분씩 비는데, 그때 상한가가 온다.
+
+        간격이 벌어졌다고 아무것도 안 내면 **정작 큰 움직임이 중요한 종목에서만**
+        판정이 꺼진다. 기본 임계를 60초에서 300초로 올린 이유이기도 하다.
+        """
+        c = PriceJumpCheck(abs_pct=10.0)          # 기본값
+        assert c.max_gap_s == 300.0
+        t = 1_700_000_000 * self.SEC
+        c.check("KIS", "005930", 70_000.0, t)
+        ev = c.check("KIS", "005930", 91_000.0, t + 600 * self.SEC)   # 10분 뒤 +30%
+        assert ev is not None and ev.severity == "WARNING"
 
     def test_재설정_뒤에는_다시_정상_판정한다(self):
         """기준을 버리는 것이지 검사를 끄는 게 아니다."""
@@ -226,8 +250,17 @@ class TestPriceJump시간간격:
         c = PriceJumpCheck(abs_pct=10.0, max_gap_s=60.0)
         t = 1_700_000_000 * self.SEC
         c.check("UPBIT", "KRW-BTC", 100.0, t)
-        assert c.check("UPBIT", "KRW-BTC", 130.0, t - 3600 * self.SEC) is None
+        ev = c.check("UPBIT", "KRW-BTC", 130.0, t - 3600 * self.SEC)
         assert c.ref_resets == 1
+        assert ev is None or ev.severity == "WARNING", "한 틱 판정을 하면 안 된다"
+
+    def test_간격_임계를_설정으로_바꿀_수_있다(self):
+        from mdfeed.config import Config
+        from mdfeed.quality import QualityMonitor
+
+        cfg = Config()
+        cfg.qc_jump_max_gap_s = 42.0
+        assert QualityMonitor(cfg).jump.max_gap_s == 42.0
 
     def test_재설정_횟수가_보고에_나온다(self):
         from mdfeed.quality import QualityMonitor
