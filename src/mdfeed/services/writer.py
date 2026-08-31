@@ -184,7 +184,7 @@ class Writer:
             await self._flush()
 
     async def _consume(self, path: str, stop: asyncio.Event) -> None:
-        sub = UDSSubscriber(path)
+        sub = UDSSubscriber(path, name=SERVICE)
         async for frame in sub.frames():
             if stop.is_set():
                 return

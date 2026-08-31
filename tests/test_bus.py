@@ -1,5 +1,6 @@
 """IPC 버스 — 경로 제약과 백프레셔."""
 import asyncio
+import contextlib
 import os
 import tempfile
 
@@ -74,3 +75,75 @@ def test_backpressure_drops_oldest_not_newest():
 
     dropped = asyncio.run(main())
     assert dropped > 0, "백프레셔가 동작하지 않았다 (발행이 블로킹됐을 가능성)"
+
+
+# ── 드롭을 누구에게 귀속시키는가 ──────────────────────────────────────────
+# 실측(2026-08-31): bus_dropped 112,979 을 보고도 다섯 구독자 중 누가 흘린
+# 건지 알 수 없었다. 무엇을 고쳐야 하는지가 곧 그 답인데, 합계 하나로는
+# 아무것도 지목하지 못한다.
+
+@pytest.mark.asyncio
+async def test_구독자가_이름을_밝히면_드롭이_그_이름에_붙는다():
+    from mdfeed.bus import UDSPublisher, UDSSubscriber
+
+    # UDS 경로는 길이 제한이 있어 pytest tmp_path 를 못 쓴다
+    path = os.path.join(tempfile.mkdtemp(prefix="mdfb", dir="/tmp"), "b.sock")
+    who = []
+    pub = UDSPublisher(path, queue_size=2, on_drop=who.append)
+    await pub.start()
+
+    sub = UDSSubscriber(path, name="느린놈")
+    it = sub.frames().__aiter__()
+    task = asyncio.create_task(it.__anext__())
+    for _ in range(50):                      # 이름 악수가 끝날 때까지
+        await asyncio.sleep(0.02)
+        if pub.subscriber_stats():
+            break
+
+    stats = pub.subscriber_stats()
+    assert stats and stats[0]["name"] == "느린놈", stats
+
+    for i in range(20):                      # 큐(2)보다 훨씬 많이 흘린다
+        pub.publish(encode(MSG_TRADE, i, b"x" * 8))
+    assert pub.dropped > 0
+    assert set(who) == {"느린놈"}, who
+    assert pub.subscriber_stats()[0]["dropped"] == pub.dropped
+
+    task.cancel()
+    with contextlib.suppress(Exception, asyncio.CancelledError):
+        await task
+    await pub.close()
+
+
+@pytest.mark.asyncio
+async def test_이름을_안_밝혀도_동작한다():
+    """옛 구독자와의 호환을 깨지 않는다. 이름만 anonymous 가 된다."""
+    from mdfeed.bus import UDSPublisher, UDSSubscriber
+
+    path = os.path.join(tempfile.mkdtemp(prefix="mdfb", dir="/tmp"), "b.sock")
+    pub = UDSPublisher(path, queue_size=4)
+    await pub.start()
+    sub = UDSSubscriber(path)                # 이름 없음
+    it = sub.frames().__aiter__()
+    task = asyncio.create_task(it.__anext__())
+    for _ in range(150):
+        await asyncio.sleep(0.02)
+        if pub.subscriber_stats():
+            break
+    assert pub.subscriber_stats()[0]["name"] == "anonymous"
+    task.cancel()
+    with contextlib.suppress(Exception, asyncio.CancelledError):
+        await task
+    await pub.close()
+
+
+@pytest.mark.asyncio
+async def test_드롭_많은_구독자가_먼저_나온다():
+    """운영자가 제일 먼저 봐야 할 줄이 맨 위여야 한다."""
+    from mdfeed.bus import UDSPublisher
+
+    pub = UDSPublisher(os.path.join(tempfile.mkdtemp(prefix="mdfb", dir="/tmp"), "b.sock"))
+    pub._clients = {1: asyncio.Queue(), 2: asyncio.Queue()}
+    pub._stats = {1: {"name": "a", "connected_at": 0.0, "dropped": 3, "sent": 0},
+                  2: {"name": "b", "connected_at": 0.0, "dropped": 99, "sent": 0}}
+    assert [x["name"] for x in pub.subscriber_stats()] == ["b", "a"]

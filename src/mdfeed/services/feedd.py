@@ -46,7 +46,8 @@ class FeedDaemon:
         self.registry.declare_counters(
             "published_total", "bus_drops_total", "ring_oversize_total")
         self.bus = UDSPublisher(cfg.bus_path, cfg.bus_queue_size,
-                                on_drop=lambda: self.registry.counter("bus_drops_total"))
+                                on_drop=lambda who: self.registry.counter(
+                                    "bus_drops_total", subscriber=who))
         self.ring: RingBuffer | None = None
         self.seq = 0
         self.snapshot: dict[str, dict] = {}      # "VENUE:SYMBOL" → 최신 상태
@@ -117,6 +118,8 @@ class FeedDaemon:
             "seq": self.seq,
             "subscribers": self.bus.subscriber_count,
             "bus_dropped": self.bus.dropped,
+            # 합계만으로는 누가 느린지 모른다. 드롭 많은 순으로 낸다.
+            "bus_subscribers": self.bus.subscriber_stats(),
             "symbols": len(self.snapshot),
             "upstreams": ups,
             "inactive_upstreams": self.inactive,

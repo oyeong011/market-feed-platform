@@ -94,7 +94,7 @@ class WSGateway:
         res_task.cancel()
 
     async def _consume_one(self, path: str, stop: asyncio.Event) -> None:
-        sub = UDSSubscriber(path)
+        sub = UDSSubscriber(path, name=SERVICE)
         try:
             async for frame in sub.frames():
                 if stop.is_set():

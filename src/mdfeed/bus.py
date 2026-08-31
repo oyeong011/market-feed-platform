@@ -28,8 +28,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
+import time
 from typing import AsyncIterator, Callable
 
 from .protocol import Frame, FrameParser
@@ -60,6 +62,11 @@ class UDSPublisher:
         self._on_drop = on_drop
         self._server: asyncio.AbstractServer | None = None
         self._clients: dict[int, asyncio.Queue] = {}
+        # 구독자별 상태. 합계 하나로는 **누가** 느린지 알 수 없다.
+        # 실측(2026-08-31): bus_dropped 112,979 을 보고도 다섯 구독자
+        # (tcp-gateway·ws-gateway·writer·strategy·quality) 중 누가 흘린 건지
+        # 알 방법이 없었다. 무엇을 고쳐야 하는지가 곧 그 답인데.
+        self._stats: dict[int, dict] = {}
         # 종료 시 정리해야 할 연결. Python 3.12+ 의 Server.wait_closed() 는
         # 핸들러가 전부 끝나야 반환하는데, 핸들러는 q.get() 에서 영원히 대기한다.
         # 이걸 안 끊으면 SIGTERM 을 받고도 프로세스가 안 내려간다.
@@ -77,20 +84,38 @@ class UDSPublisher:
         os.chmod(self.path, 0o660)          # 같은 그룹만 구독 가능
         log.info("bus publisher listening on %s", self.path)
 
-    # reader 는 안 쓰지만 start_unix_server 콜백 규약이라 받는다
-    async def _handle(self, _reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    async def _read_name(self, reader: asyncio.StreamReader) -> str:
+        """구독자가 스스로 밝힌 이름. 안 보내도 된다.
+
+        이름이 없으면 드롭 지표가 익명 번호로만 남아, 무엇을 고쳐야 하는지
+        알 수 없다. 기다리는 데 기한을 둬서 옛 구독자와도 호환된다.
+        """
+        try:
+            line = await asyncio.wait_for(reader.readline(), timeout=2.0)
+            name = json.loads(line).get("name")
+            return str(name)[:32] if name else "anonymous"
+        except Exception:                           # noqa: BLE001
+            return "anonymous"
+
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         cid = self._next_id
         self._next_id += 1
         q: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size)
         self._clients[cid] = q
         self._conns[cid] = (asyncio.current_task(), writer)
         peer = writer.get_extra_info("peername") or "uds"
-        log.info("bus subscriber #%d connected (%s), total=%d", cid, peer, len(self._clients))
+        name = await self._read_name(reader)
+        self._stats[cid] = {"name": name, "connected_at": time.time(),
+                            "dropped": 0, "sent": 0}
+        log.info("bus subscriber #%d(%s) connected (%s), total=%d",
+                 cid, name, peer, len(self._clients))
         try:
+            st = self._stats[cid]
             while True:
                 data = await q.get()
                 writer.write(data)
                 await writer.drain()
+                st["sent"] += 1
         except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
             pass
         except Exception as e:                      # noqa: BLE001
@@ -98,6 +123,10 @@ class UDSPublisher:
         finally:
             self._clients.pop(cid, None)
             self._conns.pop(cid, None)
+            st = self._stats.pop(cid, None)
+            if st and st["dropped"]:
+                log.warning("bus subscriber #%d(%s) 종료 — 이 구독자에게 %d 프레임을 흘렸다",
+                            cid, st["name"], st["dropped"])
             with contextlib.suppress(Exception):
                 writer.close()
             log.info("bus subscriber #%d disconnected, total=%d", cid, len(self._clients))
@@ -105,15 +134,31 @@ class UDSPublisher:
     def publish(self, frame_bytes: bytes) -> None:
         """논블로킹 발행. 큐가 차면 오래된 것부터 버린다."""
         self.published += 1
-        for q in self._clients.values():
+        for cid, q in self._clients.items():
             if q.full():
                 with contextlib.suppress(asyncio.QueueEmpty):
                     q.get_nowait()              # 가장 오래된 프레임 폐기
                 self.dropped += 1
+                st = self._stats.get(cid)
+                if st is not None:
+                    st["dropped"] += 1          # 누가 흘렸는지가 진단의 전부다
                 if self._on_drop:
-                    self._on_drop()
+                    self._on_drop(st["name"] if st else "anonymous")
             with contextlib.suppress(asyncio.QueueFull):
                 q.put_nowait(frame_bytes)
+
+    def subscriber_stats(self) -> list[dict]:
+        """구독자별 상태. 느린 구독자를 이름으로 지목할 수 있어야 한다."""
+        out = []
+        for cid, q in self._clients.items():
+            st = self._stats.get(cid, {})
+            out.append({"id": cid, "name": st.get("name", "anonymous"),
+                        "backlog": q.qsize(), "queue_size": self.queue_size,
+                        "dropped": st.get("dropped", 0),
+                        "sent": st.get("sent", 0),
+                        "uptime_s": round(time.time() - st["connected_at"], 1)
+                        if st.get("connected_at") else None})
+        return sorted(out, key=lambda x: -x["dropped"])
 
     @property
     def subscriber_count(self) -> int:
@@ -132,6 +177,7 @@ class UDSPublisher:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._conns.clear()
         self._clients.clear()
+        self._stats.clear()
         # 2) 그 다음 리스너를 닫는다
         if self._server:
             self._server.close()
@@ -144,9 +190,13 @@ class UDSPublisher:
 class UDSSubscriber:
     """자동 재접속하는 구독자. async for 로 Frame 을 받는다."""
 
-    def __init__(self, path: str, reconnect_s: float = 1.0, max_reconnect_s: float = 15.0):
+    def __init__(self, path: str, reconnect_s: float = 1.0, max_reconnect_s: float = 15.0,
+                 name: str | None = None):
         check_uds_path(path)
         self.path = path
+        # 접속 직후 한 줄로 자기를 밝힌다. 발행자가 드롭을 이름으로 귀속시킨다.
+        # 안 밝혀도 동작한다(anonymous) — 옛 구독자와의 호환을 깨지 않는다.
+        self.name = name
         self.reconnect_s = reconnect_s
         self.max_reconnect_s = max_reconnect_s
         self.parser = FrameParser()
@@ -159,7 +209,11 @@ class UDSSubscriber:
                 reader, writer = await asyncio.open_unix_connection(self.path)
                 self.connect_count += 1
                 backoff = self.reconnect_s
-                log.info("bus subscriber connected to %s", self.path)
+                if self.name:
+                    writer.write(json.dumps({"name": self.name}).encode() + b"\n")
+                    await writer.drain()
+                log.info("bus subscriber connected to %s (%s)",
+                         self.path, self.name or "anonymous")
                 try:
                     while True:
                         chunk = await reader.read(65536)

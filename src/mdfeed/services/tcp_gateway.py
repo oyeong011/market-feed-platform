@@ -168,7 +168,7 @@ class TCPGateway:
             await self._consume_one(paths[0], stop)
 
     async def _consume_one(self, path: str, stop: asyncio.Event) -> None:
-        sub = UDSSubscriber(path)
+        sub = UDSSubscriber(path, name=SERVICE)
         async for frame in sub.frames():
             if stop.is_set():
                 return

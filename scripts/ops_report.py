@@ -83,6 +83,12 @@ def collect() -> dict:
                 "stale": u.get("stale", False),
                 # 휴장 중이라 조용한 것인지, 죽어서 조용한 것인지 구분한다.
                 "expects_data": u.get("expects_data", True),
+                # 시간당 환산은 **그 어댑터를 담은 프로세스**의 가동시간으로 나눈다.
+                # 스택 전체의 최소 가동시간으로 나누면, 게이트웨이 하나만
+                # 재기동해도 멀쩡한 수집기가 전부 "폭주"로 찍힌다.
+                # 실측: 게이트웨이를 4분 전에 올렸더니 2.6회/시간이
+                # 70회/시간으로 보고됐다.
+                "shard_uptime_h": max(h.get("uptime_s", 0.0) / 3600, 1 / 60),
             })
 
     # 꺼진 업스트림은 리포트에서 제일 먼저 보여야 한다. 실제로 KRX 샤드가
@@ -163,14 +169,19 @@ def render(r: dict) -> str:
         L += ["", "> 꺼진 경로는 조용하다. 활성만 세면 이상 없음으로 보인다."]
     # 정체를 못 잡는 것과 반대 방향의 실패: 멀쩡한데 계속 끊는 경우.
     # 휴장 중 워치독이 "조용함"을 고장으로 읽어 30초마다 재접속한 적이 있다.
-    hours = max(r["uptime_h"], 0.1)
-    storm = [u for u in r["upstreams"] if u["reconnects"] / hours > 10]
+    def _per_hour(u: dict) -> float:
+        return u["reconnects"] / u.get("shard_uptime_h", 1.0)
+
+    # 가동 10분 미만이면 시간당 환산이 요동친다. 판정 자체를 미룬다 —
+    # 근거가 얇을 때 경보를 내는 건 근거 없이 내는 것과 같다.
+    storm = [u for u in r["upstreams"]
+             if u.get("shard_uptime_h", 0) >= 1 / 6 and _per_hour(u) > 10]
     if storm:
         L += ["", "## 재접속이 잦은 경로", "", "| 거래소 | 재접속 | 시간당 |",
               "|---|---|---|"]
         for u in storm:
             L.append(f"| {u['venue']} | {u['reconnects']} | "
-                     f"{u['reconnects'] / hours:.0f}회 |")
+                     f"{_per_hour(u):.1f}회 |")
         L += ["", "> 시간당 10회를 넘으면 재접속이 복구가 아니라 증상이다. "
               "브로커 쪽에서 키 단위로 차단될 수 있다."]
     if any(u["stale"] and u["reconnects"] == 0 for u in r["upstreams"]):
