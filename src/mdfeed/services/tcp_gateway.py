@@ -56,9 +56,35 @@ SERVICE = "tcp-gateway"
 DROP_LIMIT = 5000          # 이만큼 버려진 구독자는 재동기화가 필요하다고 보고 끊는다
 
 
+MODE_STREAM = "stream"        # 모든 틱을 순서대로 (기본)
+MODE_CONFLATE = "conflate"    # 종목별 최신값만
+
+
 class Subscriber:
+    """한 구독자의 배포 상태.
+
+    배포 방식이 둘이다.
+
+    * ``stream`` — 발행된 틱을 전부 순서대로 보낸다. 밀리면 오래된 것부터 버린다.
+    * ``conflate`` — 종목별 **최신값만** 보낸다. 밀리는 동안 같은 종목이 여러 번
+      바뀌면 마지막 값 하나로 합쳐진다.
+
+    왜 둘인가
+    ---------
+    밀린 구독자에게 `stream` 이 하는 일은 **낡은 값을 순서대로 계속 보내는 것**이다.
+    체결 이력을 재구성해야 하는 소비자(적재·정산)에겐 그게 맞다.
+    그런데 화면에 호가를 그리거나 시세를 감시하는 소비자에게는
+    3초 전 가격을 순서대로 받는 것보다 **지금 가격 하나**가 낫다.
+    마켓데이터 벤더가 full-tick 과 conflated 피드를 나눠 파는 이유다.
+
+    두 방식 모두 구독자별로 seq 를 다시 매기므로 갭 탐지는 그대로 유효하다.
+    conflate 는 발행 수보다 적게 받는 게 정상이고, 그건 갭이 아니다 —
+    합쳐진 것이지 잃은 게 아니다.
+    """
+
     __slots__ = ("id", "writer", "queue", "symbols", "dropped", "sent",
-                 "connected_at", "peer", "out_seq")
+                 "connected_at", "peer", "out_seq", "mode",
+                 "pending", "conflated")
 
     def __init__(self, cid: int, writer, queue_size: int, peer: str):
         self.id = cid
@@ -70,6 +96,10 @@ class Subscriber:
         self.connected_at = time.time()
         self.peer = peer
         self.out_seq = 0            # 이 구독자에게 나가는 프레임의 연속 번호
+        self.mode = MODE_STREAM
+        # conflate 전용: 키 → (msg_type, payload, flags). 큐에는 키만 넣는다.
+        self.pending: dict[str, tuple] = {}
+        self.conflated = 0          # 합쳐지며 생략된 프레임 수
 
     def wants(self, key: str) -> bool:
         return self.symbols is None or key in self.symbols
@@ -97,7 +127,9 @@ class Subscriber:
             "id": self.id, "peer": self.peer,
             "symbols": sorted(self.symbols) if self.symbols else "ALL",
             "sent": self.sent, "dropped": self.dropped,
+            "mode": self.mode,
             "out_seq": self.out_seq, "backlog": self.queue.qsize(),
+            "conflated": self.conflated,
             "wire_bytes": self.wire_bytes(),
             "uptime_s": round(time.time() - self.connected_at, 1),
         }
@@ -109,7 +141,8 @@ class TCPGateway:
         self.registry = Registry(SERVICE)
         # 사건이 나기 전에도 지표가 존재해야 알람이 평가된다
         self.registry.declare_counters(
-            "dropped_total", "sent_total", "frames_in_total", "connections_total")
+            "dropped_total", "sent_total", "frames_in_total", "connections_total",
+            "conflated_total")
         self.subs: dict[int, Subscriber] = {}
         self._next_id = 0
         self.last: dict[str, bytes] = {}          # "VENUE:SYMBOL" → 최신 프레임 페이로드
@@ -150,25 +183,51 @@ class TCPGateway:
                 self.last_type[key] = frame.msg_type
             self._fanout(frame, key)
 
+    def _drop_overflowed(self, s: Subscriber) -> bool:
+        """넘친 구독자에서 오래된 것을 하나 버린다. 끊어야 하면 True."""
+        with contextlib.suppress(asyncio.QueueEmpty):
+            s.queue.get_nowait()
+        s.dropped += 1
+        self.registry.counter("dropped_total")
+        if s.dropped > DROP_LIMIT:
+            # 되돌릴 수 없을 만큼 밀렸다. 끊어서 재접속·재동기화시킨다
+            log.warning("구독자 #%d 드롭 %d 초과 → 강제 종료", s.id, DROP_LIMIT)
+            with contextlib.suppress(Exception):
+                s.writer.close()
+            self.subs.pop(s.id, None)
+            return True
+        return False
+
     def _fanout(self, frame, key: str | None) -> None:
         for s in list(self.subs.values()):
             if key is not None and not s.wants(key):
                 continue
+
+            if s.mode == MODE_CONFLATE and key is not None:
+                # 같은 종목이 큐에 이미 있으면 **새 값으로 덮는다.** 큐에는 키만
+                # 들어가므로 큐 길이는 종목 수를 넘지 않는다. 밀린 구독자에게
+                # 낡은 값을 순서대로 보내는 대신 지금 값을 보낸다.
+                #
+                # seq 는 여기서 매기지 않고 보낼 때 매긴다. 지금 매기면 덮어쓴
+                # 프레임의 번호가 비어 구독자가 갭으로 본다 — 합쳐진 것을
+                # 잃은 것으로 오인하게 된다.
+                if key in s.pending:
+                    s.pending[key] = (frame.msg_type, frame.payload, frame.flags)
+                    s.conflated += 1
+                    self.registry.counter("conflated_total")
+                    continue
+                if s.queue.full() and self._drop_overflowed(s):
+                    continue
+                s.pending[key] = (frame.msg_type, frame.payload, frame.flags)
+                with contextlib.suppress(asyncio.QueueFull):
+                    s.queue.put_nowait(key)
+                continue
+
             # 구독자별로 seq 를 다시 매긴다. 그래야 구독자의 갭 탐지가 유효하다
             raw = encode(frame.msg_type, s.out_seq, frame.payload, frame.flags)
             s.out_seq += 1
-            if s.queue.full():
-                with contextlib.suppress(asyncio.QueueEmpty):
-                    s.queue.get_nowait()
-                s.dropped += 1
-                self.registry.counter("dropped_total")
-                if s.dropped > DROP_LIMIT:
-                    # 되돌릴 수 없을 만큼 밀렸다. 끊어서 재접속·재동기화시킨다
-                    log.warning("구독자 #%d 드롭 %d 초과 → 강제 종료", s.id, DROP_LIMIT)
-                    with contextlib.suppress(Exception):
-                        s.writer.close()
-                    self.subs.pop(s.id, None)
-                    continue
+            if s.queue.full() and self._drop_overflowed(s):
+                continue
             with contextlib.suppress(asyncio.QueueFull):
                 s.queue.put_nowait(raw)
 
@@ -228,7 +287,18 @@ class TCPGateway:
         """
         try:
             while True:
-                data = await s.queue.get()
+                item = await s.queue.get()
+                if isinstance(item, str):
+                    # conflate: 큐에는 키만 있다. **보내는 순간의 최신값**을 꺼내
+                    # 그때 seq 를 매긴다. 인코딩도 여기서 한 번만 한다.
+                    got = s.pending.pop(item, None)
+                    if got is None:
+                        continue
+                    msg_type, payload, flags = got
+                    data = encode(msg_type, s.out_seq, payload, flags)
+                    s.out_seq += 1
+                else:
+                    data = item
                 s.writer.write(data)
                 await s.writer.drain()            # 여기서만 기다린다. 발행 경로는 논블로킹
                 s.sent += 1
@@ -260,7 +330,16 @@ class TCPGateway:
             return
         syms = req.get("symbols")
         s.symbols = set(syms) if syms else None
-        log.info("구독자 #%d 구독 변경 → %s", s.id, s.symbols or "ALL")
+        mode = str(req.get("mode", s.mode)).lower()
+        if mode in (MODE_STREAM, MODE_CONFLATE) and mode != s.mode:
+            # 모드를 바꾸면 큐에 남은 것의 형태가 섞인다. 비우고 새로 시작한다.
+            # 잃는 건 아직 안 보낸 것뿐이고, 구독 변경 자체가 재동기 지점이다.
+            while not s.queue.empty():
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    s.queue.get_nowait()
+            s.pending.clear()
+            s.mode = mode
+        log.info("구독자 #%d 구독 변경 → %s (%s)", s.id, s.symbols or "ALL", s.mode)
 
     # ── 헬스 ──────────────────────────────────────────────────────────────
     def health(self) -> dict:
