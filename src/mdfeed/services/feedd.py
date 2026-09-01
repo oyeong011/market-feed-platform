@@ -155,6 +155,7 @@ class FeedDaemon:
             adapter_task_deaths_total=venues,
             snapshot_msgs_total=venues,
             session_cancel_timeouts_total=venues,
+            adapter_silent_exits_total=venues,
         )
 
     async def _keep_running(self, adapter, stop) -> None:
@@ -171,9 +172,35 @@ class FeedDaemon:
         while not stop.is_set():
             try:
                 await adapter.run()
-                return                                  # stop 요청에 의한 정상 종료
+                if stop.is_set():
+                    return                              # 정지 요청에 의한 정상 종료
+                # **여기가 조용한 구멍이었다.** run() 이 정지 요청 없이 그냥
+                # 돌아오면 예전엔 return 해 버려, 그 업스트림은 감독 없이
+                # 영원히 멎었다. 예외가 아니므로 task_deaths 도 안 오른다.
+                #
+                # 실측(2026-09-01): upbit 이 18분째 stale 인데 재접속 5에서 멈춰
+                # 있었다. stale_restarts 1 · session_cancel_timeouts 0 ·
+                # task_deaths 0 — 감시자가 15초마다 도는데 72번 동안 한 번도
+                # 안 울렸다. 즉 run() 자체가 실행 중이 아니었는데,
+                # **어느 지표에도 그 사실이 안 남았다.**
+                deaths += 1
+                log.error("[%s] 어댑터 루프가 정지 요청 없이 끝났다(%d번째) — 되살린다",
+                          adapter.name, deaths)
+                self.registry.counter("adapter_task_deaths_total",
+                                      venue=adapter.name.upper())
+                self.registry.counter("adapter_silent_exits_total",
+                                      venue=adapter.name.upper())
             except asyncio.CancelledError:
-                raise
+                if stop.is_set():
+                    raise                               # 정상 종료 경로
+                # 정지 요청도 없는데 취소됐다. 그대로 다시 던지면 감독이 사라진다.
+                deaths += 1
+                log.error("[%s] 어댑터 루프가 정지 요청 없이 취소됐다(%d번째) — 되살린다",
+                          adapter.name, deaths)
+                self.registry.counter("adapter_task_deaths_total",
+                                      venue=adapter.name.upper())
+                self.registry.counter("adapter_silent_exits_total",
+                                      venue=adapter.name.upper())
             except BaseException as e:                  # noqa: BLE001
                 deaths += 1
                 log.exception("[%s] 어댑터 루프가 죽었다(%d번째) — 되살린다: %s",
