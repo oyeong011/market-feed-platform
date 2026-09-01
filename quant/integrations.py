@@ -126,6 +126,17 @@ def verify_backtest_bt(bars, fast: int = 10, slow: int = 30,
 
     df = to_dataframe(bars)
 
+    # backtesting.py 는 **정수 단위**로 체결한다. 1억짜리 BTC 를 자본 100만원으로
+    # 사려 하면 units = floor(현금×비율 / 가격) = 0 이 되어 주문이 전부 취소된다.
+    # 실제로 그래서 "우리 34회 / 상대 0회" 였고, **수익률 비교가 아무것도
+    # 비교하지 않고 있었다.** 34회와 0회를 대조해서 알 수 있는 건 없다.
+    #
+    # 수익률(%)은 자본 규모에 무관하므로, 기준 실행에는 최소 1,000단위를 살 수
+    # 있는 자본을 준다. 그러면 정수 반올림 오차가 0.1% 아래로 떨어져 우리
+    # 실행기(소수 단위)와 대조가 성립한다.
+    px_max = float(df["Close"].max())
+    ref_equity = max(equity, px_max * 1000.0)
+
     def SMA_(values, n):
         return pd.Series(values).rolling(n).mean()
 
@@ -149,9 +160,10 @@ def verify_backtest_bt(bars, fast: int = 10, slow: int = 30,
     try:
         # 마지막에 열려 있는 포지션을 청산해야 성과가 확정된다.
         # 안 하면 미청산분이 통계에서 빠져 우리 실행기와 비교가 어긋난다.
-        bt = Backtest(df, Cross, cash=equity, commission=fee, finalize_trades=True)
+        bt = Backtest(df, Cross, cash=ref_equity, commission=fee,
+                      finalize_trades=True)
     except TypeError:
-        bt = Backtest(df, Cross, cash=equity, commission=fee)
+        bt = Backtest(df, Cross, cash=ref_equity, commission=fee)
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -161,6 +173,12 @@ def verify_backtest_bt(bars, fast: int = 10, slow: int = 30,
         "max_drawdown_pct": float(stats["Max. Drawdown [%]"]),
         "trades": int(stats["# Trades"]),
         "source": "backtesting.py",
+        # 자본을 맞춰 준 사실을 숨기지 않는다. 수익률은 규모에 무관하지만,
+        # 읽는 사람이 같은 자본으로 돌린 걸로 오해하면 안 된다.
+        "ref_equity": round(ref_equity),
+        "ref_equity_note": ("정수 단위 체결 때문에 1,000단위 이상 살 수 있는 자본으로 "
+                            "돌렸다. 수익률(%)은 규모에 무관하다"
+                            if ref_equity > equity else ""),
     }
 
 
@@ -246,13 +264,27 @@ def _crossover_match(bars, fast: int, slow: int):
     m1 = pd.Series(closes).rolling(fast).mean()
     m2 = pd.Series(closes).rolling(slow).mean()
     theirs = []
-    for i in range(1, len(closes)):
-        if pd.isna(m1[i]) or pd.isna(m2[i]) or pd.isna(m1[i - 1]) or pd.isna(m2[i - 1]):
+    # **동률은 교차가 아니다.** 마지막으로 갈라졌던 방향을 들고 간다.
+    #
+    # 예전엔 `m1[i-1] >= m2[i-1] and m1[i] < m2[i]` 로 판정했다. 그러면
+    # 동률이 `>=` 를 만족해 "위에 있었다"로 처리되고, 아래에서 스치기만 한
+    # 구간이 하향 교차로 잡힌다. 실측(UPBIT KRW-BTC 1,878봉):
+    #     i=1770 아래 → i=1771 동률 → i=1772 아래
+    # 교차한 적이 없는데 여기서 -1 이 하나 나왔고, 그 한 건 때문에
+    # cross_check 이 "SMA 교차 시점 불일치 — 조사 필요" 를 계속 뱉고 있었다.
+    #
+    # 우리 Crossover 는 이 규칙을 이미 지킨다(동률이면 판정 보류).
+    # **틀린 건 우리 구현이 아니라 이 대조 코드였다.** 기준을 맞춘다.
+    prev_above = None
+    for i in range(len(closes)):
+        if pd.isna(m1[i]) or pd.isna(m2[i]):
             continue
-        if m1[i - 1] <= m2[i - 1] and m1[i] > m2[i]:
-            theirs.append((i, 1))
-        elif m1[i - 1] >= m2[i - 1] and m1[i] < m2[i]:
-            theirs.append((i, -1))
+        if m1[i] == m2[i]:
+            continue                     # 접촉 — 직전 상태를 그대로 둔다
+        above = bool(m1[i] > m2[i])
+        if prev_above is not None and above != prev_above:
+            theirs.append((i, 1 if above else -1))
+        prev_above = above
     return ours == theirs
 
 
