@@ -79,6 +79,12 @@ class PriceJumpCheck:
         self._last: dict[str, tuple[float, int]] = {}     # 가격, 시각
         self._moves: dict[str, deque] = {}
         self.ref_resets = 0
+        # 거래소별로 나눠 센다. 합계 하나로는 못 읽는다 —
+        # 실측(2026-09-01, 연속 체결 20만건): 간격 300초 초과 비율이
+        #   KRX 4.95% · UPBIT 0.45% · BINANCE 0.09% · KIS 0.00%
+        # KRX 비유동 종목의 **정상적인 거래 공백**이 대부분이다.
+        # 합계만 보면 그 바닥 소음에 크립토 수집 중단이 묻힌다.
+        self.ref_resets_by_venue: dict[str, int] = {}
 
     def check(self, venue: str, symbol: str, price: float, ts_ns: int) -> QualityEvent | None:
         key = f"{venue}:{symbol}"
@@ -102,6 +108,7 @@ class PriceJumpCheck:
         gap_s = abs(ts_ns - prev_ts) / 1e9
         if gap_s > self.max_gap_s:
             self.ref_resets += 1
+            self.ref_resets_by_venue[venue] = self.ref_resets_by_venue.get(venue, 0) + 1
             self._moves.pop(key, None)          # 변동성 문맥도 같이 낡았다
             pct = abs(price - prev_px) / prev_px * 100.0
             if pct >= self.abs_pct:
@@ -381,5 +388,6 @@ class QualityMonitor:
             # 시세 기준가를 버린 횟수. 이 값이 튀면 데이터 이상이 아니라
             # 수집이 끊겼다는 신호다 — 검사 결과와 다른 축이라 따로 낸다.
             "price_ref_resets": self.jump.ref_resets,
+            "price_ref_resets_by_venue": dict(self.jump.ref_resets_by_venue),
             "recent": list(reversed(self.recent[-20:])),
         }

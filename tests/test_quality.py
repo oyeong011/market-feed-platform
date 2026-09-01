@@ -312,3 +312,49 @@ class TestPriceJump시간간격:
         m.on_trade("UPBIT", "KRW-BTC", 100.0, t)
         m.on_trade("UPBIT", "KRW-BTC", 130.0, t + 3600 * self.SEC)
         assert m.report()["price_ref_resets"] == 1
+
+
+class TestRefReset거래소별:
+    """기준가 재설정은 거래소마다 바닥값이 다르다.
+
+    실측(2026-09-01, 연속 체결 20만건): 간격 300초 초과 비율이
+        KRX 4.95% · UPBIT 0.45% · BINANCE 0.09% · KIS 0.00%
+    KRX 는 비유동 종목의 **정상적인 거래 공백**이 대부분이다.
+    합계 하나로 내면 그 바닥 소음에 크립토 수집 중단이 묻힌다.
+
+    어제 이 지표를 넣으면서 "수집이 끊겼다는 신호"라고 적었는데,
+    하루 돌려 보니 절반만 맞았다 — 거래소를 나눠야 그 말이 성립한다.
+    """
+
+    SEC = 1_000_000_000
+
+    def test_거래소별로_따로_센다(self):
+        c = PriceJumpCheck(max_gap_s=60.0)
+        t = 1_700_000_000 * self.SEC
+        for v, sym in (("KRX", "005930"), ("BINANCE", "BTCUSDT")):
+            c.check(v, sym, 100.0, t)
+            c.check(v, sym, 101.0, t + 3600 * self.SEC)
+        assert c.ref_resets_by_venue == {"KRX": 1, "BINANCE": 1}
+        assert c.ref_resets == 2
+
+    def test_한_거래소만_튀어도_구분된다(self):
+        """합계로는 못 읽는다."""
+        c = PriceJumpCheck(max_gap_s=60.0)
+        t = 1_700_000_000 * self.SEC
+        for i in range(20):                       # KRX 는 평시에도 많이 난다
+            c.check("KRX", f"S{i}", 100.0, t)
+            c.check("KRX", f"S{i}", 101.0, t + 3600 * self.SEC)
+        c.check("BINANCE", "BTCUSDT", 100.0, t)
+        c.check("BINANCE", "BTCUSDT", 101.0, t + 3600 * self.SEC)
+        by = c.ref_resets_by_venue
+        assert by["KRX"] == 20 and by["BINANCE"] == 1
+
+    def test_보고에도_거래소별로_나온다(self):
+        from mdfeed.quality import QualityMonitor
+
+        m = QualityMonitor()
+        t = 1_700_000_000 * self.SEC
+        m.on_trade("KRX", "005930", 100.0, t)
+        m.on_trade("KRX", "005930", 101.0, t + 3600 * self.SEC)
+        rep = m.report()
+        assert rep["price_ref_resets_by_venue"] == {"KRX": 1}

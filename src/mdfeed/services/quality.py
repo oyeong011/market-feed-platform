@@ -94,7 +94,10 @@ class QualityService:
         while not stop.is_set():
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=5.0)
-            self.registry.gauge("price_ref_resets", self.monitor.jump.ref_resets)
+            # 거래소별로 낸다. 합계만 보면 KRX 비유동 종목의 정상 공백(4.95%)에
+            # 크립토 수집 중단(평시 0.09%)이 묻힌다.
+            for venue, n in self.monitor.jump.ref_resets_by_venue.items():
+                self.registry.gauge("price_ref_resets", n, venue=venue)
 
     async def _flush_loop(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
@@ -134,6 +137,7 @@ class QualityService:
             "by_check": rep["by_check"],
             "implied_fx_krw_per_usd": rep["implied_fx"],
             "price_ref_resets": rep["price_ref_resets"],
+            "price_ref_resets_by_venue": rep["price_ref_resets_by_venue"],
             "pending_writes": len(self._pending),
         }
 
