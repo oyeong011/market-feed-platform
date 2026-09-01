@@ -5,9 +5,15 @@ MDFeed 의 두 데이터 평면
     실시간 평면 : 거래소 WS → feedd → 버스 → 1분봉        (밀리초 단위, 휘발성)
     참조 평면   : SEC EDGAR / OpenDART → 재무제표 487k건   (분기 단위, 영속)
 
-두 평면을 잇는 조인 키는 **DART stock_code = KIS 종목코드**다. 삼성전자는
-참조 평면에서 `005930`, 실시간 평면에서 `KIS:005930` 이다. 크립토 심볼은 대응하는
-재무제표가 없으므로 조인 대상이 아니다 — 억지로 붙이지 않는다.
+두 평면을 잇는 조인 키는 **DART stock_code = 국내주식 종목코드**다. 삼성전자는
+참조 평면에서 `005930`, 실시간 평면에서 `KIS:005930` 또는 `KRX:005930` 이다.
+
+국내 주식이 **두 경로**로 들어온다는 점이 중요하다.
+    KIS  실시간 WebSocket — 소켓당 등록 한도 때문에 3종목
+    KRX  REST 스윕        — 전 종목, 2,035종목
+조인은 둘 다 봐야 한다. KIS 하나만 보면 3종목에만 닿는다(실측).
+
+크립토 심볼은 대응하는 재무제표가 없으므로 조인 대상이 아니다 — 억지로 붙이지 않는다.
 
 원본 데이터 형식
 ----------------
@@ -154,27 +160,49 @@ def screen(rows: list[dict], top: int = 20) -> list[dict]:
     return sorted(rows, key=lambda r: r["score"], reverse=True)[:top]
 
 
-def join_with_feed(rows: list[dict], db_path: str, venue: str = "KIS") -> list[dict]:
-    """참조 평면 ↔ 실시간 평면 조인 (DART stock_code = KIS 종목코드).
+# 국내 주식이 두 경로로 들어온다. 조인은 **둘 다** 봐야 한다.
+#   KIS  — 실시간 WebSocket. 소켓당 등록 한도가 있어 **3종목**뿐이다.
+#   KRX  — REST 스윕. 전 종목을 훑어 **2,035종목**이 쌓인다.
+# 앞을 먼저 보고 없으면 뒤를 본다. 실시간 값이 있으면 그게 낫다.
+EQUITY_VENUES = ("KIS", "KRX")
 
-    피드에 없는 종목은 last/거래량이 None 으로 남는다. 이 프로젝트의 기본 설정은
-    크립토 어댑터라 KIS 데이터가 없으면 전부 None 이고, 그게 정상이다.
+
+def join_with_feed(rows: list[dict], db_path: str,
+                   venues: tuple[str, ...] = EQUITY_VENUES) -> list[dict]:
+    """참조 평면 ↔ 실시간 평면 조인 (DART stock_code = 국내주식 종목코드).
+
+    예전엔 venue="KIS" 하나만 봤다. 그런데 KIS 는 WebSocket 등록 한도 때문에
+    3종목뿐이고, 전 종목(2,035)은 REST 스윕이 KRX 로 넣는다.
+    **조인이 3종목에만 닿고 있었다.** 실측: 표본 7종목 중 KIS 3 / KRX 7.
+
+    더 나쁜 건 이 함수의 예전 문서가 그 증상을 미리 변명해 뒀다는 점이다 —
+    "KIS 데이터가 없으면 전부 None 이고, 그게 정상이다". 정상이 아니었다.
+
+    어느 경로에서 붙었는지 `feed_source` 로 밝힌다. 실시간 체결가와
+    REST 스윕 값은 신선도가 다르므로, 읽는 쪽이 구분할 수 있어야 한다.
     """
     import sqlite3
+    for r in rows:                       # DB 가 없어도 필드는 항상 존재한다
+        r.setdefault("live_price", None)
+        r.setdefault("live_volume", None)
+        r.setdefault("feed_source", None)
+        r.setdefault("feed_linked", False)
     if not os.path.exists(db_path):
         return rows
     conn = sqlite3.connect(db_path)
-    live = {}
-    for sym, close, vol in conn.execute(
-            "SELECT symbol, close, SUM(volume) FROM bars_1m WHERE venue=? "
-            "GROUP BY symbol", (venue,)):
-        live[sym] = (close, vol)
+    live: dict[str, tuple] = {}
+    for venue in reversed(venues):       # 뒤에서부터 채워 앞선 것이 이긴다
+        for sym, close, vol in conn.execute(
+                "SELECT symbol, close, SUM(volume) FROM bars_1m WHERE venue=? "
+                "GROUP BY symbol", (venue,)):
+            live[sym] = (close, vol, venue)
     conn.close()
     for r in rows:
-        px, vol = live.get(r["key"], (None, None))
-        r["live_price"] = px
-        r["live_volume"] = vol
-        r["feed_linked"] = px is not None
+        got = live.get(r["key"])
+        if got is None:
+            continue
+        r["live_price"], r["live_volume"], r["feed_source"] = got
+        r["feed_linked"] = got[0] is not None
     return rows
 
 
