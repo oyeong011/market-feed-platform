@@ -72,6 +72,27 @@ curl -s localhost:9100/healthz | python3 -m json.tool
 `stale: true` 인데 `reconnects` 가 안 늘어난다면 **TCP half-open** 입니다.
 소켓은 `ESTABLISHED` 인데 데이터가 안 옵니다.
 
+> [!warning] 이 조합이면 재시작하기 전에 지표부터 보세요 (2026-08-31 실측)
+> ```
+> stale                        1        ← 정체 판정은 정상
+> stale_restarts_total         2        ← 감시도 발동
+> adapter_task_deaths_total    0        ← 태스크는 살아 있음
+> reconnects_total       3에서 멈춤     ← 그런데 재접속이 안 돎
+> /healthz               healthy: true  ← 아무 표시 없음
+> ```
+> **감지·지표·경보가 전부 정상인데 복구만 안 되는 상태**입니다.
+> upbit 이 이 상태로 11.2시간 멎어 있었습니다. 원인은 취소한 세션의
+> 정리(죽은 소켓에 close → drain)가 안 끝나 재접속이 그 뒤에 서 있던 것입니다.
+>
+> 지금은 취소에 기한(5초 × 2회)이 있고, 못 끝내면 태스크를 버리고 재접속합니다.
+> **버린 사실은 지표에 남습니다.**
+> ```bash
+> curl -s localhost:9100/metrics | grep session_cancel_timeouts_total
+> ```
+> 이 값이 오르면 정리가 안 끝나는 어댑터가 있다는 뜻입니다. 시세는 돌아오지만
+> 태스크가 프로세스에 쌓이므로 `rss_mb` 와 `fd_open` 을 같이 보세요.
+> 경보: `SessionCancelTimeout`
+
 ```bash
 # 소켓 상태 확인 — Send-Q 가 쌓여 있으면 상대가 안 받는 것
 ss -tnp | grep -E 'api.upbit|binance'
@@ -90,6 +111,13 @@ curl -s -o /dev/null -w '%{http_code}\n' https://api.binance.com/api/v3/ping
    그 사실을 기록해 둡니다(사후 분석에서 "우리 문제"로 오인되는 걸 막습니다).
 4. **`inactive_upstreams` 도 확인하세요.** 자격증명 누락으로 어댑터가 조용히 비활성화된
    상태일 수 있습니다. 사유가 그대로 노출됩니다.
+5. **`degraded_upstreams` 를 보세요.** 거래소 하나만 죽으면 `healthy` 는 계속 `true`
+   입니다(재시작해도 그 거래소는 안 살아나므로 생존 판정을 뒤집지 않습니다).
+   대신 죽은 거래소가 이 목록에 이름으로 뜹니다.
+   ```bash
+   curl -s localhost:9100/healthz | python3 -c \
+     'import json,sys; print(json.load(sys.stdin)["degraded_upstreams"])'
+   ```
 
 ---
 
@@ -264,6 +292,23 @@ systemctl kill -s SIGKILL mdfeed-feedd
 `TimeoutStopSec=30` 은 버퍼 flush와 DB 커밋에 필요한 시간입니다.
 **짧게 줄이지 마세요.** 줄이면 배포마다 데이터가 샙니다.
 
+### 정리가 안 끝나면 우리가 먼저 내려갑니다 (2026-08-31 추가)
+
+SIGTERM 을 잡는 이유는 버퍼를 flush 하기 위해서입니다. 잡기만 하고 정리가
+안 끝나면 systemd 가 30초 뒤 SIGKILL 하고 버퍼는 똑같이 날아갑니다 —
+**잡은 쪽이 나은 점이 하나도 없고, 왜 안 끝났는지 기록도 안 남습니다.**
+
+정지 요청 뒤 `MDFEED_SHUTDOWN_GRACE_S`(기본 20초, TimeoutStopSec 보다 짧게)를
+재고, 넘기면 **남은 태스크 이름을 찍고** 종료코드 3 으로 내려갑니다.
+
+```
+ERROR 정리가 20.0s 안에 안 끝났다 — 남은 태스크 2종: _flush_loop, _consume
+ERROR 여기서 안 내려가면 systemd 가 SIGKILL 한다. 같은 결과라면 이유를 남기고 우리가 내려간다
+```
+
+이 줄이 보이면 **그 태스크 이름이 곧 원인**입니다. 종료코드 3 은 정상 종료가
+아니므로 `Restart=` 정책이 어떻게 반응하는지 함께 확인하세요.
+
 ---
 
 ## 증상 7 — 대시보드가 비어 있다
@@ -324,6 +369,31 @@ LIMIT 10;"
 
 OHLC 위반이 나오면 집계 로직 버그입니다 — 즉시 에스컬레이션하세요.
 
+### 품질 경보를 읽는 법 (2026-08-31 갱신)
+
+```bash
+curl -s localhost:9106/healthz | python3 -m json.tool | head -20
+```
+
+| 항목 | 뜻 | 어떻게 볼 것인가 |
+|---|---|---|
+| `price_jump:CRITICAL` | 한 틱에 임계(10%) 이상 이동 | **문구에 간격이 적혀 있습니다.** `(3,185 → 3,550, 82.6초 간격)` — 82초에 11%면 소형주에서 실제로 일어납니다. 간격이 짧을수록 데이터 오류 쪽입니다 |
+| `price_jump:WARNING` + `초 만의 첫 틱` | 기준가가 낡은 상태에서의 큰 이동 | 수집이 끊겼다 돌아온 직후입니다. 데이터 문제가 아니라 **연결 문제**를 보세요 |
+| `stale_value:WARNING` | 상류가 **같은 레코드**를 반복 | 가격만 같은 게 아니라 **체결시각까지 같습니다.** 진짜 상류 고장 신호입니다 |
+| `price_ref_resets` | 기준가를 버린 횟수 | 데이터 이상이 아니라 **수집이 끊겼다**는 신호입니다. 급증하면 어댑터를 보세요 |
+
+> `stale_value` 는 예전에 "같은 가격이 반복"으로 판정해 조용한 시장을 상류 고장이라
+> 불렀습니다. 실측 400,000건에서 117건이 전부 오탐이었습니다. 지금은 체결시각까지
+> 같아야 울립니다 — **울리면 진짜입니다.**
+
+품질 검사 자체를 의심할 때는 실데이터 코퍼스로 회귀를 돌립니다.
+
+```bash
+.venv/bin/python -m pytest tests/test_quality_corpus.py -q
+```
+
+오탐(정상 데이터에 만건당 3건 이하)과 미탐(결함을 넣으면 잡는가)을 양방향으로 봅니다.
+
 ### 프레이밍 오류
 
 ```bash
@@ -335,6 +405,110 @@ CRC가 잡아주므로 **틀린 값이 배포되지는 않지만**, 계속 나�
 
 ---
 
+## 증상 9 — 버스 드롭이 늘어난다
+
+```bash
+curl -s localhost:9100/healthz | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print("합계", d["bus_dropped"])
+for s in d["bus_subscribers"]:
+    print("  %-14s 큐 %5d/%d 드롭 %8d" % (
+        s["name"], s["backlog"], s["queue_size"], s["dropped"]))'
+```
+
+**드롭 많은 순으로 나옵니다.** 합계만 보면 다섯 구독자 중 누가 느린지 알 수 없습니다
+(그래서 이름을 붙였습니다). 지목된 구독자를 먼저 보세요.
+
+| 구독자 | 느릴 때 흔한 원인 |
+|---|---|
+| `writer` | 디스크 I/O. `증상 4` 로 |
+| `tcp-gateway` | 구독자가 많거나 느림. `:9111/subscribers` 의 `wire_bytes` |
+| `quality` | 검사 비용. 종목 수를 늘린 직후인지 확인 |
+
+게이트웨이 재기동 직후에는 **한 번에 크게 튄 뒤 멈춥니다.** 그건 정상입니다 —
+구독이 끊긴 동안 발행분이 버려진 것이고, 값이 더 안 오르면 진행 중인 문제가 아닙니다.
+
+---
+
+## 증상 10 — 조회 API 가 느리다
+
+```bash
+for u in /api/v1/stats /api/v1/quotes /api/v1/symbols; do
+  /usr/bin/time -p curl -s -o /dev/null "localhost:9103$u" 2>&1 | awk -v u=$u '/real/{print $2"s", u}'
+done
+```
+
+**순차로만 재면 안 됩니다.** 무거운 조회가 도는 동안 가벼운 조회를 같이 날려 보세요.
+
+```bash
+curl -s -o /dev/null "localhost:9103/api/v1/trades?venue=UPBIT&symbol=KRW-BTC&limit=2000" &
+/usr/bin/time -p curl -s -o /dev/null "localhost:9103/api/v1/quotes?symbol=KRW-BTC"
+```
+
+동시에 냈을 때만 밀린다면 **직렬화 지점**이 생긴 것입니다. 예전에 조회 커넥션 하나를
+락으로 감싸서, 5.4초짜리 통계 조회가 0.01초짜리 시세 조회를 4.44초로 밀었습니다
+(444배). 지금은 스레드마다 조회 커넥션을 씁니다.
+
+`/api/v1/stats` 의 `counts_took_ms` 와 `counts_age_s` 를 보세요. 집계는 요청 경로가
+아니라 백그라운드에서 돌고, 재는 주기는 `max(STATS_TTL_S, 소요×10)` 입니다.
+`counts_took_ms` 가 계속 커지면 테이블이 커진 것이니 **보존 정책을 확인하세요.**
+
+> [!warning] 실측 (2026-09-01) — 이 값이 어떻게 커지는가
+> ```
+> 08-31 오전   584만 행   COUNT(*)   5.0초
+> 09-01 오전  3,373만 행  COUNT(*) 112.9초    ← 하루 만에 6배
+> DB 5.47GB · 여유 35.9GB
+> ```
+> 자기 제한 주기 덕에 요청은 여전히 즉시 응답하고 집계는 19분에 한 번만 돕니다.
+> **막힌 건 없지만 방향이 잘못돼 있습니다.**
+>
+> 원인은 `MDFEED_RETENTION_DAYS=0`(무제한 보존)입니다. 기본값이 0인 이유는
+> 구현을 붙이는 순간 기존 배포에서 데이터가 조용히 지워지지 않게 하려던 것이고,
+> **켜는 건 명시적 결정**입니다.
+> ```bash
+> curl -s localhost:9104/healthz | python3 -c \
+>   'import json,sys; print(json.load(sys.stdin)["storage"])'
+> # retention_days 0.0 → 안 지웁니다. hours_until_full 이 None 이면 증가율 표본이
+> # 아직 부족한 것이니 최소 1시간 뒤 다시 보세요.
+> ```
+> 켤 때는 값을 정하고 한 번에 지우지 않게 배치 크기를 확인하세요
+> (`DELETE_BATCH`, 기본 50,000행).
+
+---
+
+## 증상 11 — 대시보드가 낡은 값을 보여준다
+
+WS 경로에는 시퀀스가 없습니다. 서버가 배치를 버리면 그 안에 있던 종목은
+**다음 체결이 올 때까지** 낡은 값이 떠 있습니다.
+
+지금은 버리면 다음 주기에 전체 스냅샷으로 되맞추고, 화면에
+`갱신 N건 놓쳐 전체 재동기화` 가 뜹니다. 그 메시지가 자주 보이면:
+
+```bash
+curl -s localhost:9102/metrics | grep -E 'dropped_total|resyncs_total'
+curl -s localhost:9102/api/clients | python3 -m json.tool | head -20
+```
+
+`resyncs` 가 특정 클라이언트에만 몰리면 그 브라우저/네트워크 문제입니다.
+전체에 걸쳐 오르면 서버가 못 따라가는 것이니 `증상 9` 로 갑니다.
+
+---
+
+## 증상 12 — 경보가 떴는데 실제로는 아니다
+
+경보를 끄기 전에 **그 지표가 무엇을 나누고 있는지** 확인하세요.
+
+| 경보 | 오경보로 보인다면 |
+|---|---|
+| `ReconnectStorm` | 운영 기록의 시간당 환산은 **그 어댑터를 담은 프로세스**의 가동시간으로 나눕니다. 게이트웨이만 재기동했는데 수집기가 폭주로 찍힌다면 회귀입니다(실측: 2.6회/시간이 70회/시간으로 보고됐던 적 있음). 가동 10분 미만이면 판정 자체를 안 합니다 |
+| `DataQualityCritical` | `증상 8` 의 표로 문구를 읽으세요. 간격이 길면 복구 직후일 수 있습니다 |
+| `UpstreamStale` | 휴장 중이면 `expects_data: false` 이고 `stale` 은 false 여야 정상입니다. true 라면 장 시간 판정이 잘못된 것 |
+
+**끄지 말고 고치세요.** 없는 사건으로 경보를 내면, 진짜일 때 아무도 안 봅니다.
+
+---
+
 ## 정기 점검
 
 ### 매일
@@ -343,6 +517,14 @@ CRC가 잡아주므로 **틀린 값이 배포되지는 않지만**, 계속 나�
 ./ops/ops.sh diag                    # 전반
 df -h /var/lib/mdfeed                # 디스크
 journalctl -u 'mdfeed-*' --since yesterday -p warning
+
+# 저장소 증가 — 보존을 껐다면 이걸 매일 봐야 합니다
+curl -s localhost:9104/healthz | python3 -c \
+  'import json,sys; print(json.load(sys.stdin)["storage"])'
+
+# 조용히 새는 것들 — 값이 오르면 원인을 찾습니다
+curl -s localhost:9100/metrics | grep -E \
+  'session_cancel_timeouts_total|adapter_task_deaths_total|symbol_truncated_kinds'
 ```
 
 ### 매주
