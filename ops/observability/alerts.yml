@@ -171,6 +171,20 @@ groups:
           action: "정체 판정이 맞는지 본다. /healthz 의 expects_data 가 false 면
             휴장인데 감시가 도는 것이다. 브로커 차단 전에 멈춰야 한다"
 
+      - alert: SymbolCollision
+        # 잘림은 정보 손실이고, **충돌은 데이터 오염**이다. 심각도가 다르다.
+        # 실측(2026-08-28): '코스피 대형주'와 '코스피 중형주'가 같은 바이트가 되어
+        # 두 지수 가격이 한 계열로 섞였고 "한 틱에 709.73% 이동" CRITICAL 이
+        # 2,262건 쌓였다. SymbolTruncated 만으로는 "잘리고는 있는데 해가 있나?"
+        # 에 답할 수 없다.
+        expr: mdfeed_symbol_collision_kinds > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "심볼이 잘린 뒤 서로 겹쳤다 ({{ $value }}종) — 하류가 두 종목을 하나로 본다"
+          action: ":9100/symbols/truncated 의 collisions 를 볼 것.
+            전송 심볼 폭을 넓히려면 프로토콜 버전 올림이 필요하다"
+
       - alert: SymbolTruncated
         # 심볼이 전송 폭을 넘으면 잘린다. 서로 다른 두 종목이 같은 바이트로
         # 잘리면 하류에서 한 계열로 섞이고, 품질 검사가 거짓 급등으로 잡는다.

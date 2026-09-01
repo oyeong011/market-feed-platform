@@ -98,3 +98,73 @@ def test_ascii_심볼은_그대로다():
     from mdfeed.models import _fix, _unfix
     for s in ("BTCUSDT", "KRW-BTC", "005930"):
         assert _unfix(_fix(s, 16)) == s
+
+
+# ── 잘림과 충돌은 다르다 ────────────────────────────────────────────────────
+# 2026-08-28 의 사고는 잘림이 아니라 **충돌**이었다. '코스피 대형주'와
+# '코스피 중형주'가 같은 바이트가 되어 두 지수 가격이 한 계열로 섞였고,
+# 품질 검사에 "한 틱에 709.73% 이동" CRITICAL 이 2,262건 쌓였다.
+# 잘림만 세면 "잘리고는 있는데 해가 있나?" 에 답할 수 없다.
+
+def _reset_trunc():
+    from mdfeed import models
+    models._TRUNCATED.clear()
+    models._TRUNC_MAP.clear()
+
+
+def test_잘려도_안_겹치면_충돌이_아니다():
+    from mdfeed.models import Trade, symbol_collisions
+
+    _reset_trunc()
+    for name in ("미국 30년T-BOND", "미국 1년T-BILL"):
+        Trade("KRX", name, 1, 1, 1.0, 1.0, 1).pack()
+    assert symbol_collisions() == {}, "안 겹치는데 충돌로 봤다"
+
+
+def test_잘린_뒤_같아지면_충돌로_잡는다():
+    """UTF-8 로 고친 뒤에도 **앞 5글자가 같으면** 여전히 겹친다.
+
+    '코스피 대형주' 와 '코스피 중형주' 는 이제 안 겹친다(대/중이 다르다) —
+    그게 2026-08-28 수정의 성과다. 그런데 '코스피 대형주' 와 '코스피 대표주' 는
+    둘 다 '코스피 대' 로 잘려 여전히 겹친다. 폭을 넓히지 않는 한 남는 위험이고,
+    그래서 잘림이 아니라 **충돌**을 지표로 내야 한다.
+    """
+    from mdfeed.models import Trade, symbol_collisions
+
+    _reset_trunc()
+    for name in ("코스피 대형주", "코스피 대표주"):
+        Trade("KRX", name, 1, 1, 1.0, 1.0, 1).pack()
+    col = symbol_collisions()
+    assert col, "같은 바이트가 됐는데 못 잡았다"
+    (wire, originals), = col.items()
+    assert wire == "코스피 대"
+    assert sorted(originals) == sorted(["코스피 대형주", "코스피 대표주"])
+
+
+def test_UTF8_수정_덕에_안_겹치게_된_쌍은_충돌이_아니다():
+    """2026-08-28 사고의 두 지수. ascii+ignore 시절엔 둘 다 공백 하나였다."""
+    from mdfeed.models import Trade, symbol_collisions
+
+    _reset_trunc()
+    for name in ("코스피 대형주", "코스피 중형주"):
+        Trade("KRX", name, 1, 1, 1.0, 1.0, 1).pack()
+    assert symbol_collisions() == {}, "고쳐진 쌍을 아직 충돌로 본다"
+
+
+def test_안_잘리는_심볼은_기록도_안_남는다():
+    from mdfeed.models import Trade, symbol_collisions, truncated_symbols
+
+    _reset_trunc()
+    Trade("UPBIT", "KRW-BTC", 1, 1, 1.0, 1.0, 1).pack()
+    assert truncated_symbols() == {} and symbol_collisions() == {}
+
+
+def test_충돌은_잘림보다_심각하다는_걸_구분해_낸다():
+    """지표가 둘로 갈려야 경보 심각도를 다르게 걸 수 있다."""
+    from mdfeed.models import Trade, symbol_collisions, truncated_symbols
+
+    _reset_trunc()
+    for name in ("미국 30년T-BOND", "코스피 대형주", "코스피 대표주"):
+        Trade("KRX", name, 1, 1, 1.0, 1.0, 1).pack()
+    assert len(truncated_symbols()) == 3      # 셋 다 잘렸고
+    assert len(symbol_collisions()) == 1      # 겹친 건 한 쌍뿐이다

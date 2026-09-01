@@ -221,12 +221,17 @@ class FeedDaemon:
         # 잘린 심볼 목록. 개수만 세면 "10종이 잘린다"까지는 알아도
         # 어느 심볼인지 몰라 아무 조치도 못 한다. 지표는 조치 가능해야 한다.
         def _trunc(_req):
-            from ..models import truncated_symbols
+            from ..models import symbol_collisions, truncated_symbols
             t = truncated_symbols()
+            col = symbol_collisions()
             return Response.json({
                 "count": len(t),
                 "note": "전송 심볼 폭(16바이트)을 넘어 잘린 원본 이름",
                 "symbols": sorted(t.items(), key=lambda kv: -kv[1]),
+                # 잘림은 정보 손실이고 충돌은 데이터 오염이다.
+                # 비어 있으면 잘려도 하류에서 섞이지는 않는다.
+                "collision_count": len(col),
+                "collisions": col,
             })
         http.route("GET", "/symbols/truncated", _trunc)
         await http.start()
@@ -282,6 +287,9 @@ class FeedDaemon:
             trunc = truncated_symbols()
             self.registry.gauge("symbol_truncated_kinds", len(trunc))
             self.registry.gauge("symbol_truncated_total", sum(trunc.values()))
+            # 잘림은 정보 손실, 충돌은 **데이터 오염**이다. 심각도가 다르다.
+            from ..models import symbol_collisions
+            self.registry.gauge("symbol_collision_kinds", len(symbol_collisions()))
             # 시계 오프셋을 지표로도 내보낸다. /healthz 에만 있으면 사람이 볼 때만
             # 보이고, 알람은 걸 수 없다.
             for venue, c in CLOCK.report().items():

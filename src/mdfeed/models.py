@@ -60,11 +60,32 @@ def now_ns() -> int:
 # 폭을 넘어 잘린 심볼을 기록한다. 잘림은 조용하면 안 된다 —
 # 서로 다른 두 심볼이 같은 바이트로 잘리면 하류에서 한 종목처럼 섞인다.
 _TRUNCATED: dict[str, int] = {}
+# 잘린 결과 → 그 결과로 잘린 원본들. **충돌이 진짜 해악이다.**
+#
+# 2026-08-28 의 사고는 잘림이 아니라 충돌이었다. '코스피 대형주'와
+# '코스피 중형주'가 같은 바이트가 되어 두 지수의 가격이 한 계열로 섞였고,
+# 품질 검사에 "한 틱에 709.73% 이동" CRITICAL 이 2,262건 쌓였다.
+# 잘림만 세면 "잘리고는 있는데 해가 있나?" 에 답할 수 없다.
+_TRUNC_MAP: dict[bytes, set] = {}
 
 
 def truncated_symbols() -> dict[str, int]:
     """폭 초과로 잘린 심볼과 횟수. 지표로 내보내기 위한 읽기 창구."""
     return dict(_TRUNCATED)
+
+
+def symbol_collisions() -> dict[str, list]:
+    """잘린 뒤 **서로 같아진** 심볼들. 비어 있으면 잘려도 섞이지는 않는다.
+
+    잘림은 정보 손실이고, 충돌은 데이터 오염이다. 둘은 심각도가 다르다.
+    폭을 넓히는 건 와이어 포맷 변경이라 버전 올림이 필요하므로, 그 결정이
+    내려지기 전까지는 **충돌이 실제로 생겼는지**를 보고 판단해야 한다.
+    """
+    out = {}
+    for wire, originals in _TRUNC_MAP.items():
+        if len(originals) > 1:
+            out[wire.rstrip(b"\x00").decode("utf-8", "ignore")] = sorted(originals)
+    return out
 
 
 def _fix(s: str, n: int) -> bytes:
@@ -87,6 +108,7 @@ def _fix(s: str, n: int) -> bytes:
         if b and (b[-1] & 0xC0) == 0xC0:
             b = b[:-1]
         _TRUNCATED[s] = _TRUNCATED.get(s, 0) + 1
+        _TRUNC_MAP.setdefault(bytes(b), set()).add(s)
     return b.ljust(n, b"\x00")
 
 
