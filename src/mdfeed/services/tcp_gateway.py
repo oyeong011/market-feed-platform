@@ -150,6 +150,8 @@ class TCPGateway:
         self.frames_in = 0
         self.upstream_ok = False
         self.last_frame_at = 0.0
+        from ..supervisor import Supervisor
+        self.sup = Supervisor(SERVICE, self.registry)
         from ..runtime import make_tracker
         self.tracker = make_tracker()
         self._started = time.time()
@@ -348,6 +350,9 @@ class TCPGateway:
         # feedd 가 하트비트를 보내므로 무거래여도 이 값은 갱신된다.
         healthy = self.upstream_ok and (age is None or age < 30.0)
         return {
+            # 태스크별 상태. 합쳐서 세면 하나가 죽어도 안 보인다 —
+            # 그게 8/28·8/31·9/1·9/2 사고의 공통점이었다.
+            **self.sup.report(),
             "service": SERVICE, "healthy": healthy,
             "uptime_s": round(time.time() - self._started, 1),
             "upstream_connected": self.upstream_ok,
@@ -371,16 +376,16 @@ class TCPGateway:
             {"count": len(self.subs), "items": [s.info() for s in self.subs.values()]}))
         await http.start()
 
-        bus_task = asyncio.create_task(self._consume_bus(stop))
-        gauge_task = asyncio.create_task(self._gauges(stop))
+        # 장수 태스크는 전부 감독을 거친다. supervisor.py 참고 —
+        # 같은 가족의 사고가 네 번 난 뒤에 만든 계약이다.
+        self.sup.spawn("consume_bus", lambda: self._consume_bus(stop), stop)
+        self.sup.spawn("gauges", lambda: self._gauges(stop), stop)
         from ..runtime import sample_resources
         res_task = asyncio.create_task(sample_resources(self.tracker, stop))
         await stop.wait()
         res_task.cancel()
 
-        for t in (bus_task, gauge_task):
-            t.cancel()
-        await asyncio.gather(bus_task, gauge_task, return_exceptions=True)
+        await self.sup.shutdown()
         # 구독자 연결을 먼저 끊는다. wait_closed() 는 핸들러 종료를 기다리는데,
         # 핸들러는 reader.read() 에서 대기 중이라 스스로 끝나지 않는다.
         for sub in list(self.subs.values()):

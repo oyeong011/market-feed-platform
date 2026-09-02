@@ -54,6 +54,8 @@ class FeedDaemon:
         self.adapters: list = []
         self.inactive: list = []
         self._recorder = None
+        from ..supervisor import Supervisor
+        self.sup = Supervisor(SERVICE, self.registry)
         from ..runtime import make_tracker
         self.tracker = make_tracker()
         self._started = time.time()
@@ -112,6 +114,9 @@ class FeedDaemon:
         # 보는 사람에게는 아무 표시도 없었다. 목록으로 표면에 올린다.
         degraded = [u["venue"] for u in ups if u["stale"]]
         return {
+            # 태스크별 상태. 합쳐서 세면 하나가 죽어도 안 보인다 —
+            # 그게 8/28·8/31·9/1·9/2 사고의 공통점이었다.
+            **self.sup.report(),
             "service": SERVICE, "healthy": healthy,
             "degraded_upstreams": degraded,
             "uptime_s": round(time.time() - self._started, 1),
@@ -264,11 +269,15 @@ class FeedDaemon:
         await http.start()
 
         self._declare_venue_counters()
-        tasks = [asyncio.create_task(self._keep_running(a, stop),
-                                     name=f"adapter:{a.name}")
-                 for a in self.adapters]
-        tasks.append(asyncio.create_task(self._heartbeat(stop), name="heartbeat"))
-        tasks.append(asyncio.create_task(self._gauges(stop), name="gauges"))
+        # 장수 태스크는 전부 감독을 거친다. supervisor.py 참고 —
+        # 같은 가족의 사고가 네 번 난 뒤에 만든 계약이다.
+        # 어댑터는 자체 재접속 루프가 있으므로 _keep_running 이 그 위를 덮고,
+        # 감독은 그 _keep_running 자체가 사라지지 않게 한다(9/1 사고).
+        for a in self.adapters:
+            self.sup.spawn(f"adapter:{a.name}",
+                           lambda ad=a: self._keep_running(ad, stop), stop)
+        self.sup.spawn("heartbeat", lambda: self._heartbeat(stop), stop)
+        self.sup.spawn("gauges", lambda: self._gauges(stop), stop)
 
         from ..runtime import sample_resources
         res_task = asyncio.create_task(sample_resources(self.tracker, stop))
@@ -277,9 +286,7 @@ class FeedDaemon:
         log.info("종료 신호. 어댑터 정리 중...")
         for a in self.adapters:
             a.stop()
-        for t in tasks:
-            t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await self.sup.shutdown()
         await http.close()
         await self.bus.close()
         if self.ring:

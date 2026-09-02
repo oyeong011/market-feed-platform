@@ -87,6 +87,8 @@ class WSGateway:
         self.upstream_ok = False
         self.sources = SourceTracker([])
         self._src_tasks: list = []
+        from ..supervisor import Supervisor
+        self.sup = Supervisor(SERVICE, self.registry)
         from ..runtime import make_tracker
         self.tracker = make_tracker()
         self._started = time.time()
@@ -103,9 +105,10 @@ class WSGateway:
         # 실측(2026-09-02): 크립토 버스 구독이 그렇게 없어져 30시간 동안
         # 대시보드가 낡은 시세를 정상처럼 보여줬다.
         self._src_tasks = [
-            asyncio.create_task(consume_forever(p, self._ingest, stop,
-                                                self.sources, name=SERVICE),
-                                name=f"consume:{os.path.basename(p)}")
+            self.sup.spawn(f"consume:{os.path.basename(p)}",
+                           lambda path=p: consume_forever(
+                               path, self._ingest, stop, self.sources, name=SERVICE),
+                           stop)
             for p in paths]
         from ..runtime import sample_resources
         res_task = asyncio.create_task(sample_resources(self.tracker, stop))
@@ -308,6 +311,9 @@ class WSGateway:
     def health(self) -> dict:
         age = time.time() - self.last_frame_at if self.last_frame_at else None
         return {
+            # 태스크별 상태. 합쳐서 세면 하나가 죽어도 안 보인다 —
+            # 그게 8/28·8/31·9/1·9/2 사고의 공통점이었다.
+            **self.sup.report(),
             "service": SERVICE,
             "healthy": self.upstream_ok and (age is None or age < 30.0),
             "uptime_s": round(time.time() - self._started, 1),

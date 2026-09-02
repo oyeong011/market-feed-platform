@@ -85,6 +85,8 @@ class Writer:
         self.prune_runs = 0
         # DB 를 만지는 모든 스레드가 이 락을 통과한다 (위 주석 참고)
         self._db_lock = threading.Lock()
+        from ..supervisor import Supervisor
+        self.sup = Supervisor(SERVICE, self.registry)
         from ..runtime import make_tracker
         self.tracker = make_tracker()
         self._started = time.time()
@@ -247,6 +249,9 @@ class Writer:
     def health(self) -> dict:
         age = time.time() - self.last_frame_at if self.last_frame_at else None
         return {
+            # 태스크별 상태. 합쳐서 세면 하나가 죽어도 안 보인다 —
+            # 그게 8/28·8/31·9/1·9/2 사고의 공통점이었다.
+            **self.sup.report(),
             "service": SERVICE,
             "healthy": (self.upstream_ok and (age is None or age < 30.0)
                         and self.db_errors < 10),
@@ -280,18 +285,19 @@ class Writer:
         sources = list(cfg.bus_paths or [cfg.bus_path]) + [cfg.signal_bus_path]
         log.info("구독 대상 %d개: %s", len(sources),
                  ", ".join(os.path.basename(p) for p in sources))
-        tasks = [asyncio.create_task(self._consume(p, stop)) for p in sources] + [
-            asyncio.create_task(self._flush_loop(stop)),
-            asyncio.create_task(self._retention_loop(stop)),
-        ]
+        # 장수 태스크는 전부 감독을 거친다. supervisor.py 참고 —
+        # 같은 가족의 사고가 네 번 난 뒤에 만든 계약이다.
+        for path in sources:
+            self.sup.spawn(f"consume:{os.path.basename(path)}",
+                           lambda p=path: self._consume(p, stop), stop)
+        self.sup.spawn("flush", lambda: self._flush_loop(stop), stop)
+        self.sup.spawn("retention", lambda: self._retention_loop(stop), stop)
         from ..runtime import sample_resources
         res_task = asyncio.create_task(sample_resources(self.tracker, stop))
         await stop.wait()
         res_task.cancel()
 
-        for t in tasks:
-            t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await self.sup.shutdown()
         # 종료 전 마지막 flush. 진행 중인 봉도 이때는 확정해서 쓴다.
         # cancel 된 태스크의 워커 스레드가 아직 DB 를 만지고 있을 수 있으므로
         # 이 아래 모든 DB 접근은 _db_lock 을 거친다.

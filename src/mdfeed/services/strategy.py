@@ -62,6 +62,8 @@ class StrategyEngine:
         self.last_frame_at = 0.0
         self.upstream_ok = False
         self.recent: list[dict] = []
+        from ..supervisor import Supervisor
+        self.sup = Supervisor(SERVICE, self.registry)
         from ..runtime import make_tracker
         self.tracker = make_tracker()
         self._started = time.time()
@@ -155,6 +157,9 @@ class StrategyEngine:
         ready = sum(1 for d in self._strats.values()
                     for s in d.values() if getattr(s, "ready", False))
         return {
+            # 태스크별 상태. 합쳐서 세면 하나가 죽어도 안 보인다 —
+            # 그게 8/28·8/31·9/1·9/2 사고의 공통점이었다.
+            **self.sup.report(),
             "service": SERVICE,
             "healthy": self.upstream_ok and (age is None or age < 30.0),
             "uptime_s": round(time.time() - self._started, 1),
@@ -180,15 +185,14 @@ class StrategyEngine:
             {k: {n: s.state() for n, s in d.items()} for k, d in self._strats.items()}))
         await http.start()
 
-        tasks = [asyncio.create_task(self._consume(stop)),
-                 asyncio.create_task(self._sweep(stop))]
+        # 장수 태스크는 전부 감독을 거친다. supervisor.py 참고.
+        self.sup.spawn("consume", lambda: self._consume(stop), stop)
+        self.sup.spawn("sweep", lambda: self._sweep(stop), stop)
         from ..runtime import sample_resources
         res_task = asyncio.create_task(sample_resources(self.tracker, stop))
         await stop.wait()
         res_task.cancel()
-        for t in tasks:
-            t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await self.sup.shutdown()
         await http.close()
         await self.pub.close()
         log.info("종료. 봉 %d개 처리, 시그널 %d건 발행", self.bars_closed, self.signals_emitted)

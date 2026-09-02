@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import time
 
 from ..bus import UDSSubscriber
@@ -52,6 +53,8 @@ class QualityService:
         self.upstream_ok = False
         self.storage = None
         self._pending: list[tuple] = []
+        from ..supervisor import Supervisor
+        self.sup = Supervisor(SERVICE, self.registry)
         from ..runtime import make_tracker
         self.tracker = make_tracker()
         self._started = time.time()
@@ -124,6 +127,9 @@ class QualityService:
         age = time.time() - self.last_frame_at if self.last_frame_at else None
         rep = self.monitor.report()
         return {
+            # 태스크별 상태. 합쳐서 세면 하나가 죽어도 안 보인다 —
+            # 그게 8/28·8/31·9/1·9/2 사고의 공통점이었다.
+            **self.sup.report(),
             "service": SERVICE,
             "healthy": self.upstream_ok and (age is None or age < 60.0),
             "uptime_s": round(time.time() - self._started, 1),
@@ -158,16 +164,17 @@ class QualityService:
 
         sources = list(cfg.bus_paths or [cfg.bus_path])
         log.info("품질 검사 시작 — 구독 %d개", len(sources))
-        tasks = [asyncio.create_task(self._consume(p, stop)) for p in sources]
-        tasks.append(asyncio.create_task(self._flush_loop(stop)))
-        tasks.append(asyncio.create_task(self._gauges(stop)))
+        # 장수 태스크는 전부 감독을 거친다. supervisor.py 참고.
+        for path in sources:
+            self.sup.spawn(f"consume:{os.path.basename(path)}",
+                           lambda p=path: self._consume(p, stop), stop)
+        self.sup.spawn("flush", lambda: self._flush_loop(stop), stop)
+        self.sup.spawn("gauges", lambda: self._gauges(stop), stop)
         from ..runtime import sample_resources
         res_task = asyncio.create_task(sample_resources(self.tracker, stop))
         await stop.wait()
         res_task.cancel()
-        for t in tasks:
-            t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await self.sup.shutdown()
         await self._flush()
         await http.close()
         with contextlib.suppress(Exception):

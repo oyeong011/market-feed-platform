@@ -198,19 +198,93 @@ require_stack
 echo "장애 주입 시작 — $(date '+%H:%M:%S')"
 echo "복구 장치는 평소에 안 돌아간다. 일부러 부숴야 맞는지 알 수 있다."
 echo ""
+
+# ── 서비스를 하나씩 죽였다 살린다 ─────────────────────────────────────────
+# 2026-08-28 ~ 09-02 에 **같은 가족의 사고가 네 번** 났다. 증상은 매번 같았고
+# (업스트림이 조용히 멎고 헬스는 정상) 원인은 매번 달랐다.
+#   08-28 태스크 사망이 안 보임 · 08-31 정리가 복구 차단
+#   09-01 감독이 조용히 이탈   · 09-02 소비자를 GC 가 수거
+#
+# 네 건 다 시험으로는 안 잡혔다. **프로세스 경계에서 났기 때문이다.**
+# 여기서 각 서비스를 실제로 죽이고, 정해진 시간 안에 돌아오는지 본다.
+# 이 시나리오가 있었으면 네 건 중 셋은 자동으로 잡혔다.
+
+RECOVER_S=${RECOVER_S:-45}
+
+chaos_service_kill() {
+  local name="$1" port="$2"
+  echo "${B}[서비스 재기동] $name (:$port)${N}"
+  local pid before
+  pid=$(pgrep -f "mdfeed.services.$name" | head -1)
+  [ -z "$pid" ] && { fail "$name 프로세스를 못 찾음"; return; }
+  before=$(health "$port" | jqv uptime_s)
+  info "pid $pid 를 SIGKILL 한다 (가동 ${before%.*}초)"
+  kill -9 "$pid" 2>/dev/null
+
+  local t0 waited=0
+  t0=$(date +%s)
+  while [ "$waited" -lt "$RECOVER_S" ]; do
+    sleep 2
+    waited=$(( $(date +%s) - t0 ))
+    local up
+    up=$(health "$port" | jqv uptime_s)
+    if [ -n "$up" ] && [ "${up%.*}" -lt "${before%.*}" ] 2>/dev/null; then
+      pass "$name 이 ${waited}초 만에 돌아왔다 (가동 ${up%.*}초)"
+      return
+    fi
+  done
+  fail "$name 이 ${RECOVER_S}초 안에 안 돌아왔다 — 감독이 없거나 죽었다"
+}
+
+chaos_restart_all() {
+  echo "${B}[전 서비스 재기동 복구]${N}"
+  for pair in "tcp_gateway 9111" "ws_gateway 9102" "rest_api 9103" \
+              "writer 9104" "strategy 9105" "quality 9106"; do
+    chaos_service_kill $pair
+  done
+}
+
+# ── 감독이 실제로 되살리는가 (프로세스 안) ────────────────────────────────
+chaos_task_supervision() {
+  echo "${B}[태스크 감독] 되살린 흔적이 지표에 남는가${N}"
+  local ok=0
+  for pair in "9100 feedd" "9104 writer" "9106 quality" "9111 tcp-gateway"; do
+    set -- $pair
+    local body
+    body=$(health "$1")
+    [ -z "$body" ] && { fail "$2 무응답"; continue; }
+    local n
+    n=$(echo "$body" | python3 -c "import json,sys
+try:
+    d=json.load(sys.stdin); print(len(d.get('tasks',[])))
+except Exception: print(0)")
+    if [ "${n:-0}" -gt 0 ]; then
+      info "$2 감독 태스크 ${n}개"
+      ok=$((ok+1))
+    else
+      fail "$2 가 태스크 상태를 안 낸다 — 감독을 안 거치고 있다"
+    fi
+  done
+  [ "$ok" -ge 3 ] && pass "감독 계약이 서비스에 걸려 있다"
+}
+
 case "${1:-all}" in
   feedd)   chaos_feedd ;;
   bus)     chaos_bus ;;
   corrupt) chaos_corrupt ;;
   slow)    chaos_slow_subscriber ;;
   db)      chaos_db ;;
+  restart) chaos_restart_all ;;
+  tasks)   chaos_task_supervision ;;
   all)
     chaos_corrupt; echo
     chaos_slow_subscriber; echo
     chaos_db; echo
     chaos_feedd; echo
+    chaos_task_supervision; echo
+    chaos_restart_all; echo
     ;;
-  *) echo "사용법: $0 {all|feedd|bus|corrupt|slow|db}"; exit 1 ;;
+  *) echo "사용법: $0 {all|feedd|bus|corrupt|slow|db|restart|tasks}"; exit 1 ;;
 esac
 echo ""
 [ "$FAILED" = "0" ] && echo "${G}모든 복구 경로 확인${N}" || echo "${R}복구 실패 항목 있음${N}"
