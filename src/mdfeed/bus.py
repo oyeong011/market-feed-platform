@@ -187,6 +187,84 @@ class UDSPublisher:
             os.unlink(self.path)
 
 
+class SourceTracker:
+    """버스 소스별 상태. **합쳐서 세면 하나가 죽어도 안 보인다.**
+
+    실측(2026-09-02): ws-gateway 가 크립토 버스 구독을 잃고 KRX 하트비트만
+    받는 상태로 30시간 돌았다. 그런데 `upstream_connected` 는 True 였고
+    `last_frame_age_s` 는 5초였다 — 살아 있는 다른 소스가 그 값을 갱신했기
+    때문이다. 대시보드는 낡은 크립토 시세를 정상처럼 보여주고 있었다.
+
+    거래소 하나를 통째로 잃는 건 이 시스템에서 가장 큰 사고인데,
+    지표 하나로 합치면 그게 보이지 않는다.
+    """
+
+    def __init__(self, paths, stale_after_s: float = 60.0):
+        self.stale_after_s = stale_after_s
+        self.state = {p: {"connected": False, "frames": 0,
+                          "last_at": 0.0, "restarts": 0} for p in paths}
+
+    def mark(self, path: str) -> None:
+        st = self.state.setdefault(path, {"connected": False, "frames": 0,
+                                          "last_at": 0.0, "restarts": 0})
+        st["connected"] = True
+        st["frames"] += 1
+        st["last_at"] = time.time()
+
+    def died(self, path: str) -> None:
+        st = self.state.get(path)
+        if st is not None:
+            st["connected"] = False
+            st["restarts"] += 1
+
+    def report(self) -> dict:
+        now = time.time()
+        srcs, degraded = [], []
+        for path, st in self.state.items():
+            age = (now - st["last_at"]) if st["last_at"] else None
+            name = os.path.basename(path)
+            stale = st["frames"] > 0 and age is not None and age > self.stale_after_s
+            if stale or not st["connected"]:
+                degraded.append(name)
+            srcs.append({"source": name, "connected": st["connected"],
+                         "frames": st["frames"], "restarts": st["restarts"],
+                         "last_frame_age_s": round(age, 1) if age is not None else None,
+                         "stale": stale})
+        return {"sources": srcs, "degraded_sources": degraded}
+
+
+async def consume_forever(path: str, on_frame, stop, tracker: SourceTracker,
+                          name: str = "", backoff_max: float = 15.0) -> None:
+    """한 소스를 계속 소비한다. **죽어도 다시 붙고, 죽은 사실을 센다.**
+
+    예전엔 소비자 태스크가 한 번 죽으면 아무도 되살리지 않았다.
+    ws-gateway 는 그 태스크를 변수에 담지도 않아 GC 가 수거해 갔다
+    ("Task was destroyed but it is pending!"). 거래소 하나가 통째로 사라졌고
+    30시간 동안 어느 지표에도 안 남았다.
+    """
+    backoff = 1.0
+    while not stop.is_set():
+        try:
+            sub = UDSSubscriber(path, name=name)
+            async for frame in sub.frames():
+                if stop.is_set():
+                    return
+                tracker.mark(path)
+                backoff = 1.0
+                on_frame(frame)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as e:                  # noqa: BLE001
+            tracker.died(path)
+            log.exception("[%s] 소비자가 죽었다 — 되살린다: %s",
+                          os.path.basename(path), e)
+        if stop.is_set():
+            return
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=backoff)
+        backoff = min(backoff * 2, backoff_max)
+
+
 class UDSSubscriber:
     """자동 재접속하는 구독자. async for 로 Frame 을 받는다."""
 

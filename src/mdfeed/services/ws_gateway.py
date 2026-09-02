@@ -27,7 +27,7 @@ import logging
 import os
 import time
 
-from ..bus import UDSSubscriber
+from ..bus import SourceTracker, consume_forever
 from ..clock import ClockMonitor
 from ..httpd import HTTPServer, Response, health_routes
 from ..metrics import Registry
@@ -85,6 +85,8 @@ class WSGateway:
         self.frames_in = 0
         self.last_frame_at = 0.0
         self.upstream_ok = False
+        self.sources = SourceTracker([])
+        self._src_tasks: list = []
         from ..runtime import make_tracker
         self.tracker = make_tracker()
         self._started = time.time()
@@ -94,27 +96,29 @@ class WSGateway:
     # ── 업스트림 ──────────────────────────────────────────────────────────
     async def _consume(self, stop: asyncio.Event) -> None:
         paths = list(self.cfg.bus_paths or [self.cfg.bus_path]) + [self.cfg.signal_bus_path]
-        for path in paths:
-            asyncio.create_task(self._consume_one(path, stop))
+        self.sources = SourceTracker(paths)
+        # **태스크를 반드시 붙잡아 둔다.** create_task 결과를 어디에도 안 담으면
+        # 파이썬이 GC 로 수거해 간다 — 로그에 "Task was destroyed but it is
+        # pending!" 이 찍히고 그 소스는 조용히 사라진다.
+        # 실측(2026-09-02): 크립토 버스 구독이 그렇게 없어져 30시간 동안
+        # 대시보드가 낡은 시세를 정상처럼 보여줬다.
+        self._src_tasks = [
+            asyncio.create_task(consume_forever(p, self._ingest, stop,
+                                                self.sources, name=SERVICE),
+                                name=f"consume:{os.path.basename(p)}")
+            for p in paths]
         from ..runtime import sample_resources
         res_task = asyncio.create_task(sample_resources(self.tracker, stop))
         await stop.wait()
         res_task.cancel()
-
-    async def _consume_one(self, path: str, stop: asyncio.Event) -> None:
-        sub = UDSSubscriber(path, name=SERVICE)
-        try:
-            async for frame in sub.frames():
-                if stop.is_set():
-                    return
-                self.frames_in += 1
-                self.last_frame_at = time.time()
-                self.upstream_ok = True
-                self._ingest(frame)
-        except asyncio.CancelledError:
-            return
+        for t in self._src_tasks:
+            t.cancel()
+        await asyncio.gather(*self._src_tasks, return_exceptions=True)
 
     def _ingest(self, frame) -> None:
+        self.frames_in += 1
+        self.last_frame_at = time.time()
+        self.upstream_ok = True
         mt = frame.msg_type
         if mt == MSG_TRADE and len(frame.payload) >= Trade.SIZE:
             t = Trade.unpack(frame.payload)
@@ -309,6 +313,9 @@ class WSGateway:
             "uptime_s": round(time.time() - self._started, 1),
             "upstream_connected": self.upstream_ok,
             "last_frame_age_s": round(age, 1) if age is not None else None,
+            # 합계만 보면 소스 하나가 죽어도 안 보인다. 살아 있는 다른 소스가
+            # last_frame_age_s 를 계속 갱신하기 때문이다.
+            **self.sources.report(),
             "frames_in": self.frames_in,
             "ws_clients": len(self.clients),
             "symbols": len(self.snapshot),
