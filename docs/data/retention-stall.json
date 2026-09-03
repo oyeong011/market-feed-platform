@@ -1,0 +1,52 @@
+{
+  "measured_at": "2026-09-03T16:48:41+0900",
+  "rows": 500000,
+  "delete_batch": 50000,
+  "flush_hz": 20.0,
+  "runs": [
+    {
+      "lock_scope": "옛 판(루프 바깥)",
+      "prune_s": 4.61,
+      "batches": 12,
+      "deleted_rows": 500000,
+      "flushes_during_prune": 19,
+      "max_gap_s": 4.655,
+      "p99_gap_s": null,
+      "median_gap_s": 0.053,
+      "order": "1번째"
+    },
+    {
+      "lock_scope": "새 판(배치마다)",
+      "prune_s": 2.42,
+      "batches": 12,
+      "deleted_rows": 500000,
+      "flushes_during_prune": 28,
+      "max_gap_s": 0.574,
+      "p99_gap_s": null,
+      "median_gap_s": 0.055,
+      "order": "2번째"
+    },
+    {
+      "lock_scope": "새 판(배치마다)",
+      "prune_s": 1.99,
+      "batches": 12,
+      "deleted_rows": 500000,
+      "flushes_during_prune": 28,
+      "max_gap_s": 0.29,
+      "p99_gap_s": null,
+      "median_gap_s": 0.055,
+      "order": "1번째"
+    },
+    {
+      "lock_scope": "옛 판(루프 바깥)",
+      "prune_s": 2.03,
+      "batches": 12,
+      "deleted_rows": 500000,
+      "flushes_during_prune": 19,
+      "max_gap_s": 2.07,
+      "p99_gap_s": null,
+      "median_gap_s": 0.052,
+      "order": "2번째"
+    }
+  ]
+}

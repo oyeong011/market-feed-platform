@@ -44,6 +44,9 @@ lint:  ## 문법·임포트 점검 (외부 린터 없이)
 	@bash -n ops/ops.sh ops/watchdog.sh && echo "셸 문법 OK"
 	@$(PY) scripts/find_unused_params.py --check && echo "안 쓰는 인자 OK"
 
+bench-retention: venv  ## 보존 삭제가 적재를 멈추는지 A/B → docs/data/retention-stall.json
+	$(PY) bench/retention_stall_bench.py
+
 bench: venv  ## 성능 벤치마크 → docs/data/bench.json
 	$(BIN)/python bench/latency_bench.py --out docs/data/bench.json
 
