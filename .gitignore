@@ -23,3 +23,6 @@ data/reference/*
 
 # 품질 검사 회귀용 실데이터 표본은 저장소에 넣는다 (공개 시장가격, 자격증명 없음)
 !data/quality_corpus.jsonl.gz
+
+# 개발단 실행 설정 — 기계마다 다르다. .example 만 커밋한다.
+ops/mdfeed.local.env

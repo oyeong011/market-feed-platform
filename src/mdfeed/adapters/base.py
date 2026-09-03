@@ -277,6 +277,18 @@ class Adapter(abc.ABC):
             "errors": self.errors,
             "last_msg_age_s": round(age, 1) if age is not None else None,
             "stale": self.is_stale,
+            # 구독하기로 한 종목 수. 지금까지 **본** 종목 수와 다르다.
+            #
+            # 2026-09-03: 재기동 한 번에 유니버스가 4,327 → 7 종목으로
+            # 줄었는데 상태판에는 아무 표시가 없었다. 한도 설정이 셸 환경변수에만
+            # 있었고, 다른 셸에서 띄우니 조용히 기본값으로 돌아갔다.
+            # 헬스가 "본 종목 수"만 내면 장 마감이라 안 오는 것과
+            # 구독 자체를 안 한 것이 구분되지 않는다.
+            # 어댑터마다 이름이 다르다. WS 구독형은 symbols, KRX 광역
+            # 폴링형은 universe 다. 하나만 세면 3,554종목이 0 으로 보인다 —
+            # "설정이 사라졌다"와 똑같이 생겨서 오진을 부른다.
+            "symbols_subscribed": len(getattr(self, "symbols", None)
+                                      or getattr(self, "universe", None) or []),
             "expects_data": self.expects_data(),
             "measures_latency": self.measures_latency,
         }

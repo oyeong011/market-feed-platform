@@ -86,8 +86,17 @@ def make_cfg(tmp_path) -> Config:
     return cfg
 
 
-def subscribe_and_collect(port: int, duration: float) -> dict:
-    """참조 클라이언트와 같은 방식으로 구독해 결과를 모은다."""
+def subscribe_and_collect(port: int, duration: float,
+                          want_trades: int = 0) -> dict:
+    """참조 클라이언트와 같은 방식으로 구독해 결과를 모은다.
+
+    want_trades 를 채우면 기한 전에도 끝낸다. 고정 시간만 재면 이 시험은
+    **처리량 시험**이 되어 버린다 — 실제로 기계에 부하가 걸린 동안
+    "체결이 배포되지 않음"으로 실패했고, 혼자 돌리면 통과했다.
+    흔들리는 시험은 시험이 아니다. 확인하려는 건 "끝까지 흐르는가"이지
+    "4초에 몇 건인가"가 아니므로, 목표 건수를 채우면 그만 본다.
+    기한은 그대로 상한으로 남는다 — 안 흐르면 여전히 실패한다.
+    """
     s = socket.create_connection(("127.0.0.1", port), timeout=5)
     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     parser, track = FrameParser(), SequenceTracker()
@@ -102,6 +111,8 @@ def subscribe_and_collect(port: int, duration: float) -> dict:
         except socket.timeout:
             continue
         if not chunk:
+            break
+        if want_trades and trades >= want_trades:
             break
         for f in parser.feed(chunk):
             if f.flags & FLAG_SNAPSHOT:
@@ -146,7 +157,7 @@ def test_full_pipeline(tmp_path):
         await asyncio.sleep(1.0)                 # 게이트웨이 리스닝 대기
 
         client = asyncio.create_task(
-            asyncio.to_thread(subscribe_and_collect, cfg.tcp_port, 4.0))
+            asyncio.to_thread(subscribe_and_collect, cfg.tcp_port, 20.0, 150))
         result = await client
 
         health = {"feedd": feed.health(), "gateway": gw.health(),

@@ -125,7 +125,11 @@ class FeedDaemon:
             "bus_dropped": self.bus.dropped,
             # 합계만으로는 누가 느린지 모른다. 드롭 많은 순으로 낸다.
             "bus_subscribers": self.bus.subscriber_stats(),
+            # 본 종목 수. 구독하기로 한 수와 다르다 — 아래 둘을 같이 봐야
+            # "장이 닫혀 안 온다"와 "구독을 안 했다"가 구분된다.
             "symbols": len(self.snapshot),
+            "symbols_subscribed": sum(u.get("symbols_subscribed", 0)
+                                      for u in ups),
             "upstreams": ups,
             "inactive_upstreams": self.inactive,
             # 시계가 어긋나면 지연시간 지표를 믿을 수 없다는 사실을 표면에 올린다

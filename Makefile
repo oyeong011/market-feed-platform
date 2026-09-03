@@ -51,10 +51,12 @@ bench: venv  ## 성능 벤치마크 → docs/data/bench.json
 	$(BIN)/python bench/latency_bench.py --out docs/data/bench.json
 
 up:  ## 전체 스택 기동 (6개 프로세스, 포그라운드 감독)
-	$(PY) -m mdfeed.cli up
+	@$(MAKE) --no-print-directory env-check
+	@$(load_env) $(PY) -m mdfeed.cli up
 
 up-shards:  ## feedd 를 venue 그룹별로 쪼개 기동 (단일 장애점 제거)
-	$(PY) -m mdfeed.cli up --shards
+	@$(MAKE) --no-print-directory env-check
+	@$(load_env) $(PY) -m mdfeed.cli up --shards
 
 MINUTES ?= 60
 soak: venv  ## 장시간 감시 (MINUTES=60) → 누수 임계 초과 시 실패
@@ -80,11 +82,33 @@ load:  venv  ## 배포단 부하 시험 → docs/data/load.json
 	$(BIN)/python bench/load_test.py --subscribers 1 10 25 50 100 \
 	  --seconds 10 --out docs/data/load.json
 
+# 실행 설정과 자격증명을 파일에서 읽는다. 셸 환경변수에만 두면 다른 셸에서
+# 띄웠을 때 조용히 기본값으로 돌아간다 — 2026-09-03 에 유니버스가 4,327 →
+# 7 종목으로 줄었는데 상태판에 아무 표시가 없었다.
+# `-` 접두사로 파일이 없어도 실패하지 않는다(배포단은 systemd 가 읽는다).
+ENVFILES = ops/mdfeed.local.env $(HOME)/.mdfeed/kis.env
+define load_env
+	set -a; for f in $(ENVFILES); do [ -f "$$f" ] && . "$$f"; done; set +a;
+endef
+
+env-check:  ## 어떤 설정 파일을 읽는지, 유니버스가 몇 종목인지 확인
+	@for f in $(ENVFILES); do \
+	  if [ -f "$$f" ]; then echo "  읽음   $$f"; else echo "  없음   $$f"; fi; \
+	done
+	@$(load_env) $(PY) -c "import sys; sys.path.insert(0,'src'); \
+	  from mdfeed.config import Config; c=Config(); \
+	  print(f'  업비트 한도 {c.upbit_universe_limit} · 바이낸스 한도 {c.binance_universe_limit}'); \
+	  print(f'  KRX 시장 {\",\".join(c.krx_markets)}'); \
+	  print(f'  KIS 키 {\"있음\" if c.kis_app_key else \"없음 — KRX 샤드가 안 뜬다\"}'); \
+	  print(f'  보존 {c.retention_days}일 (0=끄기)')"
+
 up-bg:  ## 전체 스택 백그라운드 기동 (SHARDS=1 이면 venue 별로 쪼갠다)
 	@# 포그라운드 up 은 --shards 를 받는데 백그라운드는 안 받았다. 그래서
 	@# make down && make up-bg 로 재기동하면 샤드 구성이 **조용히 사라진다** —
 	@# feedd 가 하나로 합쳐지고 단일 장애점이 되돌아온다.
-	@$(PY) -m mdfeed.cli up $(if $(SHARDS),--shards,) > /tmp/mdfeed-stack.log 2>&1 & \
+	@$(MAKE) --no-print-directory env-check
+	@$(load_env) $(PY) -m mdfeed.cli up $(if $(SHARDS),--shards,) \
+	   > /tmp/mdfeed-stack.log 2>&1 & \
 	 echo "기동 중... (로그: /tmp/mdfeed-stack.log)"; sleep 8; $(MAKE) status
 
 up-bg-shards:  ## 샤드 구성으로 백그라운드 기동
