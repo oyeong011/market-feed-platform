@@ -37,6 +37,10 @@ CREATE TABLE IF NOT EXISTS book_top (
     spread_bp REAL
 );
 CREATE INDEX IF NOT EXISTS idx_book_sym_ts ON book_top (venue, symbol, ts DESC);
+-- 보존 삭제는 `WHERE ts < ?` 로 지운다. 위 복합 인덱스는 선두가 venue 라
+-- 이 조건을 못 탄다 — EXPLAIN 이 SCAN 을 냈다. trades 는 idx_trades_ts 가
+-- 있어 SEARCH 인데 book_top 만 배치마다 전체 스캔이었다.
+CREATE INDEX IF NOT EXISTS idx_book_ts ON book_top (ts DESC);
 
 CREATE TABLE IF NOT EXISTS bars_1m (
     bucket     INTEGER NOT NULL,

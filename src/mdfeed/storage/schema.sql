@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS book_top (
     spread_bp   DOUBLE PRECISION
 );
 CREATE INDEX IF NOT EXISTS idx_book_sym_ts ON book_top (venue, symbol, ts DESC);
+-- 보존 삭제(`WHERE ts < ...`)용. 복합 인덱스는 선두가 venue 라 못 탄다.
+CREATE INDEX IF NOT EXISTS idx_book_ts ON book_top (ts DESC);
 
 -- ── 1분봉 ────────────────────────────────────────────────────────────────
 -- 틱을 그대로 조회하면 대시보드/백테스트가 매번 수백만 행을 스캔한다.

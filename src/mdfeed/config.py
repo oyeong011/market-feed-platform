@@ -182,6 +182,14 @@ class Config:
         default_factory=lambda: float(_env("RETENTION_DAYS", "0")))
     retention_interval_s: float = field(
         default_factory=lambda: float(_env("RETENTION_INTERVAL_S", "3600")))
+    # 한 번의 삭제가 붙잡을 수 있는 시간 상한(초).
+    #
+    # 첫 삭제가 가장 크다 — 7,424만 행이 쌓인 상태에서 보존 3일을 켜면
+    # 2,768만 행, 554배치다. 상한이 없으면 그게 한 번에 다 돈다. 락은
+    # 배치마다 놓으니 적재가 멈추진 않지만, 삭제가 몇 분간 디스크를
+    # 독차지하면 적재 지연이 올라간다. 남은 건 다음 주기가 이어서 지운다.
+    retention_budget_s: float = field(
+        default_factory=lambda: float(_env("RETENTION_BUDGET_S", "30")))
     # 이 시간 안에 디스크가 찰 것으로 보이면 경고한다. 보존을 꺼 뒀어도
     # 디스크 감시는 항상 돈다 — 재는 것과 지우는 것은 별개다.
     disk_warn_hours: float = field(

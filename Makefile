@@ -77,9 +77,15 @@ load:  venv  ## 배포단 부하 시험 → docs/data/load.json
 	$(BIN)/python bench/load_test.py --subscribers 1 10 25 50 100 \
 	  --seconds 10 --out docs/data/load.json
 
-up-bg:  ## 전체 스택 백그라운드 기동
-	@$(PY) -m mdfeed.cli up > /tmp/mdfeed-stack.log 2>&1 & \
+up-bg:  ## 전체 스택 백그라운드 기동 (SHARDS=1 이면 venue 별로 쪼갠다)
+	@# 포그라운드 up 은 --shards 를 받는데 백그라운드는 안 받았다. 그래서
+	@# make down && make up-bg 로 재기동하면 샤드 구성이 **조용히 사라진다** —
+	@# feedd 가 하나로 합쳐지고 단일 장애점이 되돌아온다.
+	@$(PY) -m mdfeed.cli up $(if $(SHARDS),--shards,) > /tmp/mdfeed-stack.log 2>&1 & \
 	 echo "기동 중... (로그: /tmp/mdfeed-stack.log)"; sleep 8; $(MAKE) status
+
+up-bg-shards:  ## 샤드 구성으로 백그라운드 기동
+	@$(MAKE) up-bg SHARDS=1
 
 down:  ## 전체 스택 종료
 	@pkill -f "mdfeed.cli up" 2>/dev/null || true
@@ -89,11 +95,15 @@ down:  ## 전체 스택 종료
 	@# 있어서, 그냥 쓰면 프로세스가 하나도 없어도 항상 자기를 세어 실패한다.
 	@# 감독 프로세스는 자식 종료에 10초 기한을 준다. 1초 뒤에 "완료"를 찍으면
 	@# 아직 살아 있는 프로세스를 종료됐다고 보고하는 것이다. 실제로 확인한다.
-	@for i in $$(seq 1 15); do \
+	@# 15초는 모자랐다. 감독은 자식에게 10초를 주고, 그 뒤 자기 종료
+	@# 기한이 또 있다. 실측으로 15초 안에 안 끝나는 경우가 나왔고, 그때
+	@# "종료 미완"을 찍고 실패했는데 몇 초 뒤엔 다 죽어 있었다 —
+	@# 보고가 사실과 달랐다. 기한을 실제 종료 예산보다 길게 준다.
+	@for i in $$(seq 1 40); do \
 	  pgrep -f "[m]dfeed.cli up|[m]dfeed.services" >/dev/null 2>&1 || break; \
 	  sleep 1; \
 	done; \
-	left=$$(pgrep -f "[m]dfeed.cli up|[m]dfeed.services" 2>/dev/null | wc -l | tr -d " "); \
+	left=$$(pgrep -f "[m]dfeed.cli up|[m]dfeed.services" 2>/dev/null | wc -l | tr -dc "0-9"); \
 	if [ "$$left" = "0" ]; then echo "종료 완료"; \
 	else echo "종료 미완: $$left개 남음"; pgrep -af "[m]dfeed.cli up|[m]dfeed.services"; exit 1; fi
 

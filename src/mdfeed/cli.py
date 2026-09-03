@@ -206,6 +206,47 @@ def cmd_record(args) -> int:
     return feedd_main()
 
 
+def cmd_retention(args) -> int:
+    """지우기 전에 무엇이 지워질지 보여 준다.
+
+    보존 일수는 되돌릴 수 없다. 3일이 얼마인지는 테이블마다 다르고,
+    쌓인 양에 따라 첫 삭제 비용도 다르다. 켜기 전에 숫자를 본다.
+    """
+    from .config import Config
+    from .retention import DiskWatch, prune_plan
+    from .storage.db import open_storage
+
+    cfg = Config()
+    store = open_storage(cfg)
+    disk = DiskWatch(cfg.sqlite_path)
+    r = disk.report()
+    print(f"DB {r['db_bytes']/1e9:.2f}GB "
+          f"(빈 자리 {r['reclaimable_bytes']/1e9:.2f}GB) · "
+          f"디스크 여유 {r['disk_free_bytes']/1e9:.1f}GB")
+    print(f"현재 설정: RETENTION_DAYS={cfg.retention_days} "
+          f"({'켜짐' if cfg.retention_days > 0 else '꺼짐 — 아무것도 안 지운다'})")
+    print()
+    print(f"{'보존일':>5} {'테이블':<9} {'전체행':>13} {'지울행':>13} "
+          f"{'남길행':>13} {'배치':>6}")
+    print("─" * 68)
+    for days in args.days:
+        plan = prune_plan(store, days)
+        for table, t in plan["tables"].items():
+            if "error" in t:
+                print(f"{days:>5g} {table:<9} {t['error']}")
+                continue
+            print(f"{days:>5g} {table:<9} {t['rows']:>13,} "
+                  f"{t['delete_rows']:>13,} {t['keep_rows']:>13,} "
+                  f"{t['batches']:>6,}")
+    print()
+    print("배치 하나는 50,000행이다. 락은 배치마다 놓으므로 적재는 안 멈추지만,")
+    print(f"한 번에 도는 시간은 RETENTION_BUDGET_S={cfg.retention_budget_s:g}초로 "
+          "끊긴다 — 남은 건 다음 주기가 이어서 지운다.")
+    print("SQLite auto_vacuum=0 이라 파일 크기는 안 줄고 빈 자리로 재사용된다.")
+    print("증가는 멈추지만 db_bytes 는 그대로다. 그게 정상이다.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser("mdfeed", description="MDFeed 마켓데이터 FEED 플랫폼")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -230,6 +271,12 @@ def build_parser() -> argparse.ArgumentParser:
     cl.add_argument("--duration", type=float, default=0, help="0 이면 무한")
     cl.add_argument("--quiet", action="store_true", help="틱 출력 없이 통계만")
     cl.set_defaults(fn=cmd_client)
+
+    rt = sub.add_parser("retention",
+                        help="보존 일수별로 무엇이 지워질지 미리 본다 (안 지움)")
+    rt.add_argument("--days", type=float, nargs="*", default=[1, 3, 7, 14],
+                    help="비교할 보존 일수 (기본 1 3 7 14)")
+    rt.set_defaults(fn=cmd_retention)
 
     rc = sub.add_parser("record", help="피드를 파일로 녹화 (리플레이용)")
     rc.add_argument("-o", "--output", default="data/replay/sample.mdf")

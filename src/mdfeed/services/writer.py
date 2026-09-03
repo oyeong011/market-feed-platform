@@ -47,6 +47,10 @@ from ..models import (MSG_BOOK, MSG_SIGNAL, MSG_TRADE, Bar, BookTop, Signal, Tra
 from ..protocol import SequenceTracker
 from ..storage.db import open_storage
 
+# 삭제가 밀렸을 때 다시 오는 간격. 정상 주기(1시간)를 기다리면
+# 첫 삭제가 반나절 걸린다.
+RETRY_INTERVAL_S = 60.0
+
 log = logging.getLogger("mdfeed.writer")
 SERVICE = "writer"
 
@@ -83,6 +87,8 @@ class Writer:
         self.disk = DiskWatch(cfg.sqlite_path)
         self.pruned_rows = 0
         self.prune_runs = 0
+        # 예산에 걸려 다 못 지운 상태. 계속 True 면 유입을 못 따라가는 것이다.
+        self.prune_incomplete = False
         # DB 를 만지는 모든 스레드가 이 락을 통과한다 (위 주석 참고)
         self._db_lock = threading.Lock()
         from ..supervisor import Supervisor
@@ -202,8 +208,15 @@ class Writer:
             self.storage.close()
 
     def _prune_locked(self, prune_fn) -> dict:
-        with self._db_lock:
-            return prune_fn(self.storage, self.cfg.retention_days)
+        """락은 prune 이 **배치마다** 잡는다. 여기서 통째로 잡으면 안 된다.
+
+        예전엔 이 함수가 락을 잡고 prune 을 통째로 돌렸다. 그러면 50,000행
+        배치로 끊는 코드가 아무 의미가 없다 — 첫 실행에서 554배치가 도는
+        동안 적재가 멈추고, 버스가 drop-oldest 라 그만큼 틱이 버려진다.
+        """
+        return prune_fn(self.storage, self.cfg.retention_days,
+                        guard=self._db_lock,
+                        budget_s=self.cfg.retention_budget_s)
 
     async def _retention_loop(self, stop: asyncio.Event) -> None:
         """디스크를 재고, 보존 기간이 지난 원시 데이터를 지운다.
@@ -223,6 +236,12 @@ class Writer:
             # 구분되지 않고, 알람은 지표가 없는 동안 평가 자체가 안 된다.
             self.registry.gauge("db_growth_bytes_per_hour",
                                 self.disk.growth_bytes_per_hour())
+            self.registry.gauge("db_reclaimable_bytes", r["reclaimable_bytes"])
+            # 보존이 꺼져 있어도 0 으로 낸다. 조건부로 내면 지표가 없는 동안
+            # 알람 평가 자체가 안 돈다 — 바로 위 growth 주석과 같은 이유다.
+            # make verify-alerts 가 이걸 잡아 줬다.
+            self.registry.gauge("retention_prune_incomplete",
+                                1 if self.prune_incomplete else 0)
             if r["hours_until_full"] is not None:
                 self.registry.gauge("disk_hours_until_full", r["hours_until_full"])
                 if r["hours_until_full"] < cfg.disk_warn_hours:
@@ -242,9 +261,16 @@ class Writer:
                     self.pruned_rows += n
                     self.registry.counter("rows_pruned_total", value=n)
                 self.prune_runs += 1
+                # 예산에 걸려 남긴 상태가 계속되면 삭제가 유입을 못 따라가는
+                # 것이다. 그건 보존 일수를 더 줄여야 한다는 신호다.
+                self.prune_incomplete = bool(getattr(deleted, "budget_hit", False))
 
+            # 예산에 걸려 남겼으면 한 시간을 기다릴 이유가 없다. 밀린 만큼
+            # 빨리 이어서 지운다. 실측 0.63초/배치, 30초 예산이면 주기당 47배치
+            # — 첫 삭제 557배치를 1시간 주기로 하면 반나절, 1분 주기면 12분이다.
+            wait = min(interval, RETRY_INTERVAL_S) if self.prune_incomplete else interval
             with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(stop.wait(), timeout=interval)
+                await asyncio.wait_for(stop.wait(), timeout=wait)
 
     def health(self) -> dict:
         age = time.time() - self.last_frame_at if self.last_frame_at else None
@@ -267,7 +293,8 @@ class Writer:
             "db_errors": self.db_errors,
             "storage": {**self.disk.report(),
                         "retention_days": self.cfg.retention_days,
-                        "pruned_rows": self.pruned_rows},
+                        "pruned_rows": self.pruned_rows,
+                        "prune_incomplete": self.prune_incomplete},
             "sequence": {k: v.stats() for k, v in self.seqtracks.items()},
             "clock": self.clock.report(),
         }

@@ -223,5 +223,19 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "디스크가 {{ $value }}시간 남았는데 6시간째 삭제된 행이 없다"
+
+      - alert: RetentionFallingBehind
+        # "지운다"와 "다 지웠다"는 다르다. 삭제가 시간 예산에 걸려 매번
+        # 남기고 돌아오면 rows_pruned_total 은 계속 늘어서 위 알람은 안 뜬다.
+        # 그런데도 유입을 못 따라가고 있으면 디스크는 계속 찬다.
+        # 첫 삭제 직후 잠깐 1 인 건 정상이라 2시간을 본다
+        # (실측 0.63초/배치·예산 30초·주기 60초면 첫 삭제 557배치가 12분).
+        expr: min_over_time(mdfeed_retention_prune_incomplete[2h]) == 1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "보존 삭제가 2시간째 한 번도 다 못 끝냈다"
+          action: "RETENTION_DAYS 를 더 줄이거나 RETENTION_BUDGET_S 를 올린다.
+            삭제 속도가 적재 속도를 못 따라가고 있다"
           action: "writer 의 MDFEED_RETENTION_DAYS 가 0 이면 꺼져 있는 것이다.
             켜져 있는데도 0 이면 journalctl 에서 '[retention]' 를 볼 것"
