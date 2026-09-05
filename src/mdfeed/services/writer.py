@@ -51,6 +51,14 @@ from ..storage.db import open_storage
 # 첫 삭제가 반나절 걸린다.
 RETRY_INTERVAL_S = 60.0
 
+
+def _iso_us(us):
+    if not us:
+        return None
+    import datetime as _dt
+    return _dt.datetime.fromtimestamp(
+        us / 1e6, _dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
 log = logging.getLogger("mdfeed.writer")
 SERVICE = "writer"
 
@@ -66,7 +74,9 @@ class Writer:
             "db_errors_total",
             # 보존이 꺼져 있어도 0 으로 존재해야 한다. 사건이 나야 생기는
             # 지표에는 그 전에 알람을 걸 수 없다.
-            "rows_pruned_total")
+            "rows_pruned_total",
+            # 아카이브를 안 켜도 0 으로 존재해야 알람이 평가된다.
+            "rows_archived_total")
         self.storage = None
         # 샤드마다 seq 공간이 독립이다. 하나로 추적하면 샤드 전환마다
         # 거짓 갭이 잡힌다 — 구독자별 재넘버링 때 겪은 것과 같은 문제다.
@@ -89,6 +99,14 @@ class Writer:
         self.prune_runs = 0
         # 예산에 걸려 다 못 지운 상태. 계속 True 면 유입을 못 따라가는 것이다.
         self.prune_incomplete = False
+        self.archived_days = 0
+        self.archived_rows = 0
+        self.archive_failures: list[str] = []
+        # 지금 내보내는 중인 조각. None 이면 쉬는 중이다.
+        self.archive_current: str | None = None
+        # 목적지에 검증된 아카이브가 이어지는 끝. 프로세스 재기동에도
+        # 살아 있는 사실이다(폴더에서 다시 읽는다).
+        self.archive_floor_us: int | None = None
         # DB 를 만지는 모든 스레드가 이 락을 통과한다 (위 주석 참고)
         self._db_lock = threading.Lock()
         from ..supervisor import Supervisor
@@ -207,6 +225,78 @@ class Writer:
         with self._db_lock:
             self.storage.close()
 
+    # ── 아카이브 ──────────────────────────────────────────────────────────
+    def _archive_once(self) -> dict:
+        """아직 안 올린 날들을 내보내고, 목적지에서 다시 읽어 검증한다.
+
+        블로킹이라 스레드에서 돈다. 읽기만 하므로 적재 락은 안 잡는다 —
+        SQLite 리더는 스레드별로 따로 열려 있고 WAL 이라 쓰기와 안 부딪친다.
+        """
+        from .. import archive as ar
+        cfg = self.cfg
+        out_dir = cfg.archive_dir
+        done, failed, rows = [], [], 0
+        # 날짜 바깥, 테이블 안쪽으로 돈다. 반대로 하면 trades 를 8일치 다
+        # 올린 뒤에야 book_top 첫 날을 시작하는데, 삭제 빗장은 "그 날의 모든
+        # 테이블"을 요구하므로 그동안 빗장이 한 발짝도 못 올라간다.
+        # 실측으로 그렇게 됐다 — trades 4일치가 올라갔는데 삭제 허용은 계속 0.
+        pend = {t: ar.pending_days(self.storage, out_dir, t,
+                                   lag_s=cfg.archive_lag_s)
+                for t in ar.ARCHIVE_TABLES}
+        for day in sorted({d for v in pend.values() for d in v}):
+            for table in ar.ARCHIVE_TABLES:
+                if day not in pend[table]:
+                    continue
+                # 조각 하나가 16M 행이면 3분 걸린다. 밀린 날이 7일이면 20분
+                # 넘게 도는데, 그동안 헬스가 계속 0 이면 **멈춘 것과 구분이
+                # 안 된다.** 지금 무엇을 하는 중인지 먼저 올린다.
+                self.archive_current = f"{table}/{day}"
+                try:
+                    man = ar.export_day(self.storage, table, day, out_dir)
+                except Exception as e:                    # noqa: BLE001
+                    log.warning("[archive] %s %s 내보내기 실패: %s: %s",
+                                table, day, type(e).__name__, e)
+                    failed.append(f"{table}/{day}")
+                    continue
+                path = os.path.join(out_dir, ar._name(table, day))
+                if cfg.archive_upload and not man.get("skipped"):
+                    if not ar.upload(path, path + ".json", cfg.archive_upload):
+                        failed.append(f"{table}/{day}(업로드)")
+                        continue
+                # 올린 뒤 **다시 읽어** 확인한다. 올렸다는 종료코드 0 은
+                # 올라갔다는 증거가 아니다 — 이 프로젝트에서 네 번 난 사고가
+                # 전부 "선언은 됐는데 실제로는 안 돌았다"였다.
+                if not ar.verify_file(path, man):
+                    failed.append(f"{table}/{day}(검증)")
+                    continue
+                if not man.get("skipped"):
+                    done.append(f"{table}/{day}")
+                    rows += man.rows
+                    # 조각이 끝날 때마다 올린다. 전부 끝난 뒤에 한꺼번에
+                    # 올리면 진행 중인 20분이 통째로 안 보인다.
+                    self.archived_days += 1
+                    self.archived_rows += man.rows
+                    self.registry.counter("rows_archived_total",
+                                          value=man.rows)
+        self.archive_current = None
+        return {"archived": done, "failed": failed, "rows": rows}
+
+    def _archive_floor_us(self) -> int | None:
+        """지워도 되는 상한. 아카이브를 안 쓰면 None(제한 없음).
+
+        구한 값을 들고 있는다. archived_days 는 이 프로세스가 이번에 만든
+        조각 수라, 재기동하면 0 으로 돌아간다 — 폴더에 3일치가 있는데
+        헬스가 0 을 내면 "아카이브가 안 된다"로 읽힌다. 오래가는 사실은
+        **목적지에 무엇이 검증돼 있는가**이고, 그게 이 값이다.
+        """
+        cfg = self.cfg
+        if not (cfg.archive_dir and cfg.retention_requires_archive):
+            self.archive_floor_us = None
+            return None
+        from .. import archive as ar
+        self.archive_floor_us = ar.safe_delete_cutoff_us(cfg.archive_dir)
+        return self.archive_floor_us
+
     def _prune_locked(self, prune_fn) -> dict:
         """락은 prune 이 **배치마다** 잡는다. 여기서 통째로 잡으면 안 된다.
 
@@ -216,7 +306,8 @@ class Writer:
         """
         return prune_fn(self.storage, self.cfg.retention_days,
                         guard=self._db_lock,
-                        budget_s=self.cfg.retention_budget_s)
+                        budget_s=self.cfg.retention_budget_s,
+                        floor_us=self._archive_floor_us())
 
     async def _retention_loop(self, stop: asyncio.Event) -> None:
         """디스크를 재고, 보존 기간이 지난 원시 데이터를 지운다.
@@ -242,6 +333,9 @@ class Writer:
             # make verify-alerts 가 이걸 잡아 줬다.
             self.registry.gauge("retention_prune_incomplete",
                                 1 if self.prune_incomplete else 0)
+            self.registry.gauge("archive_enabled", 1 if cfg.archive_dir else 0)
+            self.registry.gauge("archive_failed_segments",
+                                len(self.archive_failures))
             if r["hours_until_full"] is not None:
                 self.registry.gauge("disk_hours_until_full", r["hours_until_full"])
                 if r["hours_until_full"] < cfg.disk_warn_hours:
@@ -250,6 +344,31 @@ class Writer:
                                 "MDFEED_RETENTION_DAYS 를 켜라",
                                 r["hours_until_full"], r["disk_free_bytes"] / 1e9,
                                 r["growth_mb_per_hour"])
+
+            # 지우기 전에 옮긴다. 순서가 뒤바뀌면 되돌릴 수 없다.
+            if cfg.archive_dir and self.storage:
+                # 아카이브를 **시작하기 전에** 먼저 상한을 낸다. 끝난 뒤에만
+                # 내면, 밀린 날이 많아 한 바퀴가 한 시간 걸리는 동안 헬스가
+                # 계속 None 이다 — 목적지에 6일치가 검증돼 있는데도 그랬다.
+                # 캐시가 있어 이 계산은 싸다.
+                await asyncio.to_thread(self._archive_floor_us)
+                r2 = await asyncio.to_thread(self._archive_once)
+                if r2["archived"]:
+                    # 집계는 _archive_once 가 조각마다 이미 올렸다.
+                    log.info("[archive] %d개 조각 · %d행 완료",
+                             len(r2["archived"]), r2["rows"])
+                self.archive_failures = r2["failed"]
+                self.registry.gauge("archive_failed_segments",
+                                    len(r2["failed"]))
+                if r2["failed"]:
+                    log.warning("[archive] 실패 %d건: %s",
+                                len(r2["failed"]), ", ".join(r2["failed"][:5]))
+
+            # 아카이브가 새로 만든 조각을 반영해 다시 낸다. 보존이 꺼져
+            # 있어도 구해 둔다 — 켜기 전에 "지금 켜면 어디까지 지워지나"를
+            # 볼 수 있어야 결정을 내린다.
+            if cfg.archive_dir and self.storage:
+                await asyncio.to_thread(self._archive_floor_us)
 
             if cfg.retention_days > 0 and self.storage:
                 # 삭제는 블로킹이다. 이벤트 루프에서 직접 돌리면 적재가 멈춘다.
@@ -294,7 +413,17 @@ class Writer:
             "storage": {**self.disk.report(),
                         "retention_days": self.cfg.retention_days,
                         "pruned_rows": self.pruned_rows,
-                        "prune_incomplete": self.prune_incomplete},
+                        "prune_incomplete": self.prune_incomplete,
+                        "archive_dir": self.cfg.archive_dir or None,
+                        "archived_days": self.archived_days,
+                        "archived_rows": self.archived_rows,
+                        "archive_current": self.archive_current,
+                        # 이 프로세스가 만든 조각 수(archived_days)와 달리,
+                        # 아래는 목적지에 실제로 검증돼 있는 지점이다.
+                        "archive_verified_through": _iso_us(self.archive_floor_us),
+                        # 실패가 있으면 삭제도 그 앞에서 멈춘다. 둘을 같이
+                        # 봐야 "왜 안 지워지지"가 바로 설명된다.
+                        "archive_failed": self.archive_failures},
             "sequence": {k: v.stats() for k, v in self.seqtracks.items()},
             "clock": self.clock.report(),
         }

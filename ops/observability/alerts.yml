@@ -237,5 +237,30 @@ groups:
           summary: "보존 삭제가 2시간째 한 번도 다 못 끝냈다"
           action: "RETENTION_DAYS 를 더 줄이거나 RETENTION_BUDGET_S 를 올린다.
             삭제 속도가 적재 속도를 못 따라가고 있다"
+
+      - alert: ArchiveFailing
+        # 아카이브가 막히면 삭제도 그 앞에서 멈춘다(설계대로다). 그래서
+        # 디스크는 계속 차는데 "보존이 안 돈다"로만 보인다. 원인은 여기다.
+        expr: mdfeed_archive_failed_segments > 0
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "아카이브 조각 {{ $value }}개가 30분째 실패 중"
+          action: "writer /healthz 의 storage.archive_failed 를 본다.
+            목적지 경로가 살아 있는지(마운트 해제·용량 초과) 확인한다.
+            아카이브가 막히면 삭제도 멈추므로 디스크가 먼저 찬다"
+
+      - alert: ArchiveStalled
+        # 아카이브를 켰는데(archive_enabled=1) 하루가 지나도록 한 행도
+        # 안 올라갔다. 켠 줄 알고 지우기를 기다리는 동안 디스크가 찬다.
+        # "켰다"와 "돈다"는 다르다 — 이 프로젝트에서 네 번 겪은 구분이다.
+        expr: mdfeed_archive_enabled == 1
+          and increase(mdfeed_rows_archived_total[24h]) == 0
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "아카이브를 켰는데 24시간째 올라간 행이 0이다"
+          action: "MDFEED_ARCHIVE_DIR 경로가 쓰기 가능한지,
+            아직 끝난 날이 없는 건 아닌지(ARCHIVE_LAG_S) 확인한다"
           action: "writer 의 MDFEED_RETENTION_DAYS 가 0 이면 꺼져 있는 것이다.
             켜져 있는데도 0 이면 journalctl 에서 '[retention]' 를 볼 것"

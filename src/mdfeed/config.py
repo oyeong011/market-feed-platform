@@ -190,6 +190,26 @@ class Config:
     # 독차지하면 적재 지연이 올라간다. 남은 건 다음 주기가 이어서 지운다.
     retention_budget_s: float = field(
         default_factory=lambda: float(_env("RETENTION_BUDGET_S", "30")))
+    # ── 아카이브 ───────────────────────────────────────────────────────────
+    # 지우기 전에 바깥으로 옮긴다. 경로면 무엇이든 된다 — iCloud Drive·
+    # 구글 드라이브 동기화 폴더·외장 디스크·NFS 마운트.
+    # 비어 있으면 아카이브를 안 한다.
+    #
+    # 실측: 하루치 DB 몫 1.67GB → .csv.gz 0.16GB (10.7배). 무료 15GB 로 94일치.
+    archive_dir: str = field(default_factory=lambda: _env("ARCHIVE_DIR", ""))
+    # 경로로 못 놓는 목적지용 명령 틀. `{file}` 자리에 파일 경로가 들어간다.
+    #   MDFEED_ARCHIVE_UPLOAD='rclone copy {file} gdrive:mdfeed/'
+    archive_upload: str = field(default_factory=lambda: _env("ARCHIVE_UPLOAD", ""))
+    archive_interval_s: float = field(
+        default_factory=lambda: float(_env("ARCHIVE_INTERVAL_S", "3600")))
+    # 하루가 끝나고 이만큼 지나야 그 날을 올린다. 끝나지 않은 날을 올리면
+    # 반쪽이 올라가고 그 뒤에 온 체결은 영원히 아카이브에 없다.
+    archive_lag_s: float = field(
+        default_factory=lambda: float(_env("ARCHIVE_LAG_S", "3600")))
+    # 아카이브를 켰으면 **검증된 날짜만** 지운다. 이걸 끄면 아카이브가
+    # 안 올라갔는데도 보존이 지운다 — 되돌릴 수 없다. 끄지 마라.
+    retention_requires_archive: bool = field(
+        default_factory=lambda: _bool("RETENTION_REQUIRES_ARCHIVE", True))
     # 이 시간 안에 디스크가 찰 것으로 보이면 경고한다. 보존을 꺼 뒀어도
     # 디스크 감시는 항상 돈다 — 재는 것과 지우는 것은 별개다.
     disk_warn_hours: float = field(

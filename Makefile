@@ -44,6 +44,9 @@ lint:  ## 문법·임포트 점검 (외부 린터 없이)
 	@bash -n ops/ops.sh ops/watchdog.sh && echo "셸 문법 OK"
 	@$(PY) scripts/find_unused_params.py --check && echo "안 쓰는 인자 OK"
 
+archive:  ## 원시 데이터를 외부 저장소로 내보낸다 (지우기 전에 옮긴다)
+	@$(load_env) $(PY) -m mdfeed.cli archive $(if $(TO),--to "$(TO)",) $(if $(DRY),--dry-run,)
+
 bench-retention: venv  ## 보존 삭제가 적재를 멈추는지 A/B → docs/data/retention-stall.json
 	$(PY) bench/retention_stall_bench.py
 
@@ -100,7 +103,8 @@ env-check:  ## 어떤 설정 파일을 읽는지, 유니버스가 몇 종목인�
 	  print(f'  업비트 한도 {c.upbit_universe_limit} · 바이낸스 한도 {c.binance_universe_limit}'); \
 	  print(f'  KRX 시장 {\",\".join(c.krx_markets)}'); \
 	  print(f'  KIS 키 {\"있음\" if c.kis_app_key else \"없음 — KRX 샤드가 안 뜬다\"}'); \
-	  print(f'  보존 {c.retention_days}일 (0=끄기)')"
+	  print(f'  보존 {c.retention_days}일 (0=끄기)'); \
+	  print(f'  아카이브 {c.archive_dir or \"꺼짐 — 지우면 사라진다\"}')"
 
 up-bg:  ## 전체 스택 백그라운드 기동 (SHARDS=1 이면 venue 별로 쪼갠다)
 	@# 포그라운드 up 은 --shards 를 받는데 백그라운드는 안 받았다. 그래서

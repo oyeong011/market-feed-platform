@@ -160,6 +160,15 @@ def test_full_pipeline(tmp_path):
             asyncio.to_thread(subscribe_and_collect, cfg.tcp_port, 20.0, 150))
         result = await client
 
+        # 구독자가 목표를 채웠다고 writer 도 적재를 마친 건 아니다.
+        # writer 는 2초 주기(또는 500행)로 민다. 구독 쪽만 보고 멈추면
+        # 부하가 걸린 기계에서 "DB 적재 실패"로 떨어진다 — 실제로 그랬다.
+        # 시간을 늘리는 대신 **적재가 됐는지**를 기다린다.
+        for _ in range(200):                     # 최대 20초
+            if wr.rows_written > 150:
+                break
+            await asyncio.sleep(0.1)
+
         health = {"feedd": feed.health(), "gateway": gw.health(),
                   "writer": wr.health(), "strategy": st.health()}
         stop.set()

@@ -145,6 +145,12 @@ class PruneResult(dict):
         self.batches = batches
 
 
+def _fmt_us(us: int) -> str:
+    import datetime as _dt
+    return _dt.datetime.fromtimestamp(
+        us / 1e6, _dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
 def _cutoff_us(retention_days: float, now_us: int | None) -> int:
     return int(((now_us / 1e6) if now_us else time.time())
                - retention_days * 86400) * 1_000_000
@@ -156,7 +162,8 @@ class _NoGuard:
 
 
 def prune(storage, retention_days: float, now_us: int | None = None,
-          *, guard=None, budget_s: float | None = None) -> PruneResult:
+          *, guard=None, budget_s: float | None = None,
+          floor_us: int | None = None) -> PruneResult:
     """보존 기간이 지난 원시 데이터를 지운다. 지운 행 수를 테이블별로 반환.
 
     guard    배치마다 잡았다 놓는 컨텍스트 매니저(보통 적재용 락). 루프
@@ -164,10 +171,25 @@ def prune(storage, retention_days: float, now_us: int | None = None,
              수백 배치가 도는 동안 적재가 통째로 멈춘다.
     budget_s 한 번에 도는 시간 상한. 넘으면 남기고 돌아온다. 남은 건
              다음 주기가 이어서 지운다.
+    floor_us 여기 이후는 절대 안 지운다. 아카이브가 검증된 구간의 끝을
+             넣는다 — 바깥에 옮겨 놓지 않은 데이터를 지우지 않기 위한
+             빗장이다. 보존 일수보다 이쪽이 항상 우선한다.
+             (보존 3일이라도 아카이브가 2일치뿐이면 2일치만 지운다.)
     """
     if retention_days <= 0:
         return PruneResult()
     cutoff = _cutoff_us(retention_days, now_us)
+    if floor_us is not None:
+        if floor_us <= 0:
+            # 아카이브를 요구하는데 검증된 게 하나도 없다. 아무것도 안 지운다.
+            # "설정은 켰는데 아무 일도 안 일어난다"로 보이면 안 되므로 남긴다.
+            log.info("[retention] 검증된 아카이브가 없다 — 삭제를 보류한다")
+            return PruneResult(budget_hit=False)
+        if floor_us < cutoff:
+            log.info("[retention] 아카이브가 %s 까지만 검증됨 — 보존 기준(%s)"
+                     " 대신 그쪽에 맞춘다",
+                     _fmt_us(floor_us), _fmt_us(cutoff))
+        cutoff = min(cutoff, floor_us)
     lock = guard if guard is not None else _NoGuard()
     started = time.monotonic()
     deleted: dict[str, int] = {}

@@ -248,6 +248,19 @@ class SQLiteStorage(Storage):
         cur = self._reader().execute(sql, tuple(params))
         return [dict(r) for r in cur.fetchall()]
 
+    def stream(self, sql: str, params: Sequence = (), chunk: int = 50_000):
+        """결과를 청크로 흘린다. 아카이브가 하루 950만 행을 읽는다.
+
+        query() 는 fetchall() 이라 전부 메모리에 올린다. 하루치면 GB 단위가
+        되고, 그건 적재 프로세스와 같은 기계에서 OOM 을 부른다.
+        """
+        cur = self._reader().execute(sql, tuple(params))
+        while True:
+            rows = cur.fetchmany(chunk)
+            if not rows:
+                return
+            yield [tuple(r) for r in rows]
+
     def execute(self, sql: str, params: Sequence = ()) -> int:
         """쓰기용. query() 로 DELETE 를 돌리면 커밋이 안 돼 아무 일도 안 일어난다.
         조회 경로와 쓰기 경로를 나누지 않으면 이런 게 조용히 통과한다."""
@@ -378,6 +391,23 @@ class PostgresStorage(Storage):
         with self.conn.cursor(cursor_factory=self._extras.RealDictCursor) as cur:
             cur.execute(sql, tuple(params))
             return [dict(r) for r in cur.fetchall()]
+
+    def stream(self, sql: str, params: Sequence = (), chunk: int = 50_000):
+        """서버측 커서로 흘린다.
+
+        이름 없는 커서는 psycopg 가 결과를 통째로 클라이언트에 받아 온다 —
+        fetchmany 를 써도 메모리는 이미 다 쓴 뒤다. 이름을 주면 서버가
+        들고 있다가 필요한 만큼만 보낸다.
+        """
+        name = f"mdfeed_stream_{id(sql):x}"
+        with self.conn.cursor(name=name) as cur:
+            cur.itersize = chunk
+            cur.execute(sql, tuple(params))
+            while True:
+                rows = cur.fetchmany(chunk)
+                if not rows:
+                    return
+                yield [tuple(r) for r in rows]
 
     def execute(self, sql: str, params: Sequence = ()) -> int:
         with self.conn.cursor() as cur:

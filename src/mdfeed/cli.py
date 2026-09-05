@@ -247,6 +247,73 @@ def cmd_retention(args) -> int:
     return 0
 
 
+def cmd_archive(args) -> int:
+    """원시 데이터를 바깥으로 내보낸다. 지우기 전에 옮기는 쪽이다."""
+    import datetime as dt
+
+    from . import archive as ar
+    from .config import Config
+    from .storage.db import open_storage
+
+    cfg = Config()
+    out_dir = args.to or cfg.archive_dir
+    if not out_dir:
+        print("목적지가 없습니다. --to <경로> 또는 MDFEED_ARCHIVE_DIR 을 주세요.")
+        print("  경로면 무엇이든 됩니다 — iCloud Drive·구글 드라이브 동기화")
+        print("  폴더·외장 디스크·NFS 마운트.")
+        return 2
+    store = open_storage(cfg)
+
+    print(f"목적지: {out_dir}")
+    todo = {t: ar.pending_days(store, out_dir, t, lag_s=cfg.archive_lag_s)
+            for t in ar.ARCHIVE_TABLES}
+    total = sum(len(v) for v in todo.values())
+    if not total:
+        print("올릴 게 없습니다 (끝난 날은 모두 아카이브됨).")
+    for table, days in todo.items():
+        if days:
+            print(f"  {table}: {len(days)}일 — {days[0]} ~ {days[-1]}")
+
+    if args.dry_run:
+        print("\n--dry-run 이라 아무것도 안 만들었습니다.")
+        _print_floor(ar, out_dir)
+        return 0
+
+    made = rows = 0
+    for table, days in todo.items():
+        for day in days[:args.limit] if args.limit else days:
+            man = ar.export_day(store, table, day, out_dir)
+            path = os.path.join(out_dir, ar._name(table, day))
+            mark = "건너뜀" if man.get("skipped") else "완료"
+            if cfg.archive_upload and not man.get("skipped"):
+                mark = "업로드" if ar.upload(path, path + ".json",
+                                           cfg.archive_upload) else "업로드실패"
+            # 올린 뒤 다시 읽어 확인한다. 종료코드 0 은 증거가 아니다.
+            ok = ar.verify_file(path, man)
+            print(f"  {table} {day}  {man.rows:>10,}행 "
+                  f"{man.get('bytes', 0) / 1e6:>7.1f}MB  {mark}  "
+                  f"검증 {'OK' if ok else '실패'}")
+            if ok and not man.get("skipped"):
+                made += 1
+                rows += man.rows
+    if made:
+        print(f"\n{made}개 조각 · {rows:,}행")
+    _print_floor(ar, out_dir)
+    return 0
+
+
+def _print_floor(ar, out_dir: str) -> None:
+    import datetime as dt
+    floor = ar.safe_delete_cutoff_us(out_dir)
+    if floor:
+        when = dt.datetime.fromtimestamp(floor / 1e6, dt.timezone.utc)
+        print(f"삭제 허용 상한: {when:%Y-%m-%d %H:%M UTC} 이전")
+        print("  (검증된 아카이브가 **끊기지 않고 이어지는** 데까지만 허용합니다.")
+        print("   중간에 빠진 날이 있으면 거기서 멈춥니다.)")
+    else:
+        print("삭제 허용 상한: 없음 — 검증된 아카이브가 아직 없습니다.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser("mdfeed", description="MDFeed 마켓데이터 FEED 플랫폼")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -271,6 +338,14 @@ def build_parser() -> argparse.ArgumentParser:
     cl.add_argument("--duration", type=float, default=0, help="0 이면 무한")
     cl.add_argument("--quiet", action="store_true", help="틱 출력 없이 통계만")
     cl.set_defaults(fn=cmd_client)
+
+    av = sub.add_parser("archive",
+                        help="원시 데이터를 외부 저장소로 내보낸다 (지우기 전에)")
+    av.add_argument("--to", help="목적지 디렉터리 (기본 MDFEED_ARCHIVE_DIR)")
+    av.add_argument("--dry-run", action="store_true", help="무엇을 올릴지만 본다")
+    av.add_argument("--limit", type=int, default=0,
+                    help="테이블당 최대 몇 날까지 (0=전부)")
+    av.set_defaults(fn=cmd_archive)
 
     rt = sub.add_parser("retention",
                         help="보존 일수별로 무엇이 지워질지 미리 본다 (안 지움)")

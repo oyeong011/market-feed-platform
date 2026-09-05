@@ -502,6 +502,92 @@ curl -s -o /dev/null "localhost:9103/api/v1/trades?venue=UPBIT&symbol=KRW-BTC&li
 > 흔들리지 않는 건 비율입니다 — 옛 판의 정지는 **삭제 총량**에 비례하고,
 > 새 판은 **배치 하나**에 묶입니다. 데이터가 늘수록 격차가 벌어집니다.
 
+### 지우기 전에 바깥으로 옮긴다 (권장)
+
+보존 정책은 오래된 체결을 **지웁니다.** 디스크는 지켜지지만 과거가 사라지고,
+백테스트를 다시 돌릴 수 없습니다. 지우기 전에 옮기세요.
+
+**왜 되는가 — 압축비가 결정적입니다** (2026-09-05 실측, 39.8만 행 1시간치):
+
+| | 크기 |
+|---|---:|
+| DB 안에서 차지하는 몫 (인덱스 포함) | 69.7MB |
+| CSV | 32.6MB |
+| **.csv.gz** | **6.5MB** |
+
+DB 대비 **10.7배** 작습니다. 하루치 1.67GB → 0.16GB. 현재 16.6GB 전체를
+옮겨도 약 1.6GB라, 구글 드라이브 무료 15GB로 **94일**분이 들어갑니다.
+원시 그대로 밀어 넣으면 9일 만에 찹니다 — 압축이 이 설계의 전제입니다.
+
+**목적지는 경로면 무엇이든 됩니다.** iCloud Drive·구글 드라이브 동기화 폴더·
+외장 디스크·NFS 마운트.
+
+```bash
+make archive DRY=1 TO="$HOME/Library/Mobile Documents/com~apple~CloudDocs/MDFeed/archive"
+make archive    TO="$HOME/Library/Mobile Documents/com~apple~CloudDocs/MDFeed/archive"
+```
+
+경로로 못 놓는 곳(S3, rclone remote)은 명령 틀을 줍니다:
+
+```bash
+MDFEED_ARCHIVE_UPLOAD='rclone copy {file} gdrive:mdfeed/'
+```
+
+**형식**: `trades-2026-08-28.csv.gz` + 같은 이름의 `.json` 매니페스트.
+헤더 1줄 포함 UTF-8 CSV, `ts` 오름차순. pandas·duckdb·엑셀 어디서든 열립니다.
+표준 라이브러리만 씁니다.
+
+> [!danger] 순서가 전부입니다
+> ```
+> 내보내기 → 목적지에 놓기 → 다시 읽어서 검증 → 그 다음에만 삭제 허용
+> ```
+> 이 프로젝트에서 네 번 난 사고가 전부 "선언은 됐는데 실제로는 안 돌았다"
+> 였습니다. 아카이브에서 같은 일이 나면 **되돌릴 수 없습니다** — 안 올라간 걸
+> 올라갔다고 믿고 지우면 데이터가 영원히 사라집니다.
+>
+> 그래서 삭제는 **검증된 날짜만** 허용합니다(`MDFEED_RETENTION_REQUIRES_ARCHIVE=1`,
+> 기본 켜짐). 검증은 파일이 있는지가 아니라 **다시 읽어 크기·해시·행수를
+> 맞춰보는 것**입니다. 업로드 명령의 종료코드 0은 증거가 아닙니다.
+>
+> 빗장은 세 가지를 더 지킵니다.
+> - 검증된 날이 **끊기지 않고 이어지는** 데까지만 허용 — 중간에 빠진 날이
+>   있으면 거기서 멈춥니다 (안 그러면 그 날이 영원히 사라집니다)
+> - `trades`와 `book_top`이 **둘 다** 있는 날만 — 하나만 올린 날을 지우면
+>   나머지가 사라집니다
+> - 검증된 게 하나도 없으면 **아무것도 안 지웁니다**
+
+실측 (2026-09-05, 8/28 하루치):
+
+```
+trades   2026-08-28   16,118,997행   237.8MB   검증 OK
+book_top 2026-08-28      166,707행     4.0MB   검증 OK
+삭제 허용 상한: 2026-08-29 00:00 UTC 이전
+```
+
+원본 DB와 대조: 16,118,997행 정확히 일치, 표본 10건 전부 DB에 존재.
+소요 3분 11초.
+
+**되돌리기** — 아카이브에서 다시 읽는 법:
+
+```python
+import gzip, csv
+with gzip.open("trades-2026-08-28.csv.gz", "rt", encoding="utf-8") as fh:
+    for row in csv.DictReader(fh):
+        ...      # ts, venue, symbol, price, qty, side, recv_ts, latency_us, seq
+```
+
+**아카이브가 막히면 삭제도 멈춥니다** (설계대로). 그래서 디스크가 차는데
+"보존이 안 돈다"로 보입니다. 원인은 아카이브 쪽입니다:
+
+```bash
+curl -s localhost:9104/healthz | python3 -c \
+  'import json,sys; print(json.load(sys.stdin)["storage"]["archive_failed"])'
+```
+
+알람 `ArchiveFailing`(30분째 실패) · `ArchiveStalled`(켰는데 24시간째 0행).
+
+---
+
 ### 보존을 켜는 절차
 
 **1. 지우기 전에 무엇이 지워질지 봅니다.** 되돌릴 수 없는 결정입니다.
