@@ -1,0 +1,47 @@
+{
+  "generated_at": "2026-09-06T17:23:54+0900",
+  "fee_rate": 0.0005,
+  "slippage_bp": 5.0,
+  "signals_total": 169790,
+  "note": "라이브 시그널의 모의 체결. 다음 봉 시가 체결, 롱 전용, 왕복 비용 반영.",
+  "strategies": {
+    "rsi_revert": {
+      "trades": 9058,
+      "win_rate": 0.5842349304482226,
+      "avg_ret": 0.002214374168175577,
+      "best": 0.7257827505364276,
+      "worst": -0.306189010642105,
+      "pnl_units": 20.057801215334365,
+      "mdd_units": 4.232727804533562,
+      "avg_hold_min": 494.712188120998,
+      "unfilled_signals": 1211,
+      "ignored_signals": 44599,
+      "open_at_end": 1571
+    },
+    "sma_cross": {
+      "trades": 47335,
+      "win_rate": 0.22575261434456534,
+      "avg_ret": -0.0019312845654592605,
+      "best": 1.1714340358010036,
+      "worst": -0.34525983537832505,
+      "pnl_units": -91.41735490602443,
+      "mdd_units": 91.46285879407355,
+      "avg_hold_min": 103.43637900073941,
+      "unfilled_signals": 2810,
+      "ignored_signals": 5640,
+      "open_at_end": 641
+    }
+  },
+  "excluded": {
+    "non_tradable_venue": 532,
+    "blank_symbol": 0,
+    "why": "지수는 매매 대상이 아니고, 빈 종목명은 서로 다른 것이 뭉친 것이다"
+  },
+  "unfilled_total": 4021,
+  "unfilled_pct": 0.023682195653454266,
+  "ref_vs_fill": {
+    "n": 114998,
+    "median_bp": 0.0,
+    "p95_bp": 34.72222222222226
+  }
+}

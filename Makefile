@@ -47,6 +47,9 @@ lint:  ## 문법·임포트 점검 (외부 린터 없이)
 archive:  ## 원시 데이터를 외부 저장소로 내보낸다 (지우기 전에 옮긴다)
 	@$(load_env) $(PY) -m mdfeed.cli archive $(if $(TO),--to "$(TO)",) $(if $(DRY),--dry-run,)
 
+paper: venv  ## 라이브 시그널 모의 체결 장부 → docs/data/paper-ledger.json
+	$(PY) quant/paper_ledger.py
+
 bench-retention: venv  ## 보존 삭제가 적재를 멈추는지 A/B → docs/data/retention-stall.json
 	$(PY) bench/retention_stall_bench.py
 
