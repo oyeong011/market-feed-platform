@@ -164,6 +164,9 @@ class Config:
     # ── 저장소 ─────────────────────────────────────────────────────────────
     storage_backend: str = field(default_factory=lambda: _env("STORAGE_BACKEND", "postgres"))
     storage_profile: str = field(default_factory=lambda: _env("STORAGE_PROFILE", "production"))
+    # 알려진 데이터 공백(사고) 기록 폴더. 비우면 프로파일이 결정한다 —
+    # production 은 ops/incidents/ 를 심고, test(합성 데이터)는 아무것도 심지 않는다.
+    incidents_dir: str = field(default_factory=lambda: _env("INCIDENTS_DIR", ""))
     pg_dsn: str = field(default_factory=lambda: os.getenv("DATABASE_URL", ""))
     sqlite_path: str = field(default_factory=lambda: _env("SQLITE_PATH", "data/mdfeed.db"))
     bar_interval_s: int = field(default_factory=lambda: _int("BAR_INTERVAL_S", 60))

@@ -16,6 +16,7 @@ import socket
 import time
 import urllib.request
 import urllib.error
+from pathlib import Path
 
 import pytest
 
@@ -43,6 +44,8 @@ def api(tmp_path):
     cfg = Config()
     cfg.storage_backend = "sqlite"
     cfg.storage_profile = "test"
+    # test 프로파일은 기본적으로 사고 기록을 심지 않는다. 이 시험은 공백 REST 표면을 보므로 명시한다.
+    cfg.incidents_dir = str(Path(__file__).resolve().parents[1] / "ops" / "incidents")
     cfg.sqlite_path = str(tmp_path / "api.db")
     cfg.http_port = free_port()
     cfg.http_host = "127.0.0.1"

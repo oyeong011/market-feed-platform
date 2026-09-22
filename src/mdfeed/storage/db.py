@@ -175,7 +175,8 @@ def _dt_to_us(value: datetime) -> int:
     )
 
 
-def _normalize_value(column: str, value: StorageValue) -> StorageValue:
+def _normalize_value(_column: str, value: StorageValue) -> StorageValue:
+    # 컬럼명은 호출 인터페이스를 맞추려 받는다 — 지금은 값의 형만 보고 정규화한다
     if isinstance(value, datetime):
         return _dt_to_us(value)
     return value

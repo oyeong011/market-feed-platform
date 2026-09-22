@@ -136,9 +136,25 @@ def known_incident() -> GapRecord:
     )
 
 
-def open_repository(state_file: str | None = None, storage=None) -> GapRepository:
+def open_repository(state_file: str | None = None, storage=None,
+                    storage_profile: str | None = None,
+                    incidents_dir: str | None = None) -> GapRepository:
+    """공백 저장소를 연다. 알려진 사고 기록(ops/incidents/)은 **운영 데이터에 난 구멍**이다.
+
+    incidents_dir 를 명시하면 그 폴더를 심는다 (REST 표면을 시험할 때처럼).
+    명시가 없으면 프로파일이 결정한다: production 은 ops/incidents/ 를 심고,
+    test(합성 리플레이 + 일회용 SQLite)는 아무것도 심지 않는다 — 그 데이터에는 이 구멍이 없다.
+    심으면 CI 스모크의 헬스체크가 "열린 공백 1개 → CRIT" 로 떨어진다 (2026-09-22 첫 실행에서 실제로 그랬다).
+    운영에서는 그대로 심는다 — 현재 헬스가 정상이라고 과거 구멍이 메워진 건 아니다.
+    """
+    import os
     from .gap_repository import load_seed_records, open_repository as open_repo
-    return open_repo(state_file, storage, load_seed_records())
+    if incidents_dir:
+        seeds = load_seed_records(incidents_dir)
+    else:
+        profile = storage_profile or os.getenv("MDFEED_STORAGE_PROFILE", "production")
+        seeds = [] if profile == "test" else load_seed_records()
+    return open_repo(state_file, storage, seeds)
 
 
 def close_gap(record: GapRecord, ended_at: dt.datetime) -> GapRecord:

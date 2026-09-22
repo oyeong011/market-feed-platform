@@ -745,6 +745,8 @@ curl -s localhost:9103/api/v1/gaps | python3 -m json.tool
 ```
 
 서비스가 살아 있어도 이 공백이 열려 있으면 과거 데이터 완전성은 `CRIT` 입니다.
+이 판정은 **운영 프로파일에서만** 납니다. `MDFEED_STORAGE_PROFILE=test`(합성 리플레이·일회용 SQLite)에는
+사고 기록을 심지 않습니다 — 그 데이터에는 이 구멍이 없기 때문입니다.
 복구 표시는 저장된 authoritative coverage와 reconciliation 영수증이 닫힌 시간
 구간 전체, UPBIT/BINANCE/KIS/KRX, 모든 적용 테이블을 덮고 missing interval/row가
 0일 때만 가능합니다. 현재 feed health, 수동 JSON, 또는 마이그레이션 성공만으로는

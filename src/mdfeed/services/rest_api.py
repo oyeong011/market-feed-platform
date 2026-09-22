@@ -53,7 +53,7 @@ class RestAPI:
         from ..runtime import make_tracker
         self.tracker = make_tracker()
         self._started = time.time()
-        self.gap_repo = gaps.open_repository()
+        self.gap_repo = gaps.open_repository(storage_profile=cfg.storage_profile, incidents_dir=cfg.incidents_dir)
 
     async def _q(self, fn, *a, **kw):
         try:
@@ -220,7 +220,8 @@ class RestAPI:
     async def run(self, stop: asyncio.Event) -> None:
         cfg = self.cfg
         self.storage = await asyncio.to_thread(open_storage, cfg)
-        self.gap_repo = await asyncio.to_thread(gaps.open_repository, None, self.storage)
+        self.gap_repo = await asyncio.to_thread(gaps.open_repository, None, self.storage,
+                                                self.cfg.storage_profile, self.cfg.incidents_dir)
         http = HTTPServer(cfg.http_host, cfg.http_port, SERVICE, self.registry)
         health_routes(http, self.health, tracker=self.tracker)
         http.route("GET", "/api/v1/symbols", self.symbols)

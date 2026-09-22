@@ -223,3 +223,18 @@ def test_empty_required_scope_cannot_be_recovered():
     with pytest.raises(gaps.GapTransitionError) as raised:
         gaps.mark_recovered(closed, _complete_receipt(closed))
     assert raised.value.code == "GAP_RECOVERY_EVIDENCE_INCOMPLETE"
+
+
+def test_test_profile_does_not_seed_production_incident(tmp_path, monkeypatch):
+    """사고 기록은 운영 데이터의 구멍이다. 합성 데이터(test 프로파일)에 심으면 CI 스모크가 CRIT 로 떨어진다."""
+    monkeypatch.chdir(tmp_path)                      # ops/incidents 가 없어도 known_incident 폴백이 있다
+    prod = gaps.open_repository(str(tmp_path / "prod.json"), storage_profile="production")
+    assert [r.id for r in prod.list()] == ["collection-stop-20260908"]
+    test = gaps.open_repository(str(tmp_path / "test.json"), storage_profile="test")
+    assert test.list() == []
+    monkeypatch.setenv("MDFEED_STORAGE_PROFILE", "test")   # 인자가 없으면 환경변수를 따른다
+    assert gaps.open_repository(str(tmp_path / "env.json")).list() == []
+    # 폴더를 명시하면 프로파일과 무관하게 심는다 (REST 표면 시험용)
+    explicit = gaps.open_repository(str(tmp_path / "explicit.json"), storage_profile="test",
+                                    incidents_dir=str(Path(__file__).resolve().parents[1] / "ops" / "incidents"))
+    assert [r.id for r in explicit.list()] == ["collection-stop-20260908"]
