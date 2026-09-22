@@ -37,6 +37,19 @@ def ring_conform_bin(tmp_path_factory) -> Path:
     return out
 
 
+def _attach_untracked(name: str) -> shared_memory.SharedMemory:
+    import inspect
+    if "track" in inspect.signature(shared_memory.SharedMemory.__init__).parameters:
+        return shared_memory.SharedMemory(name=name, track=False)
+    shm = shared_memory.SharedMemory(name=name)
+    try:
+        from multiprocessing import resource_tracker
+        resource_tracker.unregister(shm._name, "shared_memory")
+    except Exception:  # noqa: BLE001  — 트래커가 없거나 등록이 안 됐으면 할 일이 없다
+        pass
+    return shm
+
+
 def _name() -> str:
     return f"mdfp_xring_{os.getpid()}_{int(time.time() * 1000) % 100000}"
 
@@ -79,8 +92,10 @@ def test_python_reads_cpp_created_ring(ring_conform_bin):
     proc = subprocess.Popen([str(ring_conform_bin), "create", name, "512", "128", "300"], stdout=subprocess.PIPE, text=True)
     try:
         assert proc.stdout.readline().strip() == "ready write_seq=300"
-        # 파이썬은 C++ 가 만든 세그먼트에 붙는다. track=False: 리소스 트래커가 남의 세그먼트를 지우지 않게
-        shm = shared_memory.SharedMemory(name=name, track=False)
+        # 파이썬은 C++ 가 만든 세그먼트에 붙는다. 리소스 트래커가 남의 세그먼트를 지우지 않게 해야 한다.
+        # track=False 는 3.13+ 에만 있다(로컬 3.14 에서만 보이고 CI 3.10~3.12 에서 깨졌다). 그 전 버전은
+        # 트래커 등록을 되돌린다 — 이게 3.13 이전의 공식 우회법이다.
+        shm = _attach_untracked(name)
         try:
             ring = RingBuffer.__new__(RingBuffer)
             ring.shm = shm

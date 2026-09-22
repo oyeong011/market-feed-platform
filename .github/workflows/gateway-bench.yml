@@ -1,0 +1,57 @@
+# 리눅스 러너에서 파이썬/C++ 게이트웨이 부하 비교를 재고 산출물로 남긴다.
+# 로컬 수치는 전부 macOS(kqueue)다. 배포 대상은 리눅스(epoll)이고, 커널 소켓 버퍼·스케줄러가 다르다.
+# push 마다 돌리기엔 무겁고 러너 성능이 흔들려서 수동 실행 + 주 1회로 둔다. 절대값이 아니라 두 구현의 상대 비교로 본다.
+name: Gateway bench (Linux)
+
+on:
+  workflow_dispatch:
+    inputs:
+      subscribers:
+        description: "구독자 수 목록"
+        default: "10 50 100 200 500"
+      speed:
+        description: "리플레이 배속 (40 ≈ 상류 700 msg/s, 300 ≈ 4,000 msg/s)"
+        default: "40"
+  schedule:
+    - cron: "17 3 * * 1"   # 매주 월요일 03:17 UTC
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Build C++ data plane
+        run: make -C cpp -s all
+      - name: Prepare venv the compare script expects
+        run: python -m venv .venv && .venv/bin/pip install -q pytest
+      - name: Raise fd limit and run the comparison with the C++ load client
+        run: |
+          ulimit -n 8192
+          sudo sysctl -w net.core.somaxconn=4096 >/dev/null || true
+          CLIENT=cpp SUBS="${{ github.event.inputs.subscribers || '10 50 100 200 500' }}" \
+          REPLAY_SPEED="${{ github.event.inputs.speed || '40' }}" SECONDS_PER=8 \
+          bench/compare_gateways.sh | tee bench-linux.txt
+          # 러너 정보를 결과에 붙인다. 러너마다 성능이 달라서 이게 없으면 비교가 안 된다
+          python - <<'PY'
+          import json, platform, os
+          p = "docs/data/gateway_compare_cppclient.json"
+          d = json.load(open(p))
+          d["runner"] = {"platform": platform.platform(), "cpu_count": os.cpu_count(), "event_loop": "epoll (linux)", "github_run": os.environ.get("GITHUB_RUN_ID")}
+          json.dump(d, open("gateway_compare_linux.json", "w"), ensure_ascii=False, indent=1)
+          PY
+      - name: Verify the C++ gateway actually ran on epoll
+        run: |
+          grep -q '"event_loop":"epoll"' /tmp/mdfcmp/gw_cpp.log || {
+            echo "::error::C++ gateway did not report epoll on Linux"; head -3 /tmp/mdfcmp/gw_cpp.log; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gateway-bench-linux-${{ github.run_id }}
+          path: |
+            gateway_compare_linux.json
+            bench-linux.txt
+            docs/data/load_gateway_python_cppclient.json
+            docs/data/load_gateway_cpp_cppclient.json
+          retention-days: 90
