@@ -70,6 +70,7 @@ struct Cfg {
     int tcp_port, admin_port;
     size_t client_queue;
     uint64_t drop_limit;
+    int tcp_sndbuf;   // 구독자 소켓 SO_SNDBUF (0 = 커널 기본). 리눅스는 자동조정으로 수 MB 까지 키운다
     Cfg() {
         bus_paths = split_csv(env_str("MDFEED_BUS_PATHS", ""));
         if (bus_paths.empty()) bus_paths.push_back(env_str("MDFEED_BUS_PATH", "/tmp/mdfeed/bus.sock"));
@@ -79,6 +80,7 @@ struct Cfg {
         admin_port = int(env_int("MDFEED_TCP_ADMIN_PORT", 9111));
         client_queue = size_t(env_int("MDFEED_CLIENT_QUEUE", 2048));
         drop_limit = uint64_t(env_int("MDFEED_DROP_LIMIT", 5000));
+        tcp_sndbuf = int(env_int("MDFEED_TCP_SNDBUF", 0));
     }
 };
 
@@ -374,6 +376,11 @@ private:
                 return;
             }
             set_nonblock(fd); set_nodelay(fd);
+            if (cfg_.tcp_sndbuf > 0) {
+                // 커널 송신 버퍼가 크면 밀림이 우리 큐가 아니라 커널에 쌓여 백프레셔가 늦게 보인다.
+                // 리눅스 루프백은 수 MB 까지 자동조정된다 — 시험이 커널 크기에 의존하지 않게 하는 조절값.
+                setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &cfg_.tcp_sndbuf, sizeof cfg_.tcp_sndbuf);
+            }
             char ip[64]; inet_ntop(AF_INET, &a.sin_addr, ip, sizeof ip);
             Subscriber s; s.fd = fd; s.id = next_id_++; s.peer = std::string(ip) + ":" + std::to_string(ntohs(a.sin_port)); s.connected_at = mono();
             ++connections_;

@@ -27,7 +27,10 @@ jobs:
 
       - name: 의존성 설치
         # 핵심 경로는 표준 라이브러리만 쓴다. 테스트 러너와 async 플러그인만 설치한다.
-        run: pip install pytest pytest-asyncio
+        # 핵심 경로는 표준 라이브러리만 쓰지만, 테스트는 로컬 개발 환경과 같은 조건으로 돈다.
+        # 드라이버 없이 돌리면 백업 CLI·preflight 가 다른 오류 경로로 빠져 세 시험이 실패했다 (CI 두 번째 실행).
+        # 드라이버 없는 조건은 스모크·컨테이너 잡이 따로 검증한다.
+        run: pip install pytest pytest-asyncio 'psycopg2-binary>=2.9'
 
       - name: 문법·임포트 점검
         run: make lint

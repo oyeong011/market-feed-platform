@@ -274,8 +274,10 @@ def test_slow_subscriber_is_isolated_and_cut(gateway_bin):
     async def main():
         pub = UDSPublisher(bus_path, queue_size=65536)
         await pub.start()
-        # 큐 2048(기본) + 커널 송신버퍼(~128KB ≈ 1,500프레임) 를 넘긴 뒤 100건 더 버리면 끊는다
-        gw = Gateway(gateway_bin, bus_path, MDFEED_DROP_LIMIT=100)
+        # 큐 2048(기본) + 커널 송신버퍼를 넘긴 뒤 100건 더 버리면 끊는다.
+        # 송신버퍼는 16KB 로 고정한다 — 리눅스 루프백은 자동조정으로 수 MB 까지 커져서
+        # 20,000프레임(1.76MB)이 통째로 커널에 들어가 드롭이 안 났다 (CI 첫 실행에서 실제로 그랬다).
+        gw = Gateway(gateway_bin, bus_path, MDFEED_DROP_LIMIT=100, MDFEED_TCP_SNDBUF=16384)
         try:
             await _wait(lambda: pub.subscriber_count == 1, 5, "gateway on bus")
             slow = Collector(gw.port, rcvbuf=4096)          # 접속만 하고 절대 안 읽는다

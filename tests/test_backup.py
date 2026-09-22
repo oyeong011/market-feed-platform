@@ -90,6 +90,7 @@ def test_backup_remote_tamper_is_rejected(tmp_path):
 
 
 def test_backup_cli_uses_env_name_and_redacts_dsn(tmp_path):
+    pytest.importorskip("psycopg2")   # 드라이버가 없으면 DSN 검증 전에 끝나 이 시험의 대상 경로에 못 간다
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
     env["SECRET_DSN"] = "postgresql://user:never-print-this@127.0.0.1:1/db"

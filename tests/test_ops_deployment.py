@@ -2,6 +2,8 @@ import json
 import os
 import signal
 import subprocess
+
+import pytest
 import sys
 import time
 import urllib.request
@@ -90,6 +92,7 @@ def test_preflight_blocks_bad_tls_and_remote_templates_without_io(tmp_path):
 
 
 def test_preflight_config_only_complete_but_unverified_is_incomplete(tmp_path):
+    pytest.importorskip("psycopg2")   # 드라이버 부재는 preflight 가 unsafe(2) 로 보는 게 맞다 — 이 시험의 대상은 아니다
     cfg = tmp_path / "prod.env"
     ca = tmp_path / "ca.crt"
     backup = tmp_path / "backup.json"
