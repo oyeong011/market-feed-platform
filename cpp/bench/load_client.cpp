@@ -173,14 +173,14 @@ std::string round_json(const Round& r, double seconds) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::string host = "127.0.0.1", out, subscribe; int port = 9101, admin = 9111; double seconds = 12; std::vector<int> subs;
+    std::string host = "127.0.0.1", out, subscribe; int port = 9101, admin = 9111, gap_s = 3; double seconds = 12; std::vector<int> subs;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
         if (a == "--host") host = next(); else if (a == "--port") port = std::atoi(next().c_str()); else if (a == "--admin") admin = std::atoi(next().c_str());
-        else if (a == "--seconds") seconds = std::atof(next().c_str()); else if (a == "--out") out = next(); else if (a == "--subscribe") subscribe = next();
+        else if (a == "--seconds") seconds = std::atof(next().c_str()); else if (a == "--gap") gap_s = std::atoi(next().c_str()); else if (a == "--out") out = next(); else if (a == "--subscribe") subscribe = next();
         else if (a == "--subscribers") { while (i + 1 < argc && argv[i + 1][0] != '-') subs.push_back(std::atoi(argv[++i])); }
-        else { std::fprintf(stderr, "usage: %s [--host H] [--port P] [--admin A] [--subscribers N...] [--seconds S] [--subscribe JSON] [--out FILE]\n", argv[0]); return 2; }
+        else { std::fprintf(stderr, "usage: %s [--host H] [--port P] [--admin A] [--subscribers N...] [--seconds S] [--gap SECONDS_BETWEEN_ROUNDS] [--subscribe JSON] [--out FILE]\n", argv[0]); return 2; }
     }
     if (subs.empty()) subs = {1, 10, 50, 100, 200};
     std::fprintf(stderr, "대상 %s:%d · 회차당 %.0f초 · 클라이언트 C++ 단일 스레드 poll\n\n", host.c_str(), port, seconds);
@@ -192,7 +192,9 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "%6d %6d %9.1f %9llu %9.1f %9.0fµ %9.0fµ %9.0fµ %6llu %6.0f\n", r.subscribers, r.connected, r.per_sub_avg / seconds,
             (unsigned long long)r.total_messages, up, r.p50, r.p99, r.lmax, (unsigned long long)r.lost, r.g_dropped);
         rounds += (i ? ",\n  " : "  ") + round_json(r, seconds);
-        if (i + 1 < subs.size()) std::this_thread::sleep_for(std::chrono::seconds(1));
+        // 회차 사이 대기: 직전 회차의 소켓이 TIME_WAIT 로 남아 있으면 다음 회차의 접속이 커널 자원에 막힌다.
+        // 실측(2026-09-22): 500명 회차 1초 뒤 1,000명을 붙이자 클라이언트가 조용히 죽었다. 단독으로는 정상.
+        if (i + 1 < subs.size()) std::this_thread::sleep_for(std::chrono::seconds(gap_s));
     }
     char ts[32]; std::time_t t = std::time(nullptr); std::strftime(ts, sizeof ts, "%Y-%m-%dT%H:%M:%S%z", std::localtime(&t));
     std::string doc = "{\n \"generated_at\": \"" + std::string(ts) + "\",\n \"client\": \"c++ (cpp/bench/load_client.cpp, 단일 스레드 poll)\",\n \"target\": \"" + host + ":" + std::to_string(port) + "\",\n \"seconds_per_round\": " + std::to_string(seconds) + ",\n \"rounds\": [\n" + rounds + "\n ]\n}\n";

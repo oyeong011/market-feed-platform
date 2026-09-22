@@ -6,6 +6,7 @@
 |---|---|---|
 | `include/mdfp/protocol.hpp` | MDFP/1 인코더 · 스트리밍 파서(재동기화) · 갭 탐지 · Trade/BookTop | `protocol.py`, `models.py` |
 | `include/mdfp/ringbuffer.hpp` | 공유메모리 SPSC 링버퍼. 파이썬과 같은 레이아웃(`!4sIIIQQQ`), release/acquire 펜스 | `tests/test_ringbuffer.cpp`, `tests/test_cpp_ringbuffer.py` |
+| `include/mdfp/event_loop.hpp` | kqueue/epoll/poll 추상. 관심 집합은 바뀔 때만 갱신 | 게이트웨이 통합 시험 |
 | `include/mdfp/crc32.hpp` | CRC-32 (zlib 과 동일 결과), 슬라이싱-바이-8 | `zlib.crc32` |
 | `src/tcp_gateway.cpp` | 배포 게이트웨이. 스냅샷→증분, 구독 필터, 구독자별 재번호, 백프레셔, conflate, `/healthz` `/metrics` | `services/tcp_gateway.py` |
 | `tests/test_protocol.cpp` | `tests/test_protocol.py` 를 그대로 옮긴 테스트 | |

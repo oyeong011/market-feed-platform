@@ -1,0 +1,75 @@
+{
+ "generated_at": "2026-09-22",
+ "method": "같은 리플레이 수집기(300배속, 상류 약 4,000 msg/s), C++ 부하 클라이언트, 회차 8초·간격 5초, macOS Apple Silicon 10코어, ulimit -n 8192",
+ "finding": "poll 과 kqueue 차이는 소음 안. 1,000명에서 초당 send() 15만 회(호출당 2.4KB, 365MB/s)가 CPU 를 지배하고 2,000명은 두 판 모두 포화. fd 감시 방식이 아니라 소켓별 전송 비용이 한계 — 멀티캐스트가 존재하는 이유.",
+ "syscalls_at_1000": {
+  "frames_in_per_s": 4019,
+  "bus_reads_per_s": 150,
+  "frames_out_per_s": 4018750,
+  "send_calls_per_s": 150001,
+  "send_bytes_per_s": 365422500,
+  "send_eagain_per_s": 0
+ },
+ "rounds": [
+  {
+   "event_loop": "poll",
+   "subscribers": 500,
+   "upstream_msg_per_s": 3921.2,
+   "fanout_msg_per_s": 1941890,
+   "p50_ms": 3.0,
+   "p99_ms": 15.1,
+   "lost": 0,
+   "retained_pct": 99.0
+  },
+  {
+   "event_loop": "poll",
+   "subscribers": 1000,
+   "upstream_msg_per_s": 4470.4,
+   "fanout_msg_per_s": 4481580,
+   "p50_ms": 13.3,
+   "p99_ms": 77.9,
+   "lost": 0,
+   "retained_pct": 100.3
+  },
+  {
+   "event_loop": "poll",
+   "subscribers": 2000,
+   "upstream_msg_per_s": 3226.8,
+   "fanout_msg_per_s": 256878,
+   "p50_ms": 695.2,
+   "p99_ms": 945.9,
+   "lost": 0,
+   "retained_pct": 4.0
+  },
+  {
+   "event_loop": "kqueue",
+   "subscribers": 500,
+   "upstream_msg_per_s": 4280.7,
+   "fanout_msg_per_s": 2116317,
+   "p50_ms": 3.6,
+   "p99_ms": 26.7,
+   "lost": 0,
+   "retained_pct": 98.9
+  },
+  {
+   "event_loop": "kqueue",
+   "subscribers": 1000,
+   "upstream_msg_per_s": 3547.3,
+   "fanout_msg_per_s": 3574821,
+   "p50_ms": 11.5,
+   "p99_ms": 308.4,
+   "lost": 0,
+   "retained_pct": 100.8
+  },
+  {
+   "event_loop": "kqueue",
+   "subscribers": 2000,
+   "upstream_msg_per_s": 3962.5,
+   "fanout_msg_per_s": 301147,
+   "p50_ms": 641.4,
+   "p99_ms": 972.5,
+   "lost": 0,
+   "retained_pct": 3.8
+  }
+ ]
+}

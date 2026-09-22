@@ -12,7 +12,9 @@
 //
 // 왜 C++ 인가: 파이썬 게이트웨이는 구독자 100명에서 p99 27.9ms 였고 병목의 59% 가
 // 소켓 쓰기였다 (DESIGN.md). 인터프리터가 시스템 콜 사이에서 쓰는 시간이 그 대부분이다.
-// 이 구현은 단일 스레드 poll() 루프에 논블로킹 소켓이고, 의존성은 컴파일러뿐이다.
+// 이 구현은 단일 스레드 kqueue/epoll 루프(mdfp/event_loop.hpp)에 논블로킹 소켓이고, 의존성은 컴파일러뿐이다.
+// 처음엔 poll() 이었다 — 구독자 1,000명이면 이벤트 하나에 fd 1,000개를 커널이 훑는다. 관심 집합을 등록해
+// 두고 일어난 것만 받는 쪽으로 바꿨다. 구독자별 '쓸 게 있는가' 는 바뀔 때만 mod 한다.
 //
 // 설정은 파이썬과 같은 환경변수를 읽는다 (MDFEED_BUS_PATH, MDFEED_TCP_PORT, ...).
 // 포트 0 을 주면 OS 가 고른 포트를 기동 로그 첫 줄(JSON)에 찍는다 — 테스트용.
@@ -41,6 +43,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "mdfp/event_loop.hpp"
 #include "mdfp/protocol.hpp"
 
 #include <cstdarg>
@@ -152,6 +155,7 @@ struct Subscriber {
     std::unordered_map<std::string, std::tuple<uint8_t, std::vector<uint8_t>, uint16_t>> pending;
     std::vector<uint8_t> wbuf; size_t woff = 0;                // 부분 전송 중인 버퍼
     uint64_t wframes = 0;                                       // wbuf 에 모인 프레임 수 (sent 집계용)
+    bool armed_write = false;                                   // 이벤트 루프에 쓰기 관심을 등록해 뒀는가
     uint64_t dropped = 0, sent = 0, out_seq = 0, conflated = 0;
     bool wants(const std::string& key) const { return !symbols || symbols->count(key) > 0; }
     size_t backlog() const { return conflate ? key_queue.size() : queue.size(); }
@@ -173,53 +177,46 @@ public:
         admin_fd_ = listen_tcp(cfg_.http_host, cfg_.admin_port, admin_port_);
         if (listen_fd_ < 0 || admin_fd_ < 0) return 1;
         // 첫 줄은 기계가 읽는다 (테스트가 포트 0 으로 띄우고 실제 포트를 알아낸다)
-        std::printf("{\"event\":\"listening\",\"service\":\"tcp-gateway\",\"impl\":\"c++\",\"tcp_port\":%d,\"admin_port\":%d}\n", tcp_port_, admin_port_);
+        std::printf("{\"event\":\"listening\",\"service\":\"tcp-gateway\",\"impl\":\"c++\",\"event_loop\":\"%s\",\"tcp_port\":%d,\"admin_port\":%d}\n", EventLoop::backend(), tcp_port_, admin_port_);
         std::fflush(stdout);
         logf("INFO", "MDFP/1 배포 서버 listening on %s:%d (admin %d)", cfg_.tcp_host.c_str(), tcp_port_, admin_port_);
         started_ = mono();
 
+        loop_.add(listen_fd_, true, false, tag(Kind::Listen, 0)); listen_armed_ = true;
+        loop_.add(admin_fd_, true, false, tag(Kind::Admin, 0));
         while (!g_stop) {
             const double now = mono();
             for (auto& s : sources_) if (!s.connected && s.fd < 0 && now >= s.next_try) connect_bus(s);
+            // fd 고갈 백오프: 리스너를 관심 집합에서 잠시 뺀다
+            const bool want_listen = now >= accept_backoff_until_;
+            if (want_listen != listen_armed_) { loop_.mod(listen_fd_, want_listen, false); listen_armed_ = want_listen; }
 
-            pfds_.clear(); owners_.clear();
-            if (now >= accept_backoff_until_) add_pfd(listen_fd_, POLLIN, Owner{Kind::Listen, 0});
-            add_pfd(admin_fd_, POLLIN, Owner{Kind::Admin, 0});
-            for (size_t i = 0; i < sources_.size(); ++i) if (sources_[i].fd >= 0)
-                add_pfd(sources_[i].fd, sources_[i].connected ? POLLIN : POLLOUT, Owner{Kind::Bus, i});
-            for (auto& [id, s] : subs_) {
-                short ev = POLLIN; if (s.woff < s.wbuf.size() || s.backlog()) ev |= POLLOUT;
-                add_pfd(s.fd, ev, Owner{Kind::Sub, id});
-            }
-            for (auto& [fd, ac] : admin_conns_) add_pfd(fd, ac.out.empty() ? POLLIN : POLLOUT, Owner{Kind::AdminConn, uint64_t(fd)});
-
-            int n = poll(pfds_.data(), pfds_.size(), 500);
-            if (n < 0) { if (errno == EINTR) continue; logf("ERROR", "poll: %s", std::strerror(errno)); break; }
-            for (size_t i = 0; i < pfds_.size(); ++i) {
-                if (!pfds_[i].revents) continue;
-                const Owner o = owners_[i]; const short re = pfds_[i].revents;
+            int n = loop_.wait(500, [&](const Event& e) {
+                const Owner o = untag(e.tag);
+                short re = short((e.readable ? POLLIN : 0) | (e.writable ? POLLOUT : 0) | (e.error ? POLLERR : 0) | (e.hangup ? POLLHUP : 0));
                 try {
                     switch (o.kind) {
                         case Kind::Listen: accept_sub(); break;
                         case Kind::Admin: accept_admin(); break;
                         case Kind::Bus: on_bus(sources_[o.id], re); break;
-                        case Kind::Sub: { auto it = subs_.find(o.id); if (it != subs_.end()) on_sub(it->second, re); break; }
+                        case Kind::Sub: { auto it = subs_.find(o.id); if (it != subs_.end()) { on_sub(it->second, re); if (subs_.count(o.id)) arm_sub(it->second); } break; }
                         case Kind::AdminConn: on_admin(int(o.id), re); break;
                     }
-                } catch (const std::exception& e) {
+                } catch (const std::exception& ex) {
                     // 한 연결의 예외가 배포 전체를 죽이면 안 된다. 그 연결만 정리한다.
-                    logf("ERROR", "이벤트 처리 예외 (kind=%d id=%llu): %s", int(o.kind), (unsigned long long)o.id, e.what());
+                    logf("ERROR", "이벤트 처리 예외 (kind=%d id=%llu): %s", int(o.kind), (unsigned long long)o.id, ex.what());
                     if (o.kind == Kind::Sub) to_close_.push_back(o.id);
-                    else if (o.kind == Kind::AdminConn) { auto it = admin_conns_.find(int(o.id)); if (it != admin_conns_.end()) { close(it->first); admin_conns_.erase(it); } }
-                    else if (o.kind == Kind::Bus) schedule_retry(sources_[o.id], e.what());
+                    else if (o.kind == Kind::AdminConn) { auto it = admin_conns_.find(int(o.id)); if (it != admin_conns_.end()) { loop_.del(it->first); close(it->first); admin_conns_.erase(it); } }
+                    else if (o.kind == Kind::Bus) schedule_retry(sources_[o.id], ex.what());
                 }
-            }
+            });
+            if (n < 0 && errno != EINTR) { logf("ERROR", "event loop: %s", std::strerror(errno)); break; }
             // 구독자 종료는 이벤트 처리 뒤에 한꺼번에 (순회 중 삭제 방지)
             for (uint64_t id : to_close_) close_sub(id);
             to_close_.clear();
             // 관리 연결 기한: 안 읽는 클라이언트가 fd 를 붙들고 있지 못하게
             for (auto it = admin_conns_.begin(); it != admin_conns_.end();) {
-                if (mono() > it->second.deadline) { close(it->first); it = admin_conns_.erase(it); } else ++it;
+                if (mono() > it->second.deadline) { loop_.del(it->first); close(it->first); it = admin_conns_.erase(it); } else ++it;
             }
         }
         shutdown();
@@ -239,14 +236,21 @@ private:
     struct AdminConn { std::string in, out; size_t off = 0; double deadline = 0; };
     std::map<int, AdminConn> admin_conns_;
     std::vector<uint64_t> to_close_;
-    std::vector<pollfd> pfds_; std::vector<Owner> owners_;
+    EventLoop loop_; bool listen_armed_ = false;
     std::unordered_map<std::string, Cached> last_;
     uint64_t next_id_ = 0, frames_in_ = 0, connections_ = 0, dropped_total_ = 0, sent_total_ = 0, conflated_total_ = 0;
+    uint64_t send_calls_ = 0, send_bytes_ = 0, send_eagain_ = 0, bus_reads_ = 0;   // 시스템 콜 비용을 보이게
     double started_ = 0, last_frame_at_ = 0; bool upstream_ok_ = false;
     double accept_backoff_until_ = 0, accept_log_after_ = 0;
     std::vector<uint8_t> scratch_;
 
-    void add_pfd(int fd, short ev, Owner o) { pfds_.push_back(pollfd{fd, ev, 0}); owners_.push_back(o); }
+    static uint64_t tag(Kind k, uint64_t id) { return (uint64_t(k) << 56) | (id & ((uint64_t(1) << 56) - 1)); }
+    static Owner untag(uint64_t t) { return Owner{Kind(t >> 56), t & ((uint64_t(1) << 56) - 1)}; }
+    // 구독자의 관심(읽기는 항상, 쓰기는 보낼 게 있을 때만)을 현재 상태에 맞춘다. 바뀔 때만 커널을 부른다.
+    void arm_sub(Subscriber& s) {
+        const bool wr = s.woff < s.wbuf.size() || s.backlog() > 0;
+        if (wr != s.armed_write) { loop_.mod(s.fd, true, wr); s.armed_write = wr; }
+    }
 
     static int listen_tcp(const std::string& host, int port, int& bound_port) {
         int fd = socket(AF_INET, SOCK_STREAM, 0); if (fd < 0) { logf("ERROR", "socket: %s", std::strerror(errno)); return -1; }
@@ -274,17 +278,20 @@ private:
         int r = connect(fd, reinterpret_cast<sockaddr*>(&a), sizeof a);
         if (r < 0 && errno != EINPROGRESS) { close(fd); schedule_retry(s, std::strerror(errno)); return; }
         s.fd = fd; s.connected = false;
+        const size_t idx = size_t(&s - sources_.data());
+        loop_.add(fd, r == 0, r != 0, tag(Kind::Bus, idx));   // 진행 중이면 쓰기(연결 완료), 됐으면 읽기
         if (r == 0) bus_connected(s);
     }
     void schedule_retry(BusSource& s, const char* why) {
         if (s.connected) ++s.restarts;
-        s.connected = false; if (s.fd >= 0) { close(s.fd); s.fd = -1; }
+        s.connected = false; if (s.fd >= 0) { loop_.del(s.fd); close(s.fd); s.fd = -1; }
         logf("WARNING", "bus 연결 끊김/실패(%s): %s. %.1fs 후 재시도", s.path.c_str(), why, s.backoff);
         s.next_try = mono() + s.backoff; s.backoff = std::min(s.backoff * 2, 15.0);
         s.parser = FrameParser();
     }
     void bus_connected(BusSource& s) {
         s.connected = true; s.backoff = 1.0;
+        loop_.mod(s.fd, true, false);
         const std::string hello = "{\"name\": \"tcp-gateway-cpp\"}\n";   // 발행자가 드롭을 이름으로 귀속시킨다
         ::send(s.fd, hello.data(), hello.size(), 0);
         logf("INFO", "bus subscriber connected to %s", s.path.c_str());
@@ -298,7 +305,7 @@ private:
         uint8_t buf[65536];
         for (;;) {
             ssize_t n = ::recv(s.fd, buf, sizeof buf, 0);
-            if (n > 0) { s.parser.feed(buf, size_t(n), [&](const FrameView& f) { on_frame(s, f); }); if (size_t(n) < sizeof buf) break; continue; }
+            if (n > 0) { ++bus_reads_; s.parser.feed(buf, size_t(n), [&](const FrameView& f) { on_frame(s, f); }); if (size_t(n) < sizeof buf) break; continue; }
             if (n == 0) { schedule_retry(s, "publisher closed"); return; }
             if (errno == EAGAIN || errno == EWOULDBLOCK) break;
             if (errno == EINTR) continue;
@@ -308,7 +315,7 @@ private:
         // 버스트 때 send() 가 프레임 수 × 구독자 수만큼 나간다 (200명·30프레임 = 6,000회).
         // 파이썬 게이트웨이는 배치가 공평성을 해쳐 되돌렸지만(_send_loop 주석), 그건
         // 이벤트 루프 양보 문제였고 여기서는 구독자 순회 한 바퀴가 곧 공평한 분배다.
-        for (auto& [id, sub] : subs_) if (sub.backlog() || sub.woff < sub.wbuf.size()) flush(sub);
+        for (auto& [id, sub] : subs_) { if (sub.backlog() || sub.woff < sub.wbuf.size()) flush(sub); arm_sub(sub); }
     }
     static std::optional<std::string> key_of(const FrameView& f) {
         if (f.msg_type == MSG_TRADE && f.length >= Trade::SIZE) return unfix(f.payload + 16, 8) + ":" + unfix(f.payload, 16);
@@ -387,7 +394,8 @@ private:
             send_snapshot(s);
             auto [it, _] = subs_.emplace(s.id, std::move(s));
             logf("INFO", "구독자 #%llu 접속 (%s). 현재 %zu명", (unsigned long long)it->second.id, it->second.peer.c_str(), subs_.size());
-            flush(it->second);
+            loop_.add(it->second.fd, true, false, tag(Kind::Sub, it->second.id));
+            flush(it->second); arm_sub(it->second);
         }
     }
     void send_snapshot(Subscriber& s) {   // 접속 즉시 최신값 전체 + 종료 메타. 증분 seq 는 next_seq 부터
@@ -422,8 +430,9 @@ private:
                 if (s.wbuf.empty()) return;
             }
             ssize_t n = ::send(s.fd, s.wbuf.data() + s.woff, s.wbuf.size() - s.woff, MSG_NOSIGNAL_COMPAT);
-            if (n > 0) { s.woff += size_t(n); if (s.woff >= s.wbuf.size()) { s.sent += s.wframes; sent_total_ += s.wframes; s.wframes = 0; } continue; }
-            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;   // 커널 버퍼가 찼다. POLLOUT 대기
+            ++send_calls_;
+            if (n > 0) { send_bytes_ += uint64_t(n); s.woff += size_t(n); if (s.woff >= s.wbuf.size()) { s.sent += s.wframes; sent_total_ += s.wframes; s.wframes = 0; } continue; }
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { ++send_eagain_; return; }   // 커널 버퍼가 찼다. POLLOUT 대기
             if (n < 0 && errno == EINTR) continue;
             to_close_.push_back(s.id); return;
         }
@@ -456,19 +465,19 @@ private:
     }
     void close_sub(uint64_t id) {
         auto it = subs_.find(id); if (it == subs_.end()) return;
-        auto& s = it->second; close(s.fd);
+        auto& s = it->second; loop_.del(s.fd); close(s.fd);
         logf("INFO", "구독자 #%llu 종료 (전송 %llu, 드롭 %llu). 남은 %zu명", (unsigned long long)id, (unsigned long long)s.sent, (unsigned long long)s.dropped, subs_.size() - 1);
         subs_.erase(it);
     }
 
     // ── 관리 HTTP (/healthz /readyz /metrics /subscribers) ─────────────
     void accept_admin() {
-        for (;;) { int fd = accept(admin_fd_, nullptr, nullptr); if (fd < 0) return; set_nonblock(fd); admin_conns_[fd] = AdminConn{"", "", 0, mono() + 5.0}; }
+        for (;;) { int fd = accept(admin_fd_, nullptr, nullptr); if (fd < 0) return; set_nonblock(fd); admin_conns_[fd] = AdminConn{"", "", 0, mono() + 5.0}; loop_.add(fd, true, false, tag(Kind::AdminConn, uint64_t(fd))); }
     }
     void on_admin(int fd, short re) {
         auto it = admin_conns_.find(fd); if (it == admin_conns_.end()) return;
         AdminConn& ac = it->second;
-        auto drop = [&] { close(fd); admin_conns_.erase(it); };
+        auto drop = [&] { loop_.del(fd); close(fd); admin_conns_.erase(it); };
         if (re & (POLLERR | POLLNVAL)) { drop(); return; }
         if (!ac.out.empty()) {   // 응답 쓰는 중 — 논블로킹. 막히면 다음 POLLOUT 에 이어 쓴다
             ssize_t n = ::send(fd, ac.out.data() + ac.off, ac.out.size() - ac.off, MSG_NOSIGNAL_COMPAT);
@@ -501,6 +510,7 @@ private:
         ac.out = "HTTP/1.1 " + std::to_string(status) + " " + reason + "\r\nContent-Type: " + ctype + "\r\nContent-Length: " + std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n";
         if (method != "HEAD") ac.out += body;
         ac.off = 0; ac.in.clear();
+        loop_.mod(fd, false, true);
         on_admin(fd, POLLOUT);   // 바로 한 번 써 본다
     }
     bool upstream_healthy() const { const double age = last_frame_at_ ? mono() - last_frame_at_ : -1; return upstream_ok_ && (age < 0 || age < 30.0); }
@@ -517,7 +527,7 @@ private:
                 ", \"frames\": " + std::to_string(s.frames) + ", \"restarts\": " + std::to_string(s.restarts) +
                 ", \"last_frame_age_s\": " + (a < 0 ? "null" : std::to_string(a)) + ", \"stale\": " + (stale ? "true" : "false") + "}";
         }
-        std::string out = "{\"service\": \"tcp-gateway\", \"impl\": \"c++\", \"healthy\": ";
+        std::string out = "{\"service\": \"tcp-gateway\", \"impl\": \"c++\", \"event_loop\": \"" + std::string(EventLoop::backend()) + "\", \"healthy\": ";
         out += upstream_healthy() ? "true" : "false";
         out += ", \"uptime_s\": " + std::to_string(mono() - started_) + ", \"upstream_connected\": " + (upstream_ok_ ? "true" : "false");
         out += ", \"last_frame_age_s\": " + (age < 0 ? std::string("null") : std::to_string(age));
@@ -532,7 +542,8 @@ private:
         auto line = [](const char* name, double v) { char b[160]; std::snprintf(b, sizeof b, "mdfeed_%s{service=\"tcp-gateway\"} %g\n", name, v); return std::string(b); };
         return line("uptime_seconds", mono() - started_) + line("conflated_total", double(conflated_total_)) + line("connections_total", double(connections_)) +
             line("dropped_total", double(dropped_total_)) + line("frames_in_total", double(frames_in_)) + line("sent_total", double(sent_total_)) +
-            line("max_backlog", double(max_backlog)) + line("max_wire_bytes", double(max_wire)) + line("subscribers", double(subs_.size()));
+            line("max_backlog", double(max_backlog)) + line("max_wire_bytes", double(max_wire)) + line("subscribers", double(subs_.size())) +
+            line("send_calls_total", double(send_calls_)) + line("send_bytes_total", double(send_bytes_)) + line("send_eagain_total", double(send_eagain_)) + line("bus_reads_total", double(bus_reads_));
     }
     std::string subscribers_json() const {
         std::string items;
