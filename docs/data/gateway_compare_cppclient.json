@@ -1,0 +1,143 @@
+{
+ "generated_at": "2026-09-22T18:05:50+09:00",
+ "method": "같은 feedd(리플레이 배속) 아래에서 파이썬/C++ 게이트웨이를 번갈아 기동. bench/load_test.py 로 같은 부하. 게이트웨이·클라이언트 같은 기계.",
+ "caveat": "한 번 실행한 값이며 기계 부하에 따라 흔들린다. 구독자가 많으면 파이썬 클라이언트 스레드도 병목이라 절대값보다 두 구현의 상대 비교로 본다.",
+ "rounds": [
+  {
+   "subscribers": 10,
+   "upstream_msg_per_s": {
+    "python": 632.4,
+    "cpp": 652.6
+   },
+   "p50_ms": {
+    "python": 1.03,
+    "cpp": 0.27
+   },
+   "p99_ms": {
+    "python": 5.64,
+    "cpp": 1.66
+   },
+   "max_ms": {
+    "python": 7.34,
+    "cpp": 26.95
+   },
+   "throughput_retained_pct": {
+    "python": 100.0,
+    "cpp": 98.7
+   },
+   "lost_messages": {
+    "python": 0,
+    "cpp": 0
+   }
+  },
+  {
+   "subscribers": 50,
+   "upstream_msg_per_s": {
+    "python": 636.6,
+    "cpp": 611.9
+   },
+   "p50_ms": {
+    "python": 3.22,
+    "cpp": 0.62
+   },
+   "p99_ms": {
+    "python": 25.83,
+    "cpp": 1.79
+   },
+   "max_ms": {
+    "python": 32.91,
+    "cpp": 4.97
+   },
+   "throughput_retained_pct": {
+    "python": 99.2,
+    "cpp": 99.4
+   },
+   "lost_messages": {
+    "python": 0,
+    "cpp": 0
+   }
+  },
+  {
+   "subscribers": 100,
+   "upstream_msg_per_s": {
+    "python": 721.8,
+    "cpp": 709.1
+   },
+   "p50_ms": {
+    "python": 5.11,
+    "cpp": 1.03
+   },
+   "p99_ms": {
+    "python": 82.27,
+    "cpp": 2.69
+   },
+   "max_ms": {
+    "python": 141.85,
+    "cpp": 7.67
+   },
+   "throughput_retained_pct": {
+    "python": 100.1,
+    "cpp": 99.7
+   },
+   "lost_messages": {
+    "python": 0,
+    "cpp": 0
+   }
+  },
+  {
+   "subscribers": 200,
+   "upstream_msg_per_s": {
+    "python": 710.1,
+    "cpp": 649.8
+   },
+   "p50_ms": {
+    "python": 15.53,
+    "cpp": 2.0
+   },
+   "p99_ms": {
+    "python": 280.64,
+    "cpp": 10.09
+   },
+   "max_ms": {
+    "python": 343.53,
+    "cpp": 15.63
+   },
+   "throughput_retained_pct": {
+    "python": 100.1,
+    "cpp": 99.5
+   },
+   "lost_messages": {
+    "python": 0,
+    "cpp": 0
+   }
+  },
+  {
+   "subscribers": 500,
+   "upstream_msg_per_s": {
+    "python": 565.5,
+    "cpp": 589.6
+   },
+   "p50_ms": {
+    "python": 1181.75,
+    "cpp": 3.35
+   },
+   "p99_ms": {
+    "python": 1459.17,
+    "cpp": 23.55
+   },
+   "max_ms": {
+    "python": 1583.83,
+    "cpp": 82.66
+   },
+   "throughput_retained_pct": {
+    "python": 93.6,
+    "cpp": 100.3
+   },
+   "lost_messages": {
+    "python": 0,
+    "cpp": 0
+   }
+  }
+ ],
+ "client": "c++ (cpp/bench/load_client.cpp)"
+}

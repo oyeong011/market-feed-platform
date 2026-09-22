@@ -10,6 +10,7 @@
 | `tests/test_protocol.cpp` | `tests/test_protocol.py` 를 그대로 옮긴 테스트 | |
 | `tests/conformance.cpp` | 파이썬↔C++ 양방향 교차 검증 도구 (`tests/test_cpp_conformance.py` 가 부른다) | |
 | `bench/bench_protocol.cpp` | `bench/latency_bench.py::bench_protocol` 과 같은 방법 | |
+| `bench/load_client.cpp` | 부하 클라이언트. `bench/load_test.py` 와 같은 측정 정의·출력 키, 단일 스레드 poll 로 소켓 수백 개 | `tests/test_cpp_load_client.py` |
 
 ```bash
 make -C cpp all test        # 빌드 + C++ 단위 테스트

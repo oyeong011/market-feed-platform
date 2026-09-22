@@ -5,7 +5,7 @@ INC      := -Iinclude
 BUILD    := build
 
 .PHONY: all test bench clean
-all: $(BUILD)/test_protocol $(BUILD)/bench_protocol $(BUILD)/conformance $(BUILD)/tcp_gateway
+all: $(BUILD)/test_protocol $(BUILD)/bench_protocol $(BUILD)/conformance $(BUILD)/tcp_gateway $(BUILD)/load_client
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -20,6 +20,9 @@ $(BUILD)/conformance: tests/conformance.cpp include/mdfp/*.hpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INC) $< -o $@
 
 $(BUILD)/tcp_gateway: src/tcp_gateway.cpp include/mdfp/*.hpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INC) $< -o $@
+
+$(BUILD)/load_client: bench/load_client.cpp include/mdfp/*.hpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INC) $< -o $@
 
 test: $(BUILD)/test_protocol
