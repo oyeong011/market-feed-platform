@@ -60,6 +60,10 @@ jobs:
           MDFEED_SQLITE_PATH=/tmp/mdfeed/smoke.db \
           PYTHONPATH=src python -m mdfeed.cli up > /tmp/stack.log 2>&1 &
           echo $! > /tmp/sup.pid
+          # 배포 게이트 익스포터도 같이 띄운다. 알람 7종이 이 지표를 참조하는데, 안 띄우면
+          # 검증이 "영원히 안 울린다" 로 떨어진다 (첫 CI 실행에서 실제로 그랬다).
+          PYTHONPATH=src python ops/preflight_monitor.py --config ops/mdfeed.env.example \
+            --port 9120 > /tmp/preflight.log 2>&1 &
           sleep 15
 
       - name: 헬스체크 (CRIT 이면 실패, WARN 은 통과)

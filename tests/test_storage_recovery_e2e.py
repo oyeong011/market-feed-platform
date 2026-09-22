@@ -128,6 +128,8 @@ def _remote_helper(tmp_path: pathlib.Path) -> tuple[str, str]:
 
 def test_synthetic_storage_recovery_e2e_uses_persistent_pg_receipts(target_dsn: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MDFEED_STORAGE_PROFILE", "test")
+    # test 프로파일은 기본적으로 사고 기록을 심지 않는다. 이 시험은 실제 사고와 합성 공백을 함께 보므로 명시한다.
+    monkeypatch.setenv("MDFEED_INCIDENTS_DIR", str(ROOT / "ops" / "incidents"))
     source = tmp_path / "source.db"
     _create_source(source)
     receipt = run_migration(source, target_dsn, "lane-d-run", chunk_size=2, init_target=True)
@@ -324,6 +326,7 @@ def test_synthetic_storage_recovery_e2e_uses_persistent_pg_receipts(target_dsn: 
         "PYTHONPATH": "src",
         "MDFEED_STORAGE_BACKEND": "postgres",
         "MDFEED_STORAGE_PROFILE": "test",
+        "MDFEED_INCIDENTS_DIR": str(ROOT / "ops" / "incidents"),
         "DATABASE_URL": target_dsn,
     })
     cmd = [

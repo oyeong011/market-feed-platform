@@ -17,7 +17,21 @@ import json
 import re
 import urllib.request
 
-PORTS = [9100, 9200, 9111, 9102, 9103, 9104, 9105, 9106]
+PORTS = [9100, 9200, 9111, 9102, 9103, 9104, 9105, 9106, PREFLIGHT_PORT := 9120]
+
+# 배포 게이트 지표는 서비스가 아니라 **별도 익스포터**(ops/preflight_monitor.py, 9120) 가 낸다.
+# 개발 스택(make up)에는 그 익스포터가 없다. 그때 이 7종이 없는 건 결함이 아니라 미기동이다.
+# 다만 익스포터가 떠 있는데도 없으면 진짜 결함이다 — CI 스모크는 익스포터를 같이 띄워 실제로 검증한다.
+# 첫 CI 실행(2026-09-22)에서 이 7종이 "영원히 안 울린다" 로 잡혔다. 익스포터를 긁지 않고 있었다.
+PREFLIGHT_METRICS = {
+    "mdfeed_backup_last_verified_age_seconds",
+    "mdfeed_deployment_gaps_open",
+    "mdfeed_restore_drill_last_verified_age_seconds",
+    "mdfeed_retention_remote_coverage_blocked",
+    "mdfeed_storage_backend_mismatch",
+    "mdfeed_storage_db_unavailable",
+    "mdfeed_writer_pending_rows",
+}
 
 # 구성에 따라 없는 것이 정상인 지표.
 #
@@ -140,13 +154,19 @@ def main() -> int:
                     referenced.setdefault(m, []).append(alert)
 
     measures = any_adapter_measures_latency()
+    preflight_live = PREFLIGHT_PORT in live_ports
     ok, conditional, missing = {}, {}, {}
+    notes = dict(CONDITIONAL)
     for m, alerts in referenced.items():
         if m in exposed:
             ok[m] = alerts
         elif m in CONDITIONAL and measures is False:
             # 지연을 재는 어댑터가 없으므로 없는 것이 정확한 동작이다
             conditional[m] = alerts
+        elif m in PREFLIGHT_METRICS and live_ports and not preflight_live:
+            # 익스포터가 안 떠 있다. 떠 있는데 없으면 아래 missing 으로 간다
+            conditional[m] = alerts
+            notes[m] = f"배포 게이트 익스포터(ops/preflight_monitor.py :{PREFLIGHT_PORT}) 가 떠 있어야 생성된다"
         else:
             missing[m] = alerts
 
@@ -156,15 +176,15 @@ def main() -> int:
         print(f"{m:<46} {'OK':<10} {', '.join(alerts)}")
     for m, alerts in sorted(conditional.items()):
         print(f"{m:<46} {'조건부':<10} {', '.join(alerts)}")
-        print(f"{'':<46} {'':<10} └ {CONDITIONAL[m]}")
+        print(f"{'':<46} {'':<10} └ {notes[m]}")
     for m, alerts in sorted(missing.items()):
         print(f"{m:<46} {'없음':<10} {', '.join(alerts)}   ← 이 알람은 영원히 안 울린다")
     print("-" * 92)
     print(f"참조 {len(referenced)}종 · 존재 {len(ok)} · 조건부 {len(conditional)} · "
           f"누락 {len(missing)}")
     if conditional:
-        print("조건부는 현재 구성(지연 측정 어댑터 없음)에서 없는 것이 정확한 동작입니다.\n"
-              "실측 어댑터를 붙이면 생성되며, 그때도 없으면 결함으로 잡힙니다.")
+        print("조건부는 현재 구성(지연 측정 어댑터 없음 · 배포 게이트 익스포터 미기동)에서 없는 것이 정확한 동작입니다.\n"
+              "해당 구성요소를 붙이면 생성되며, 그때도 없으면 결함으로 잡힙니다.")
     if missing:
         print("\n누락된 지표를 노출하거나 규칙을 고치세요.")
         return 1

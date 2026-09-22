@@ -149,6 +149,7 @@ def open_repository(state_file: str | None = None, storage=None,
     """
     import os
     from .gap_repository import load_seed_records, open_repository as open_repo
+    incidents_dir = incidents_dir or os.getenv("MDFEED_INCIDENTS_DIR", "")
     if incidents_dir:
         seeds = load_seed_records(incidents_dir)
     else:

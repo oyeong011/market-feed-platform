@@ -6,9 +6,11 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-import psycopg2
-import psycopg2.sql
 import pytest
+
+# 드라이버가 없는 러너(기본 CI 파이썬 잡)에서는 수집 단계에서 스킵. 있으면 그대로 진행.
+psycopg2 = pytest.importorskip("psycopg2")
+import psycopg2.sql  # noqa: E402
 
 from mdfeed import archive as ar
 from mdfeed.config import Config
