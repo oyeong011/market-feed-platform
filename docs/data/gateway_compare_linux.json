@@ -1,0 +1,149 @@
+{
+ "generated_at": "2026-09-22T11:05:53+00:00",
+ "method": "같은 feedd(리플레이 배속) 아래에서 파이썬/C++ 게이트웨이를 번갈아 기동. bench/load_test.py 로 같은 부하. 게이트웨이·클라이언트 같은 기계.",
+ "caveat": "한 번 실행한 값이며 기계 부하에 따라 흔들린다. 구독자가 많으면 파이썬 클라이언트 스레드도 병목이라 절대값보다 두 구현의 상대 비교로 본다.",
+ "rounds": [
+  {
+   "subscribers": 10,
+   "upstream_msg_per_s": {
+    "python": 633.8,
+    "cpp": 693.5
+   },
+   "p50_ms": {
+    "python": 1.23,
+    "cpp": 0.28
+   },
+   "p99_ms": {
+    "python": 9.22,
+    "cpp": 0.8
+   },
+   "max_ms": {
+    "python": 13.95,
+    "cpp": 1.24
+   },
+   "throughput_retained_pct": {
+    "python": 98.5,
+    "cpp": 100.0
+   },
+   "lost_messages": {
+    "python": 0,
+    "cpp": 0
+   }
+  },
+  {
+   "subscribers": 50,
+   "upstream_msg_per_s": {
+    "python": 623.4,
+    "cpp": 638.8
+   },
+   "p50_ms": {
+    "python": 4.15,
+    "cpp": 0.65
+   },
+   "p99_ms": {
+    "python": 51.58,
+    "cpp": 3.47
+   },
+   "max_ms": {
+    "python": 69.68,
+    "cpp": 4.8
+   },
+   "throughput_retained_pct": {
+    "python": 98.7,
+    "cpp": 99.8
+   },
+   "lost_messages": {
+    "python": 0,
+    "cpp": 0
+   }
+  },
+  {
+   "subscribers": 100,
+   "upstream_msg_per_s": {
+    "python": 672.4,
+    "cpp": 613.1
+   },
+   "p50_ms": {
+    "python": 17.86,
+    "cpp": 1.02
+   },
+   "p99_ms": {
+    "python": 335.89,
+    "cpp": 2.61
+   },
+   "max_ms": {
+    "python": 482.4,
+    "cpp": 11.38
+   },
+   "throughput_retained_pct": {
+    "python": 93.1,
+    "cpp": 99.5
+   },
+   "lost_messages": {
+    "python": 0,
+    "cpp": 0
+   }
+  },
+  {
+   "subscribers": 200,
+   "upstream_msg_per_s": {
+    "python": 805.0,
+    "cpp": 777.5
+   },
+   "p50_ms": {
+    "python": 1623.2,
+    "cpp": 1.99
+   },
+   "p99_ms": {
+    "python": 3206.49,
+    "cpp": 10.72
+   },
+   "max_ms": {
+    "python": 3582.49,
+    "cpp": 33.89
+   },
+   "throughput_retained_pct": {
+    "python": 60.3,
+    "cpp": 100.2
+   },
+   "lost_messages": {
+    "python": 0,
+    "cpp": 0
+   }
+  },
+  {
+   "subscribers": 500,
+   "upstream_msg_per_s": {
+    "python": -1.0,
+    "cpp": 792.6
+   },
+   "p50_ms": {
+    "python": 4709.4,
+    "cpp": 5.78
+   },
+   "p99_ms": {
+    "python": 7497.04,
+    "cpp": 926.76
+   },
+   "max_ms": {
+    "python": 8286.54,
+    "cpp": 1140.72
+   },
+   "throughput_retained_pct": {
+    "python": -1.0,
+    "cpp": 108.2
+   },
+   "lost_messages": {
+    "python": 0,
+    "cpp": 0
+   }
+  }
+ ],
+ "client": "c++ (cpp/bench/load_client.cpp)",
+ "runner": {
+  "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+  "cpu_count": 4,
+  "event_loop": "epoll (linux)",
+  "github_run": "35719299725"
+ }
+}
