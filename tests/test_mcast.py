@@ -79,7 +79,7 @@ def trade(i: int) -> bytes:
 
 
 def _run_scenario(publisher_bin, group: str, n_frames: int, pace_every: int, pace_s: float, wait_udp_s: float = 0.0,
-                  sub_iface: str = "", **overrides):
+                  sub_iface: str = "", burst_before_client: bool = False, **overrides):
     """구독자를 먼저 붙이고(그룹 가입 + 스냅샷) 발행한다. 배달된 seq 목록과 통계, 발행자 헬스를 돌려준다."""
     run = bus_dir()
     bus_path = os.path.join(run, "bus.sock")
@@ -117,10 +117,18 @@ def _run_scenario(publisher_bin, group: str, n_frames: int, pace_every: int, pac
                         await asyncio.sleep(pace_s)
                 pub.publish(heartbeat(seq, 2)); seq += 1
 
-            producer = asyncio.create_task(produce())
             want = n_frames
-            await asyncio.to_thread(sub.run, 15.0, lambda s: s.stats.trades >= want)
-            await producer
+            if burst_before_client:
+                # 클라이언트가 한 건도 읽기 전에 전부 쏜다. 그래야 재전송 버퍼가 확실히 돌아
+                # 앞쪽 유실이 복구 불가가 된다. 동시에 돌리면 빠른 기계에선 다 복구돼 시험이 우연에 기댄다
+                # (CI 3.10 러너에서 실제로 그랬다).
+                await produce()
+                await asyncio.sleep(0.3)
+                await asyncio.to_thread(sub.run, 15.0, lambda s: s.stats.trades + s.stats.unrecoverable >= want)
+            else:
+                producer = asyncio.create_task(produce())
+                await asyncio.to_thread(sub.run, 15.0, lambda s: s.stats.trades >= want)
+                await producer
             # 마지막 구간 복구가 끝나도록 잠깐 더
             await asyncio.to_thread(sub.run, 1.0, lambda s: s.stats.trades >= want and not s.pending)
             return delivered_seqs, sub.stats, mp.health()
@@ -175,7 +183,7 @@ def test_real_multicast_group(publisher_bin):
 def test_gap_beyond_retrans_buffer_is_counted_not_hidden(publisher_bin):
     """재전송 버퍼(32프레임) 밖으로 밀린 구간은 복구할 수 없다 — 숨기지 말고 세고 계속 간다."""
     n = 4000
-    seqs, st, health = _run_scenario(publisher_bin, "127.0.0.1", n, pace_every=0, pace_s=0.0,
+    seqs, st, health = _run_scenario(publisher_bin, "127.0.0.1", n, pace_every=0, pace_s=0.0, burst_before_client=True,
                                      MDFEED_MCAST_DROP_EVERY=3, MDFEED_MCAST_RETRANS_BUFFER=32)
     assert health["injected_drops"] > 0
     assert st.unrecoverable > 0, st.to_dict()                         # 잃은 걸 잃었다고 말한다
