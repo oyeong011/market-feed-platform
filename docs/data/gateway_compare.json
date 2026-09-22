@@ -1,0 +1,115 @@
+{
+ "generated_at": "2026-09-22T14:49:48+09:00",
+ "method": "같은 feedd(리플레이 배속) 아래에서 파이썬/C++ 게이트웨이를 번갈아 기동. bench/load_test.py 로 같은 부하. 게이트웨이·클라이언트 같은 기계.",
+ "caveat": "한 번 실행한 값이며 기계 부하에 따라 흔들린다. 구독자가 많으면 파이썬 클라이언트 스레드도 병목이라 절대값보다 두 구현의 상대 비교로 본다.",
+ "rounds": [
+  {
+   "subscribers": 10,
+   "upstream_msg_per_s": {
+    "python": 607.9,
+    "cpp": 553.2
+   },
+   "p50_ms": {
+    "python": 1.11,
+    "cpp": 0.39
+   },
+   "p99_ms": {
+    "python": 5.98,
+    "cpp": 2.44
+   },
+   "max_ms": {
+    "python": 9.54,
+    "cpp": 15.97
+   },
+   "throughput_retained_pct": {
+    "python": 100.1,
+    "cpp": 100.0
+   },
+   "lost_messages": {
+    "python": 0,
+    "cpp": 0
+   }
+  },
+  {
+   "subscribers": 50,
+   "upstream_msg_per_s": {
+    "python": 648.6,
+    "cpp": 627.8
+   },
+   "p50_ms": {
+    "python": 3.13,
+    "cpp": 0.82
+   },
+   "p99_ms": {
+    "python": 14.36,
+    "cpp": 6.52
+   },
+   "max_ms": {
+    "python": 24.89,
+    "cpp": 13.71
+   },
+   "throughput_retained_pct": {
+    "python": 100.1,
+    "cpp": 100.5
+   },
+   "lost_messages": {
+    "python": 0,
+    "cpp": 0
+   }
+  },
+  {
+   "subscribers": 100,
+   "upstream_msg_per_s": {
+    "python": 662.6,
+    "cpp": 615.1
+   },
+   "p50_ms": {
+    "python": 4.79,
+    "cpp": 1.09
+   },
+   "p99_ms": {
+    "python": 99.09,
+    "cpp": 4.06
+   },
+   "max_ms": {
+    "python": 138.71,
+    "cpp": 9.0
+   },
+   "throughput_retained_pct": {
+    "python": 100.8,
+    "cpp": 100.6
+   },
+   "lost_messages": {
+    "python": 0,
+    "cpp": 0
+   }
+  },
+  {
+   "subscribers": 200,
+   "upstream_msg_per_s": {
+    "python": 604.2,
+    "cpp": 631.2
+   },
+   "p50_ms": {
+    "python": 10.97,
+    "cpp": 2.07
+   },
+   "p99_ms": {
+    "python": 198.26,
+    "cpp": 283.99
+   },
+   "max_ms": {
+    "python": 270.22,
+    "cpp": 629.68
+   },
+   "throughput_retained_pct": {
+    "python": 99.9,
+    "cpp": 100.3
+   },
+   "lost_messages": {
+    "python": 0,
+    "cpp": 0
+   }
+  }
+ ]
+}

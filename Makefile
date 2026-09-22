@@ -10,7 +10,7 @@ export PYTHONPATH
 .DEFAULT_GOAL := help
 .PHONY: help venv install test lint bench up down status health logs \
         demo record replay backtest factor clean docker-build docker-up docker-down \
-        ci docs schema
+        ci docs schema cpp cpp-test cpp-bench cpp-gateway cpp-compare
 
 help:  ## 사용 가능한 명령
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -52,6 +52,22 @@ paper: venv  ## 라이브 시그널 모의 체결 장부 → docs/data/paper-led
 
 bench-retention: venv  ## 보존 삭제가 적재를 멈추는지 A/B → docs/data/retention-stall.json
 	$(PY) bench/retention_stall_bench.py
+
+cpp:  ## C++ 데이터 평면 빌드 (컴파일러만 필요, 의존성 0)
+	$(MAKE) -C cpp -s all
+
+cpp-test: cpp  ## C++ 단위 테스트 + 파이썬↔C++ 교차 검증
+	$(MAKE) -C cpp -s test
+	$(BIN)/python -m pytest tests/test_cpp_conformance.py tests/test_cpp_gateway.py -q
+
+cpp-bench: cpp  ## C++ 프로토콜 벤치 → docs/data/bench_cpp.json (파이썬 bench.json 과 같은 방법)
+	./cpp/build/bench_protocol 300000 | tee docs/data/bench_cpp.json
+
+cpp-gateway: cpp  ## C++ 배포 게이트웨이 기동 (파이썬 tcp_gateway 와 같은 환경변수·포트)
+	./cpp/build/tcp_gateway
+
+cpp-compare: cpp venv  ## 같은 수집기 아래 파이썬/C++ 게이트웨이 부하 비교 → docs/data/gateway_compare.json
+	bench/compare_gateways.sh
 
 bench: venv  ## 성능 벤치마크 → docs/data/bench.json
 	$(BIN)/python bench/latency_bench.py --out docs/data/bench.json

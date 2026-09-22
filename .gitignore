@@ -26,3 +26,4 @@ data/reference/*
 
 # 개발단 실행 설정 — 기계마다 다르다. .example 만 커밋한다.
 ops/mdfeed.local.env
+cpp/build/

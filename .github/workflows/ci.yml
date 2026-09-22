@@ -165,6 +165,20 @@ jobs:
           docker logs mdfeed-ci | tail -20
           docker rm -f mdfeed-ci
 
+  cpp:
+    name: C++ data plane
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install pytest
+      - name: Build, unit-test, and cross-check against the Python implementation
+        run: |
+          make -C cpp -s all test
+          PYTHONPATH=src python -m pytest tests/test_cpp_conformance.py tests/test_cpp_gateway.py -q -rs | tee pytest-cpp.log
+          if grep -q "compiler not found" pytest-cpp.log; then echo "::error::conformance tests skipped"; exit 1; fi
+
   postgres-integration:
     name: PostgreSQL integration
     runs-on: ubuntu-latest

@@ -1,0 +1,9 @@
+{
+  "lang": "c++", "n": 300000,
+  "encode_ns_per_msg": 47, "encode_msg_per_s": 21204411,
+  "encode_alloc_ns_per_msg": 83,
+  "parse_ns_per_msg": 57, "parse_msg_per_s": 17611792,
+  "parse_mtu_chunks_ns_per_msg": 50,
+  "unpack_ns_per_msg": 17,
+  "frame_bytes": 88, "payload_bytes": 64, "parsed": 300000
+}

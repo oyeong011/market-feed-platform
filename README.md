@@ -3,7 +3,8 @@
 [![CI](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml)
 [![Pages](https://github.com/oyeong011/market-feed-platform/actions/workflows/pages.yml/badge.svg)](https://oyeong011.github.io/market-feed-platform/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![tests](https://img.shields.io/badge/tests-508-brightgreen)
+![tests](https://img.shields.io/badge/tests-516-brightgreen)
+![cpp](https://img.shields.io/badge/C%2B%2B-data%20plane-blue)
 ![obs](https://img.shields.io/badge/알람-18개%20지표%20검증-blue)
 ![venues](https://img.shields.io/badge/수집경로-5개%20실연결-blue)
 
@@ -67,7 +68,7 @@ make demo        # replay + disposable synthetic SQLite 로 6개 프로세스 �
 make status      # 서비스 상태 (프로세스 + HTTP 헬스 + 포트)
 make client      # 참조 TCP 구독 클라이언트 (갭 탐지 포함)
 make diag        # 장애 진단 원스톱
-make test        # 508개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
+make test        # 516개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
 ```
 
 데모와 CI는 라이브 어댑터를 상속하지 않습니다. 저장소에 든 녹화 파일을 replay로 읽고, 임시 SQLite DB를 만들어 검증합니다.
@@ -112,6 +113,7 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 | 24 | 누수 알람이 기동 때마다 울림 | 3분 표본으로 "시간당" 기울기를 내면 한 번의 흔들림이 증폭된다 | 15분 미만이면 0 보고. soak 도구도 20분 미만이면 판정 보류 |
 | 25 | "발행량 0" 알람이 매일 밤 울림 | 국내 장 마감 후 0 은 정상인데 알람이 장 시간을 몰랐다 | `market_open` 지표 노출 후 조건에 반영. 크립토/국내 알람 분리 |
 | 26 | **장애 주입 테스트가 안 돌고 통과** | CRC 시나리오의 주입 조건이 안 맞아 오염을 거의 안 넣었는데 "재동기화 0회" 로 통과 처리 | 주입 횟수를 판정 조건에 포함 — 안 돌았으면 실패 |
+| 27 | **C++ 게이트웨이가 구독자 200명에서 파이썬보다 4.6배 느림** (p99 422ms vs 92ms) | 프레임마다 구독자 전원에게 `send()` 를 따로 불렀다. 버스가 30프레임을 묶어 주면 시스템 콜이 6,000번 나간다. 게이트웨이 CPU 는 25% 였는데 클라이언트가 잘게 쪼개진 패킷을 못 따라갔다 | 버스에서 받은 묶음을 다 나눠 담은 뒤 **구독자당 한 번** 쓴다(최대 64KB 결합). 200명 p99 **165ms → 6.2ms** (파이썬 대비 26배). 파이썬 쪽이 배치를 되돌린 이유(이벤트 루프 공평성)는 단일 스레드 C++ 에는 해당하지 않았다 |
 | 17 | Postgres 조회 시각이 UTC | 국내 장 시간 09:00~15:30 이 00:00~06:30 으로 보인다. 장 시작 전인지 마감 후인지 눈으로 판단 불가 | 스키마에서 DB 기본 시간대를 `Asia/Seoul` 로 설정 (저장 값은 그대로, 표시만) |
 
 ---
@@ -127,7 +129,7 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 |---|---|---|
 | 금융 데이터 FEED 개발·운영 | 수집 경로 5개, 배포 프로토콜 3종 | 무결성 48.5% → **100.0000%** |
 | Linux 서비스·프로세스 점검·안정화 | systemd 6유닛 + 자동 검증 + 장애 주입 | 11항목 · 복구 4종 확인 |
-| 파이프라인·배포·점검 자동화 | Makefile · CI 6잡 · Pages 자동 갱신 | 테스트 **508개** |
+| 파이프라인·배포·점검 자동화 | Makefile · CI 6잡 · Pages 자동 갱신 | 테스트 **516개** |
 | Python | 소스 8,835줄 | 핵심 의존성 **0** |
 | SQL · 관계형 DB | 복합 인덱스 · 사전 집계 · 하이퍼테이블 | 적재 **480,586 rows/s** |
 | Linux 명령·프로세스·로그 | `ops.sh diag` · RUNBOOK 8종 | 1차 진단 한 줄 |
@@ -198,6 +200,62 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 
 ---
 
+## C++ 데이터 평면
+
+파이썬으로 구조를 증명한 뒤, **가장 뜨거운 경로를 C++ 로 옮기고 파이썬과 바이트 단위로 호환**시켰습니다.
+수집·제어(어댑터, 감독, 저장, 전략)는 파이썬이고 배포 데이터 평면은 C++ 입니다. 상용 피드가
+feed handler 와 distributor 를 나누는 구조와 같습니다. 여기서도 의존성은 컴파일러뿐입니다.
+
+```
+cpp/include/mdfp/protocol.hpp   MDFP/1 인코더·스트리밍 파서·갭 탐지·Trade/BookTop (헤더 전용)
+cpp/include/mdfp/crc32.hpp      CRC-32 슬라이싱-바이-8, 표는 컴파일 시점 생성
+cpp/src/tcp_gateway.cpp         배포 게이트웨이 — 파이썬 tcp_gateway 와 같은 배선 규약
+cpp/tests/  cpp/bench/          파이썬 테스트를 옮긴 C++ 테스트 · 같은 방법의 벤치
+tests/test_cpp_conformance.py   파이썬이 쓴 바이트를 C++ 가, C++ 가 쓴 바이트를 파이썬이 읽는 양방향 검증
+tests/test_cpp_gateway.py       파이썬 발행자 → C++ 게이트웨이 → 파이썬 참조 클라이언트 통합 시험
+```
+
+```bash
+make cpp-test      # C++ 단위 테스트 + 파이썬↔C++ 교차 검증 + 게이트웨이 통합 시험
+make cpp-bench     # 프로토콜 벤치 → docs/data/bench_cpp.json
+make cpp-gateway   # 파이썬 tcp_gateway 대신 C++ 게이트웨이를 같은 환경변수로 기동
+make cpp-compare   # 같은 수집기 아래 두 게이트웨이 부하 비교 → docs/data/gateway_compare.json
+```
+
+**프로토콜 계층 (같은 기계, 같은 방법, 88B 프레임)**
+
+| 계층 | Python | C++ | 배율 |
+|---|---:|---:|---:|
+| MDFP 인코딩 | 474 ns | **47 ns** | 10배 |
+| MDFP 파싱 (재동기화 포함) | 1,316 ns | **57 ns** | 23배 |
+| Trade 디코딩 | 717 ns | **17 ns** | 42배 |
+
+**배포 게이트웨이 (같은 수집기 · 상류 약 600~700 msg/s · 회차 8초 · 클라이언트 8프로세스)**
+
+| 구독자 | 상류 msg/s (py / cpp) | p50 Python | p50 C++ | p99 Python | p99 C++ | p99 개선 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 608 / 553 | 1.1 ms | **0.4 ms** | 6.0 ms | **2.4 ms** | 2배 |
+| 50 | 649 / 628 | 3.1 ms | **0.8 ms** | 14.4 ms | **6.5 ms** | 2배 |
+| 100 | 663 / 615 | 4.8 ms | **1.1 ms** | 99.1 ms | **4.1 ms** | 24배 |
+| 200 | 604 / 631 | 11.0 ms | **2.1 ms** | 198.3 ms | **284.0 ms** | 1배 |
+
+<sub>`docs/data/gateway_compare.json`. 한 번 실행한 값이라 흔들립니다. 유실은 두 구현 모두 0.</sub>
+
+> **200명 회차의 C++ p99 는 서버 측정값이 아닙니다.** 세 번 재서 p50 은 2.1·2.2·2.4ms 로 안정적인데 p99 는 7·28·284ms 로
+> 요동쳤고, 그동안 게이트웨이 큐 0 · 전송버퍼 ≤6KB · CPU 평균 10% 였습니다. 서버에 쌓인 게 없으니 꼬리는 파이썬
+> 클라이언트 스레드 200개(8프로세스)의 GIL 스케줄링이 만든 값입니다. 파이썬 게이트웨이는 서버 지연 자체가 100ms 대라
+> 이 소음이 가려질 뿐입니다. **측정 도구가 병목이면 결론이 안 섭니다** — 200명 이상은 C++ 부하 클라이언트로 다시 재야 합니다.
+
+> **첫 측정에서는 C++ 가 200명에서 파이썬보다 느렸습니다** (결함 27). 프레임마다 구독자 전원에게
+> `send()` 를 부르는 구현이었고, 묶음 단위로 고친 뒤에야 위 표가 나왔습니다. 언어를 바꾸는 것만으로
+> 빨라지지 않습니다. 시스템 콜 수가 결정합니다.
+>
+> **성능 표가 나온 뒤 코드 리뷰를 돌렸더니 9건이 나왔습니다.** 쓰레기 HTTP 한 줄에 프로세스가 죽는 것,
+> conflate 모드에서 하트비트가 영영 안 나가는 것, 관리 응답이 블로킹이라 배포 전체를 멈추는 것 등입니다.
+> 전부 고치고 회귀 테스트를 붙였습니다. 목록은 `cpp/README.md`. 빠른 것과 안전한 것은 다른 문제입니다.
+
+---
+
 ## 프로젝트 구조
 
 ```
@@ -221,10 +279,11 @@ src/mdfeed/
 
 ops/     systemd 유닛 6종 · ops.sh · watchdog.sh · healthcheck.py · logrotate
 quant/   backtest.py · run_backtest.py · integrations.py · factor_screen.py
-tests/   508개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
+tests/   516개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
          복구 경로 · 종료 기한 · 컨플레이션 · 토큰 발급 · 운영 기록 환산 ·
          PostgreSQL 마이그레이션/백업/복구 27개는 실서버 연결 시에만)
-bench/   계층별 성능 측정 → docs/data/bench.json
+bench/   계층별 성능 측정 → docs/data/bench.json · 게이트웨이 비교 → gateway_compare.json
+cpp/     C++ 데이터 평면 — MDFP/1 헤더 라이브러리 · tcp_gateway · 테스트 · 벤치 (의존성 0)
 docs/    GitHub Pages 대시보드 (정적/실시간 겸용)
 ```
 
