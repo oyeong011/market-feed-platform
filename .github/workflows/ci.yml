@@ -37,6 +37,10 @@ jobs:
         run: python -m pytest tests/ -v --tb=short
         env:
           PYTHONPATH: src
+          MDFEED_STORAGE_BACKEND: sqlite
+          MDFEED_STORAGE_PROFILE: test
+          MDFEED_SQLITE_PATH: /tmp/mdfeed-test-${{ matrix.python }}.db
+          MDFEED_ADAPTERS: replay
 
   smoke:
     name: 스택 스모크 테스트
@@ -52,6 +56,8 @@ jobs:
           test -f data/replay/sample.mdf || { echo "녹화 파일 없음"; exit 1; }
           MDFEED_ADAPTERS=replay MDFEED_REPLAY_LOOP=1 \
           MDFEED_RUN_DIR=/tmp/mdfeed \
+          MDFEED_STORAGE_BACKEND=sqlite MDFEED_STORAGE_PROFILE=test \
+          MDFEED_SQLITE_PATH=/tmp/mdfeed/smoke.db \
           PYTHONPATH=src python -m mdfeed.cli up > /tmp/stack.log 2>&1 &
           echo $! > /tmp/sup.pid
           sleep 15
@@ -148,6 +154,8 @@ jobs:
       - name: 컨테이너가 실제로 기동되는지
         run: |
           docker run -d --name mdfeed-ci -e MDFEED_ADAPTERS=replay \
+            -e MDFEED_STORAGE_BACKEND=sqlite -e MDFEED_STORAGE_PROFILE=test \
+            -e MDFEED_SQLITE_PATH=/tmp/mdfeed/docker-smoke.db \
             -v "$PWD/data/replay:/opt/mdfeed/data/replay:ro" \
             -p 9100:9100 mdfeed:ci
           for i in $(seq 1 20); do
@@ -156,3 +164,49 @@ jobs:
           curl -sf localhost:9100/healthz | python3 -m json.tool
           docker logs mdfeed-ci | tail -20
           docker rm -f mdfeed-ci
+
+  postgres-integration:
+    name: PostgreSQL integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mdfeed_test
+          # 로컬 일회용 런타임과 같은 trust 인증. 테스트가 역할별 DSN 을
+          # 비밀번호 없이 만들어 쓰므로(_role_dsn) 비밀번호 인증이면 실패한다.
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: mdfeed_test
+        ports:
+          - 55439:5432
+        options: >-
+          --health-cmd "pg_isready -U mdfeed_test -d mdfeed_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Install test dependencies
+        run: pip install -e '.[postgres]' pytest
+      - name: PostgreSQL storage tests
+        # 스킵은 실패로 본다. 이 잡은 원래 TEST_POSTGRES_DSN 을 넘기기만 하고
+        # 읽는 테스트가 없어서 전부 스킵된 채 초록불이었다.
+        run: |
+          set -o pipefail
+          python -m pytest tests/test_postgres_storage.py tests/test_migration_postgres.py \
+            tests/test_backup_postgres.py tests/test_storage_recovery_e2e.py -q -rs | tee pytest-pg.log
+          if grep -q "PostgreSQL test runtime" pytest-pg.log; then
+            echo "::error::PostgreSQL tests were skipped — the service container was not reached"
+            exit 1
+          fi
+        env:
+          PYTHONPATH: src
+          TEST_POSTGRES_DSN: postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test
+      - name: Upload sanitized logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-integration-logs
+          path: pytest-pg.log

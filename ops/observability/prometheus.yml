@@ -37,3 +37,5 @@ scrape_configs:
         labels: { service: strategy }
       - targets: ["host.docker.internal:9106"]
         labels: { service: quality }
+      - targets: ["host.docker.internal:9120"]
+        labels: { service: preflight-monitor }

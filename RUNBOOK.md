@@ -231,7 +231,7 @@ psql "$DATABASE_URL" -c \
 
 **폴백된 경우**: SQLite에 데이터가 계속 쌓이고 있으므로 급하지 않습니다.
 Postgres를 복구한 뒤 `mdfeed-writer` 를 재시작하면 다시 붙습니다.
-SQLite에 쌓인 구간은 별도 이관이 필요합니다(`data/mdfeed.db`).
+레거시 SQLite에 쌓인 구간은 별도 이관이 필요합니다. 데모와 CI는 기존 로컬 DB를 쓰지 않고 임시 synthetic SQLite 경로를 지정합니다.
 
 **디스크가 찬 경우**: 틱 테이블이 원인입니다. TimescaleDB 보존정책이 걸려 있는지 확인:
 
@@ -264,7 +264,7 @@ systemctl start mdfeed-feedd
 |---|---|
 | `UDS 소켓 경로가 너무 깁니다` | `MDFEED_RUN_DIR` 이 깊음. 104바이트 제한 |
 | `Address already in use` | 이전 프로세스가 안 죽음. `ss -ltnp \| grep 910` |
-| `Permission denied` (버스 소켓) | `/run/mdfeed` 소유권. `chown mdfeed:mdfeed` |
+| `Permission denied` (버스 소켓) | `/run/mdfeed` 소유권과 서비스 계정 그룹을 확인 |
 | `활성 어댑터가 없다` | 전 어댑터가 비활성. `inactive_upstreams` 사유 확인 |
 
 워치독은 시간당 4회를 넘으면 **재시작을 포기하고 알립니다.**
@@ -712,7 +712,7 @@ ORDER BY avg_spread_bp DESC LIMIT 20;
 ```bash
 make ci                              # lint + 111개 테스트
 make bench                           # 성능 회귀 확인
-MDFEED_ADAPTERS=replay make demo     # 오프라인 전 구간 재현
+make demo                            # replay + 임시 synthetic SQLite 오프라인 재현
 ```
 
 ---
@@ -733,15 +733,40 @@ MDFEED_ADAPTERS=replay make demo     # 오프라인 전 구간 재현
 
 ## 백업과 복구
 
+### 현재 데이터 공백
+
+알려진 실제 공백은 `collection-stop-20260908` 입니다. 시작 시각은
+`2026-09-08T05:16:54Z` / `2026-09-08T14:16:54+09:00` 이고, 종료 시각과
+검증된 backfill 영수증은 없습니다.
+
 ```bash
-# 틱 + 봉 백업 (Postgres)
-pg_dump "$DATABASE_URL" -t trades -t bars_1m -Fc -f /backup/mdfeed_$(date +%F).dump
+mdfeed gap status
+curl -s localhost:9103/api/v1/gaps | python3 -m json.tool
+```
 
-# 봉만 (용량이 수백 배 작음. 대부분 이걸로 충분)
-pg_dump "$DATABASE_URL" -t bars_1m -Fc -f /backup/bars_$(date +%F).dump
+서비스가 살아 있어도 이 공백이 열려 있으면 과거 데이터 완전성은 `CRIT` 입니다.
+복구 표시는 저장된 authoritative coverage와 reconciliation 영수증이 닫힌 시간
+구간 전체, UPBIT/BINANCE/KIS/KRX, 모든 적용 테이블을 덮고 missing interval/row가
+0일 때만 가능합니다. 현재 feed health, 수동 JSON, 또는 마이그레이션 성공만으로는
+복구 처리하지 않습니다.
 
-# 복구
-pg_restore -d "$DATABASE_URL" --clean /backup/mdfeed_2026-08-27.dump
+배포 전 점검은 아래처럼 실행합니다. `pg_dump`/`pg_restore` 는 PostgreSQL 16과
+호환되는 클라이언트여야 합니다.
+
+```bash
+python ops/preflight.py --config ops/mdfeed.env.example --json
+python -m mdfeed.cli migrate --help
+python -m mdfeed.cli backup --help
+python -m mdfeed.cli gap --help
+python -m mdfeed.cli retention --help
+python scripts/verify_storage_control_surfaces.py \
+  --evidence .omo/evidence/task-10-control-surfaces.json
+```
+
+```bash
+python -m mdfeed.backup create --output-dir /var/lib/mdfeed/backups
+python -m mdfeed.backup restore-drill --object latest
+systemctl list-timers 'mdfeed-backup*' 'mdfeed-restore-drill*'
 ```
 
 **재수집이 불가능하다는 점을 기억하세요.** 거래소 실시간 피드는 과거를 다시 주지 않습니다.
@@ -751,5 +776,6 @@ pg_restore -d "$DATABASE_URL" --clean /backup/mdfeed_2026-08-27.dump
 
 ```bash
 MDFEED_REPLAY_FILE=data/replay/incident_2026-08-27.mdf \
-MDFEED_ADAPTERS=replay MDFEED_REPLAY_SPEED=1.0 make demo
+MDFEED_ADAPTERS=replay \
+MDFEED_REPLAY_SPEED=1.0 make demo
 ```

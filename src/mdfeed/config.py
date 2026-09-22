@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 
 
 def load_env_file(path: str) -> int:
@@ -162,12 +162,15 @@ class Config:
     client_queue_size: int = field(default_factory=lambda: _int("CLIENT_QUEUE", 2048))
 
     # ── 저장소 ─────────────────────────────────────────────────────────────
-    # DSN 이 비면 SQLite 로 떨어진다. 로컬/CI 에서 Postgres 없이도 전 구간이 돈다.
+    storage_backend: str = field(default_factory=lambda: _env("STORAGE_BACKEND", "postgres"))
+    storage_profile: str = field(default_factory=lambda: _env("STORAGE_PROFILE", "production"))
     pg_dsn: str = field(default_factory=lambda: os.getenv("DATABASE_URL", ""))
     sqlite_path: str = field(default_factory=lambda: _env("SQLITE_PATH", "data/mdfeed.db"))
     bar_interval_s: int = field(default_factory=lambda: _int("BAR_INTERVAL_S", 60))
     write_batch: int = field(default_factory=lambda: _int("WRITE_BATCH", 500))
     write_flush_s: float = field(default_factory=lambda: float(_env("WRITE_FLUSH_S", "2.0")))
+    writer_pending_max_rows: int = field(
+        default_factory=lambda: _int("WRITER_PENDING_MAX_ROWS", 100_000))
     # 원시 체결·호가 보존 일수. 0 = 끄기.
     #
     # 이 설정은 원래 선언만 있고 아무 데서도 쓰이지 않았다. 운영자가
@@ -197,6 +200,11 @@ class Config:
     #
     # 실측: 하루치 DB 몫 1.67GB → .csv.gz 0.16GB (10.7배). 무료 15GB 로 94일치.
     archive_dir: str = field(default_factory=lambda: _env("ARCHIVE_DIR", ""))
+    archive_push_command: str = field(default_factory=lambda: _env("ARCHIVE_PUSH_COMMAND", ""))
+    archive_fetch_command: str = field(default_factory=lambda: _env("ARCHIVE_FETCH_COMMAND", ""))
+    backup_dir: str = field(default_factory=lambda: _env("BACKUP_DIR", ""))
+    backup_push_command: str = field(default_factory=lambda: _env("BACKUP_PUSH_COMMAND", ""))
+    backup_fetch_command: str = field(default_factory=lambda: _env("BACKUP_FETCH_COMMAND", ""))
     # 경로로 못 놓는 목적지용 명령 틀. `{file}` 자리에 파일 경로가 들어간다.
     #   MDFEED_ARCHIVE_UPLOAD='rclone copy {file} gdrive:mdfeed/'
     archive_upload: str = field(default_factory=lambda: _env("ARCHIVE_UPLOAD", ""))
@@ -228,7 +236,7 @@ class Config:
     strategies: list[str] = field(default_factory=lambda: _list("STRATEGIES", "sma_cross,rsi_revert"))
     signal_cooldown_s: float = field(default_factory=lambda: float(_env("SIGNAL_COOLDOWN_S", "30")))
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, str | int | float | bool | list[str] | None]:
         d = asdict(self)
         for secret in ("kis_app_key", "kis_app_secret", "pg_dsn"):
             if d.get(secret):

@@ -42,6 +42,8 @@ jobs:
           mkdir -p data
           MDFEED_ADAPTERS=replay MDFEED_REPLAY_SPEED=0 MDFEED_REPLAY_LOOP=0 \
           MDFEED_RUN_DIR=/tmp/mdfeed MDFEED_BAR_INTERVAL_S=60 \
+          MDFEED_STORAGE_BACKEND=sqlite MDFEED_STORAGE_PROFILE=test \
+          MDFEED_SQLITE_PATH=/tmp/mdfeed/pages.db \
           PYTHONPATH=src python -m mdfeed.cli up --only feedd writer > /tmp/s.log 2>&1 &
           sleep 25
           pkill -f "mdfeed.cli up" || true

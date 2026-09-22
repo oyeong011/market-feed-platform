@@ -1,0 +1,10 @@
+[Unit]
+Description=MDFeed restore drill schedule
+
+[Timer]
+OnCalendar=Sun 18:30:00
+Persistent=true
+RandomizedDelaySec=20m
+
+[Install]
+WantedBy=timers.target

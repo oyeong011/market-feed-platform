@@ -3,7 +3,7 @@
 [![CI](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml)
 [![Pages](https://github.com/oyeong011/market-feed-platform/actions/workflows/pages.yml/badge.svg)](https://oyeong011.github.io/market-feed-platform/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![tests](https://img.shields.io/badge/tests-268%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-508-brightgreen)
 ![obs](https://img.shields.io/badge/알람-18개%20지표%20검증-blue)
 ![venues](https://img.shields.io/badge/수집경로-5개%20실연결-blue)
 
@@ -61,19 +61,22 @@
 git clone https://github.com/oyeong011/market-feed-platform
 cd market-feed-platform
 
-make demo        # 6개 프로세스 기동 + 대시보드 안내
-                 # → http://localhost:9102/ 에서 실시간 시세
+make demo        # replay + disposable synthetic SQLite 로 6개 프로세스 기동
+                 # → http://localhost:9102/ 에서 녹화 재생 시세 확인
 
 make status      # 서비스 상태 (프로세스 + HTTP 헬스 + 포트)
 make client      # 참조 TCP 구독 클라이언트 (갭 탐지 포함)
 make diag        # 장애 진단 원스톱
-make test        # 268개 테스트 — 네트워크 불필요
+make test        # 508개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
 ```
 
-인터넷이 없어도 됩니다. 저장소에 든 녹화 파일로 전 구간을 재현합니다:
+데모와 CI는 라이브 어댑터를 상속하지 않습니다. 저장소에 든 녹화 파일을 replay로 읽고, 임시 SQLite DB를 만들어 검증합니다.
+
+PostgreSQL 통합 테스트 27개는 서버가 실제로 살아 있을 때만 돕니다. 증거 파일이
+남아 있어도 서버가 내려가 있으면 에러 대신 스킵되고, CI는 스킵을 실패로 봅니다:
 
 ```bash
-MDFEED_ADAPTERS=replay make demo
+TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 ```
 
 ---
@@ -124,7 +127,7 @@ MDFEED_ADAPTERS=replay make demo
 |---|---|---|
 | 금융 데이터 FEED 개발·운영 | 수집 경로 5개, 배포 프로토콜 3종 | 무결성 48.5% → **100.0000%** |
 | Linux 서비스·프로세스 점검·안정화 | systemd 6유닛 + 자동 검증 + 장애 주입 | 11항목 · 복구 4종 확인 |
-| 파이프라인·배포·점검 자동화 | Makefile · CI 6잡 · Pages 자동 갱신 | 테스트 **268개** |
+| 파이프라인·배포·점검 자동화 | Makefile · CI 6잡 · Pages 자동 갱신 | 테스트 **508개** |
 | Python | 소스 8,835줄 | 핵심 의존성 **0** |
 | SQL · 관계형 DB | 복합 인덱스 · 사전 집계 · 하이퍼테이블 | 적재 **480,586 rows/s** |
 | Linux 명령·프로세스·로그 | `ops.sh diag` · RUNBOOK 8종 | 1차 진단 한 줄 |
@@ -143,8 +146,8 @@ MDFEED_ADAPTERS=replay make demo
 | **분석** (백테스트·성과지표) | **오픈소스 사용** | `backtesting.py`·`vectorbt` 가 훨씬 낫습니다. 직접 만들 이유가 없습니다. 우리가 제공하는 건 **데이터와 전략 코드**이고, 검증은 검증된 도구에 맡깁니다 |
 | **저장소** | PostgreSQL + TimescaleDB | 시계열 파티셔닝·보존정책을 직접 만들 이유가 없습니다 |
 
-피드 계층을 직접 만든 부수 효과로 **핵심 경로 의존성이 0**이 되어,
-`python3` 만 있으면 어떤 리눅스 박스에서도 `git clone && make demo` 로 돕니다.
+피드 계층을 직접 만든 부수 효과로 **핵심 경로 의존성이 0**입니다.
+`make demo` 는 replay 녹화와 임시 SQLite 저장소로 동작하며, 운영 수집은 PostgreSQL 사전 점검을 통과한 명시 설정에서만 띄웁니다.
 
 ## 피드 계층에서 직접 구현한 것
 
@@ -218,8 +221,9 @@ src/mdfeed/
 
 ops/     systemd 유닛 6종 · ops.sh · watchdog.sh · healthcheck.py · logrotate
 quant/   backtest.py · run_backtest.py · integrations.py · factor_screen.py
-tests/   268개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
-         복구 경로 · 종료 기한 · 컨플레이션 · 토큰 발급 · 운영 기록 환산)
+tests/   508개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
+         복구 경로 · 종료 기한 · 컨플레이션 · 토큰 발급 · 운영 기록 환산 ·
+         PostgreSQL 마이그레이션/백업/복구 27개는 실서버 연결 시에만)
 bench/   계층별 성능 측정 → docs/data/bench.json
 docs/    GitHub Pages 대시보드 (정적/실시간 겸용)
 ```
@@ -261,6 +265,13 @@ docs/    GitHub Pages 대시보드 (정적/실시간 겸용)
 - **지수·금리는 스냅샷입니다.** 실시간 웹소켓 경로가 없습니다.
 - **배포단의 한계는 구독자 수가 아니라 지연입니다.** 구독자 100명까지 유실·드롭 0이지만
   p99 가 1.4 ms → 27.9 ms 로 19배 늘어납니다 (아래 부하 곡선 참조).
+- **2026-09-08T05:16:54Z 이후 수집 공백은 열린 상태입니다.** 범위는 UPBIT,
+  BINANCE, KIS, KRX와 모든 적용 테이블이며 당시 전체 심볼 범위는 확인 증거가
+  없어 `UNKNOWN_HISTORICAL_UNIVERSE` 로 남깁니다. 현재 서비스 health나 현재
+  유니버스 설정은 과거 공백 복구 증거가 아닙니다.
+- **백업 복구 검증에는 PostgreSQL 16 호환 `pg_dump`/`pg_restore` 가 필요합니다.**
+  컨테이너나 서버 런타임이 하위 버전 클라이언트만 갖고 있으면 백업 준비 완료로
+  보지 않습니다.
 
 ---
 

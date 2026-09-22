@@ -109,6 +109,13 @@ def check() -> tuple[int, list[str]]:
         if w.get("pending_rows", 0) > 50_000:
             bump(WARN, f"적재 대기 {w['pending_rows']:,}행 — DB 쓰기가 못 따라감")
 
+    rest = fetch(9103)
+    if rest:
+        completeness = rest.get("data_completeness") or {}
+        if not completeness.get("healthy", True):
+            bump(CRIT, f"데이터 완전성 불완전: 열린 공백 {completeness.get('open_gaps', 0)}개 — "
+                       f"{completeness.get('blocking_reason') or '복구 증거 없음'}")
+
     return worst, msgs
 
 

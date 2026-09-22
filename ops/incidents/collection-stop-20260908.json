@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "collection-stop-20260908",
+  "started_at": "2026-09-08T05:16:54Z",
+  "ended_at": null,
+  "state": "OPEN",
+  "reason": "collection stopped at 2026-09-08 14:16:54 KST; no verified backfill exists",
+  "required_scope": {
+    "venues": ["UPBIT", "BINANCE", "KIS", "KRX"],
+    "symbols": ["UNKNOWN_HISTORICAL_UNIVERSE"],
+    "tables": [
+      "instruments",
+      "trades",
+      "book_top",
+      "bars_1m",
+      "signals",
+      "feed_stats",
+      "latest",
+      "quality_events"
+    ]
+  },
+  "backfill_receipt_id": null,
+  "recovered_at": null
+}

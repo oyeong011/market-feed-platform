@@ -10,13 +10,16 @@
 2. COUNT(*) 를 요청마다 세었다 (누적 행수에 비례한다)
 """
 import asyncio
+import datetime as dt
 import json
 import socket
 import time
 import urllib.request
+import urllib.error
 
 import pytest
 
+from mdfeed import gaps
 from mdfeed.config import Config
 from mdfeed.services.rest_api import RestAPI
 
@@ -38,6 +41,8 @@ def get(port: int, path: str) -> dict:
 def api(tmp_path):
     """RestAPI 를 실제 포트에 띄우고, 체결 몇 건을 넣어 둔다."""
     cfg = Config()
+    cfg.storage_backend = "sqlite"
+    cfg.storage_profile = "test"
     cfg.sqlite_path = str(tmp_path / "api.db")
     cfg.http_port = free_port()
     cfg.http_host = "127.0.0.1"
@@ -135,3 +140,53 @@ def test_봉_통계는_명시적으로_요청해야_나온다(api):
     _svc, port = api
     r = get(port, "/api/v1/symbols?bars=1")
     assert r["count"] == 0            # 봉이 아직 없다 (체결만 넣었다)
+
+
+def test_gap_status_reports_known_open_gap_and_health_separates_completeness(api):
+    _svc, port = api
+    gaps = get(port, "/api/v1/gaps")
+    assert gaps["open_count"] == 1
+    assert gaps["items"][0]["id"] == "collection-stop-20260908"
+    assert gaps["items"][0]["state"] == "OPEN"
+    assert gaps["items"][0]["recovered"] is False
+    assert gaps["items"][0]["ended_at_utc"] is None
+
+    health = get(port, "/healthz")
+    assert health["healthy"] is True
+    assert health["data_completeness"]["healthy"] is False
+    assert health["data_completeness"]["state"] == "incomplete"
+
+
+def test_gap_metrics_are_declared_by_rest_api(api):
+    _svc, port = api
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=10) as r:
+        text = r.read().decode()
+    assert "mdfeed_data_gaps_open" in text
+    assert "mdfeed_data_gaps_unrecovered_duration_seconds" in text
+    assert "mdfeed_gap_recovery_verification_failures_total" in text
+
+
+def test_gap_status_unknown_id_returns_not_found(api):
+    _svc, port = api
+    with pytest.raises(urllib.error.HTTPError) as raised:
+        get(port, "/api/v1/gaps?id=missing-gap")
+    assert raised.value.code == 404
+
+
+def test_health_blocking_reason_ignores_recovered_gap(api):
+    svc, _port = api
+    recovered = gaps.GapRecord(
+        id="old-recovered",
+        started_at=gaps.KNOWN_INCIDENT_START - dt.timedelta(days=1),
+        ended_at=gaps.KNOWN_INCIDENT_START - dt.timedelta(days=1, minutes=-1),
+        state=gaps.GapState.RECOVERED,
+        required_scope=gaps.GapScope(("UPBIT",), ("KRW-BTC",), ("trades",)),
+        reason="done",
+        backfill_receipt_id="receipt",
+        recovered_at=gaps.KNOWN_INCIDENT_START,
+    )
+    svc.gap_repo.save(recovered)
+    health = svc.health()
+    assert health["data_completeness"]["open_gaps"] == 1
+    assert health["data_completeness"]["blocking_reason"]
+    assert "collection stopped" in health["data_completeness"]["blocking_reason"]

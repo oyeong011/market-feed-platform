@@ -3,12 +3,15 @@
 688종목을 붙이니 초당 285행, 하루 약 2,460만 행이 쌓였다. 보존 정책이
 없으면 디스크가 찰 때까지 쓰다가 죽고, 그건 "프로세스가 죽었다"로만 보인다.
 """
+import datetime as dt
+import json
 import os
 import sqlite3
 import time
 
 import pytest
 
+from mdfeed import archive as ar
 from mdfeed.retention import DiskWatch, prune
 
 
@@ -18,9 +21,13 @@ class _Store:
     def __init__(self, path):
         self.conn = sqlite3.connect(path)
         self.conn.execute(
-            "CREATE TABLE trades (ts INTEGER, venue TEXT, symbol TEXT, price REAL)")
+            "CREATE TABLE trades ("
+            "ts INTEGER, venue TEXT, symbol TEXT, price REAL, qty REAL, side TEXT, "
+            "recv_ts INTEGER, latency_us INTEGER, seq INTEGER)")
         self.conn.execute(
-            "CREATE TABLE book_top (ts INTEGER, venue TEXT, symbol TEXT)")
+            "CREATE TABLE book_top ("
+            "ts INTEGER, venue TEXT, symbol TEXT, bid REAL, bid_qty REAL, ask REAL, "
+            "ask_qty REAL, spread_bp REAL)")
         self.conn.execute("CREATE TABLE bars_1m (bucket INTEGER, symbol TEXT)")
 
     def query(self, sql, params=()):
@@ -50,8 +57,8 @@ def store(tmp_path):
     day = 86_400 * 1_000_000
     rows = [(now_us - int(d * day), "UPBIT", "KRW-BTC", 1.0)
             for d in (0.1, 0.5, 1.5, 3.0, 10.0)]
-    s.conn.executemany("INSERT INTO trades VALUES (?,?,?,?)", rows)
-    s.conn.executemany("INSERT INTO book_top VALUES (?,?,?)",
+    s.conn.executemany("INSERT INTO trades (ts, venue, symbol, price) VALUES (?,?,?,?)", rows)
+    s.conn.executemany("INSERT INTO book_top (ts, venue, symbol) VALUES (?,?,?)",
                        [(r[0], r[1], r[2]) for r in rows])
     s.conn.executemany("INSERT INTO bars_1m VALUES (?,?)",
                        [(r[0], r[2]) for r in rows])
@@ -138,6 +145,7 @@ def test_백엔드마다_삭제_구현이_있다():
     """rowid 는 SQLite 전용이다. Postgres 에 그대로 보내면 거기서만 조용히
     안 돈다. 백엔드 차이는 저장소 계층이 흡수해야 한다."""
     import inspect
+
     from mdfeed.storage import db
     for cls in (db.SQLiteStorage, db.PostgresStorage):
         assert hasattr(cls, "delete_older_than"), cls.__name__
@@ -185,7 +193,7 @@ def big_store(tmp_path):
     old = now_us - 10 * 86_400 * 1_000_000
     n = DELETE_BATCH * 3 + 7            # 3배치 + 나머지
     s.conn.executemany(
-        "INSERT INTO trades VALUES (?,?,?,?)",
+        "INSERT INTO trades (ts, venue, symbol, price) VALUES (?,?,?,?)",
         [(old + i, "UPBIT", "KRW-BTC", 1.0) for i in range(n)])
     s.conn.commit()
     return s
@@ -243,6 +251,7 @@ def test_보존_삭제_조건이_인덱스를_탄다(tmp_path):
     """
     import os
     import sqlite3
+
     from mdfeed.storage import db as dbmod
     path = str(tmp_path / "plan.db")
     conn = sqlite3.connect(path)
@@ -287,3 +296,187 @@ def test_계획은_지우지_않는다(store):
     assert plan["tables"]["trades"]["keep_rows"] == 3
     assert plan["delete_rows_total"] == 4
     assert store.count("trades") == 5              # 아무것도 안 지웠다
+
+
+def _receipt(receipt_dir, store, table, day):
+    from mdfeed.retention import _source_day_proof
+
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    if isinstance(day, str):
+        parsed = dt.date.fromisoformat(day)
+    else:
+        parsed = day
+    rows, source_sha = _source_day_proof(store, table, parsed)
+    lo, hi = ar.day_bounds_us(parsed)
+    data = {
+        "schema_version": 1,
+        "status": "verified",
+        "table": table,
+        "day": parsed.isoformat(),
+        "object_id": f"{table}/{parsed.isoformat()}",
+        "local_sha256": "0" * 64,
+        "remote_fetch_sha256": "0" * 64,
+        "local_bytes": 1,
+        "remote_fetch_bytes": 1,
+        "local_rows": rows,
+        "remote_fetch_rows": rows,
+        "manifest_sha256": "1" * 64,
+        "remote_manifest_sha256": "1" * 64,
+        "source_table": table,
+        "source_day": parsed.isoformat(),
+        "source_from_us": lo,
+        "source_to_us": hi,
+        "source_rows": rows,
+        "source_content_sha256": source_sha,
+    }
+    (receipt_dir / f"{table}_{parsed.isoformat()}.json").write_text(
+        json.dumps(data), encoding="utf-8")
+
+
+def test_retention_cutoff_requires_remote_receipts_from_source_floor(store, tmp_path):
+    from mdfeed.retention import retention_cutoff
+
+    source_floor = dt.datetime.fromtimestamp(
+        store.query("SELECT MIN(ts) AS v FROM trades")[0]["v"] / 1e6,
+        dt.timezone.utc,
+    ).date()
+    for table in ("trades", "book_top"):
+        _receipt(tmp_path, store, table, source_floor)
+
+    cutoff = retention_cutoff(store, str(tmp_path))
+
+    assert cutoff.allowed is True
+    assert cutoff.cutoff_us == ar.day_bounds_us(source_floor + dt.timedelta(days=1))[0]
+
+
+def test_retention_cutoff_blocks_local_only_archive(store, tmp_path):
+    from mdfeed.retention import retention_cutoff
+
+    cutoff = retention_cutoff(store, str(tmp_path))
+
+    assert cutoff.allowed is False
+    assert cutoff.cutoff_us == 0
+    assert cutoff.reason == "missing_remote_coverage"
+
+
+def test_retention_cutoff_blocks_holes_and_missing_table(store, tmp_path):
+    from mdfeed.retention import retention_cutoff
+
+    source_floor = dt.datetime.fromtimestamp(
+        store.query("SELECT MIN(ts) AS v FROM trades")[0]["v"] / 1e6,
+        dt.timezone.utc,
+    ).date()
+    _receipt(tmp_path, store, "trades", source_floor)
+
+    cutoff = retention_cutoff(store, str(tmp_path))
+
+    assert cutoff.allowed is False
+    assert cutoff.reason == "missing_remote_coverage"
+
+
+def test_prune_rechecks_source_coverage_before_delete(store, tmp_path):
+    from mdfeed.retention import retention_cutoff
+
+    source_floor = dt.datetime.fromtimestamp(
+        store.query("SELECT MIN(ts) AS v FROM trades")[0]["v"] / 1e6,
+        dt.timezone.utc,
+    ).date()
+    for table in ("trades", "book_top"):
+        _receipt(tmp_path, store, table, source_floor)
+    cutoff = retention_cutoff(store, str(tmp_path))
+    store.conn.execute(
+        "INSERT INTO trades (ts, venue, symbol, price) VALUES (?,?,?,?)",
+        (ar.day_bounds_us(source_floor - dt.timedelta(days=1))[0], "UPBIT", "KRW-ETH", 1.0),
+    )
+    store.conn.commit()
+
+    result = prune(store, retention_days=0.000001, floor_us=cutoff.cutoff_us,
+                   remote_receipt_dir=str(tmp_path))
+
+    assert result.blocked_reason == "source_floor_changed"
+    assert sum(result.values()) == 0
+
+
+def test_retention_cutoff_rejects_incomplete_remote_receipts(store, tmp_path):
+    from mdfeed.retention import retention_cutoff
+
+    source_floor = dt.datetime.fromtimestamp(
+        store.query("SELECT MIN(ts) AS v FROM trades")[0]["v"] / 1e6,
+        dt.timezone.utc,
+    ).date()
+    for table in ("trades", "book_top"):
+        (tmp_path / f"{table}.json").write_text(
+            json.dumps({"status": "verified", "table": table, "day": source_floor.isoformat()}),
+            encoding="utf-8",
+        )
+
+    cutoff = retention_cutoff(store, str(tmp_path))
+
+    assert cutoff.allowed is False
+    assert cutoff.reason == "missing_remote_coverage"
+
+
+def test_prune_blocks_late_row_inside_verified_day(store, tmp_path):
+    from mdfeed.retention import retention_cutoff
+
+    source_floor = dt.datetime.fromtimestamp(
+        store.query("SELECT MIN(ts) AS v FROM trades")[0]["v"] / 1e6,
+        dt.timezone.utc,
+    ).date()
+    for table in ("trades", "book_top"):
+        _receipt(tmp_path, store, table, source_floor)
+    cutoff = retention_cutoff(store, str(tmp_path))
+    store.conn.execute(
+        "INSERT INTO trades (ts, venue, symbol, price) VALUES (?,?,?,?)",
+        (ar.day_bounds_us(source_floor)[0] + 123, "UPBIT", "KRW-ETH", 2.0),
+    )
+    store.conn.commit()
+
+    result = prune(store, retention_days=0.000001, floor_us=cutoff.cutoff_us,
+                   remote_receipt_dir=str(tmp_path))
+
+    assert result.blocked_reason == "source_day_changed"
+    assert sum(result.values()) == 0
+    assert store.count("trades") == 6
+
+
+def test_prune_continues_after_bounded_remote_delete_progress(tmp_path, monkeypatch):
+    from mdfeed.retention import retention_cutoff
+
+    s = _Store(str(tmp_path / "bounded.db"))
+    day = dt.date(2026, 1, 2)
+    start, end = ar.day_bounds_us(day)
+    trade_rows = [(start + i, "UPBIT", f"KRW-{i}", 1.0) for i in range(5)]
+    book_rows = [(start + i, "UPBIT", f"KRW-{i}") for i in range(5)]
+    s.conn.executemany(
+        "INSERT INTO trades (ts, venue, symbol, price) VALUES (?,?,?,?)", trade_rows)
+    s.conn.executemany(
+        "INSERT INTO book_top (ts, venue, symbol) VALUES (?,?,?)", book_rows)
+    s.conn.commit()
+    for table in ("trades", "book_top"):
+        _receipt(tmp_path, s, table, day)
+    monkeypatch.setattr("mdfeed.retention.DELETE_BATCH", 2)
+    original_delete = s.delete_older_than
+    calls = {"n": 0}
+
+    def one_batch(table, col, cutoff, limit):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return original_delete(table, col, cutoff, limit)
+        return 0
+
+    s.delete_older_than = one_batch
+    first = prune(s, retention_days=0.000001, now_us=end + 10_000_000,
+                  floor_us=retention_cutoff(s, str(tmp_path)).cutoff_us,
+                  remote_receipt_dir=str(tmp_path))
+    s.delete_older_than = original_delete
+    second = prune(s, retention_days=0.000001, now_us=end + 10_000_000,
+                   floor_us=retention_cutoff(s, str(tmp_path)).cutoff_us,
+                   remote_receipt_dir=str(tmp_path))
+
+    assert first.blocked_reason is None
+    assert second.blocked_reason is None
+    assert first["trades"] == 2
+    assert second["trades"] == 3
+    assert s.count("trades") == 0
+    assert s.count("book_top") == 0

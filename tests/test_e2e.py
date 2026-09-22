@@ -14,16 +14,13 @@ CI 는 거래소에 붙을 수 없다(불안정하고, 지역 제한이 있고, 
 6. SIGTERM 상당의 종료에서 데이터 유실 없이 정리된다
 """
 import asyncio
-import json
 import os
 import socket
 import tempfile
 import time
 
-import pytest
-
 from mdfeed.config import Config
-from mdfeed.models import (MSG_BOOK, MSG_SNAPSHOT, MSG_TRADE, BookTop, Trade)
+from mdfeed.models import MSG_BOOK, MSG_SNAPSHOT, MSG_TRADE, BookTop, Trade
 from mdfeed.protocol import FLAG_SNAPSHOT, FrameParser, SequenceTracker, encode
 from mdfeed.services.feedd import FeedDaemon
 from mdfeed.services.strategy import StrategyEngine
@@ -68,6 +65,8 @@ def make_cfg(tmp_path) -> Config:
     cfg.replay_loop = False
     cfg.ring_enabled = False                # 테스트 간 공유메모리 이름 충돌 회피
     cfg.pg_dsn = ""
+    cfg.storage_backend = "sqlite"
+    cfg.storage_profile = "test"
     cfg.sqlite_path = str(tmp_path / "e2e.db")
     cfg.http_host = "127.0.0.1"
     cfg.tcp_host = "127.0.0.1"
@@ -108,7 +107,7 @@ def subscribe_and_collect(port: int, duration: float,
     while time.time() < deadline:
         try:
             chunk = s.recv(65536)
-        except socket.timeout:
+        except TimeoutError:
             continue
         if not chunk:
             break
@@ -312,9 +311,9 @@ class TestSharding:
     def test_writer_tracks_sequence_per_source(self, tmp_path):
         """샤드마다 seq 공간이 독립이다. 하나로 추적하면 샤드가 바뀔 때마다
         거짓 갭이 잡힌다 — 구독자별 재넘버링 때와 같은 실수다."""
-        from mdfeed.services.writer import Writer
-        from mdfeed.protocol import Frame
         from mdfeed.models import MSG_HEARTBEAT
+        from mdfeed.protocol import Frame
+        from mdfeed.services.writer import Writer
 
         cfg = make_cfg(tmp_path)
         w = Writer(cfg)

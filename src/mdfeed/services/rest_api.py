@@ -19,6 +19,7 @@ import time
 from ..httpd import HTTPServer, Request, Response, health_routes
 from ..metrics import Registry
 from ..storage.db import open_storage
+from .. import gaps
 
 log = logging.getLogger("mdfeed.rest_api")
 SERVICE = "rest-api"
@@ -32,6 +33,7 @@ class RestAPI:
         self.registry = Registry(SERVICE)
         self.storage = None
         self.db_errors = 0
+        self.gap_recovery_failures = 0
         # 조회는 더 이상 직렬화하지 않는다.
         #
         # 예전엔 커넥션 하나를 락으로 감쌌다. 그 락이 곧 지연이었다 —
@@ -51,6 +53,7 @@ class RestAPI:
         from ..runtime import make_tracker
         self.tracker = make_tracker()
         self._started = time.time()
+        self.gap_repo = gaps.open_repository()
 
     async def _q(self, fn, *a, **kw):
         try:
@@ -148,6 +151,18 @@ class RestAPI:
             "uptime_s": round(time.time() - self._started, 1),
         })
 
+    async def gap_status(self, req: Request) -> Response:
+        gap_id = req.query.get("id")
+        if gap_id:
+            record = self.gap_repo.get(gap_id)
+            if record is None:
+                return Response.json({"error": "GAP_NOT_FOUND", "id": gap_id}, 404)
+            summary = gaps.summarize([record])
+        else:
+            summary = gaps.summarize(self.gap_repo.list())
+        self._publish_gap_metrics(summary)
+        return Response.json(summary)
+
     async def _counts_loop(self, stop: asyncio.Event) -> None:
         """적재 통계를 주기적으로 다시 센다.
 
@@ -176,14 +191,36 @@ class RestAPI:
                 await asyncio.wait_for(stop.wait(), timeout=delay)
 
     def health(self) -> dict:
+        gap_summary = gaps.summarize(self.gap_repo.list())
+        self._publish_gap_metrics(gap_summary)
+        blocker = next(
+            (item["blocking_reason"] for item in gap_summary["items"] if not item["recovered"]),
+            None,
+        )
         return {"service": SERVICE, "healthy": self.db_errors < 20,
+                "data_completeness": {
+                    "healthy": gap_summary["healthy"],
+                    "state": gap_summary["data_completeness"],
+                    "open_gaps": gap_summary["open_count"],
+                    "blocking_reason": blocker,
+                },
                 "backend": self.storage.kind if self.storage else None,
                 "uptime_s": round(time.time() - self._started, 1),
                 "db_errors": self.db_errors}
 
+    def _publish_gap_metrics(self, summary: dict) -> None:
+        self.registry.gauge("data_gaps_open", float(summary["open_count"]))
+        self.registry.gauge("data_gaps_unrecovered_duration_seconds",
+                            float(summary["unrecovered_duration_seconds"]))
+        self.registry.gauge("data_gaps_recovered_total",
+                            float(summary["recovered_count"]))
+        self.registry.gauge("gap_recovery_verification_failures_total",
+                            float(self.gap_recovery_failures))
+
     async def run(self, stop: asyncio.Event) -> None:
         cfg = self.cfg
         self.storage = await asyncio.to_thread(open_storage, cfg)
+        self.gap_repo = await asyncio.to_thread(gaps.open_repository, None, self.storage)
         http = HTTPServer(cfg.http_host, cfg.http_port, SERVICE, self.registry)
         health_routes(http, self.health, tracker=self.tracker)
         http.route("GET", "/api/v1/symbols", self.symbols)
@@ -192,6 +229,7 @@ class RestAPI:
         http.route("GET", "/api/v1/trades", self.trades)
         http.route("GET", "/api/v1/signals", self.signals)
         http.route("GET", "/api/v1/stats", self.stats)
+        http.route("GET", "/api/v1/gaps", self.gap_status)
         http.route("GET", "/api/v1", lambda r: Response.json({
             "service": SERVICE,
             "endpoints": {
@@ -201,6 +239,7 @@ class RestAPI:
                 "GET /api/v1/trades?venue=&symbol=&limit=": "최근 체결",
                 "GET /api/v1/signals?limit=": "전략 시그널",
                 "GET /api/v1/stats": "적재 통계 (as_of 시점 기준)",
+                "GET /api/v1/gaps?id=": "마켓데이터 공백과 복구 증거 상태",
             }}))
         await http.start()
         from ..runtime import sample_resources

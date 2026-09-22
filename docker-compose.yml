@@ -11,18 +11,20 @@ name: mdfeed
 x-common: &common
   build: .
   image: mdfeed:latest
-  restart: unless-stopped
   environment: &env
     MDFEED_RUN_DIR: /run/mdfeed
     MDFEED_BUS_PATH: /run/mdfeed/bus.sock
     MDFEED_SIGNAL_BUS_PATH: /run/mdfeed/signals.sock
     MDFEED_HTTP_HOST: "0.0.0.0"
     MDFEED_LOG_JSON: "1"
-    DATABASE_URL: postgresql://mdfeed:mdfeed@postgres:5432/mdfeed
+    DATABASE_URL: postgresql://mdfeed_runtime@postgres:5432/mdfeed?sslmode=verify-full&sslrootcert=/run/secrets/postgres_ca.crt
+    PGPASSFILE: /run/secrets/pgpass
   volumes:
     - bus:/run/mdfeed          # UDS 소켓 공유 = 컨테이너 간 IPC
     - data:/var/lib/mdfeed
     - ./data/replay:/opt/mdfeed/data/replay:ro
+    - ./ops/secrets/postgres_ca.crt:/run/secrets/postgres_ca.crt:ro
+    - ./ops/secrets/pgpass:/run/secrets/pgpass:ro
   depends_on:
     feedd:
       condition: service_healthy
@@ -32,25 +34,24 @@ x-common: &common
 
 services:
   postgres:
-    image: timescale/timescaledb:latest-pg16
-    restart: unless-stopped
+    image: timescale/timescaledb:2.17.2-pg16
     environment:
-      POSTGRES_USER: mdfeed
-      POSTGRES_PASSWORD: mdfeed
+      POSTGRES_USER: mdfeed_bootstrap
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       POSTGRES_DB: mdfeed
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./ops/secrets/postgres_password:/run/secrets/postgres_password:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mdfeed"]
+      test: ["CMD-SHELL", "pg_isready -U mdfeed_bootstrap"]
       interval: 5s
       timeout: 3s
       retries: 10
-    ports: ["5432:5432"]
 
   feedd:
     <<: *common
     command: ["python3", "-m", "mdfeed.services.feedd"]
-    ports: ["9100:9100"]
+    ports: ["127.0.0.1:9100:9100"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -67,7 +68,7 @@ services:
     environment:
       <<: *env
       MDFEED_HEALTH_PORT: "9111"
-    ports: ["9101:9101", "9111:9111"]
+    ports: ["127.0.0.1:9101:9101", "127.0.0.1:9111:9111"]
 
   ws-gateway:
     <<: *common
@@ -75,7 +76,7 @@ services:
     environment:
       <<: *env
       MDFEED_HEALTH_PORT: "9102"
-    ports: ["9102:9102"]
+    ports: ["127.0.0.1:9102:9102"]
 
   writer:
     <<: *common
@@ -83,7 +84,7 @@ services:
     environment:
       <<: *env
       MDFEED_HEALTH_PORT: "9104"
-    ports: ["9104:9104"]
+    ports: ["127.0.0.1:9104:9104"]
 
   rest-api:
     <<: *common
@@ -91,7 +92,7 @@ services:
     environment:
       <<: *env
       MDFEED_HEALTH_PORT: "9103"
-    ports: ["9103:9103"]
+    ports: ["127.0.0.1:9103:9103"]
 
   strategy:
     <<: *common
@@ -99,7 +100,7 @@ services:
     environment:
       <<: *env
       MDFEED_HEALTH_PORT: "9105"
-    ports: ["9105:9105"]
+    ports: ["127.0.0.1:9105:9105"]
 
 volumes:
   bus:

@@ -86,6 +86,114 @@ CREATE TABLE IF NOT EXISTS latest (
     PRIMARY KEY (venue, symbol)
 );
 
+CREATE TABLE IF NOT EXISTS quality_events (
+    ts         INTEGER NOT NULL,
+    check_name TEXT    NOT NULL,
+    severity   TEXT    NOT NULL,
+    venue      TEXT,
+    symbol     TEXT,
+    detail     TEXT,
+    value      REAL
+);
+CREATE INDEX IF NOT EXISTS idx_quality_ts ON quality_events (ts DESC);
+
+CREATE TABLE IF NOT EXISTS ingest_batch_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    service TEXT NOT NULL,
+    table_name TEXT NOT NULL,
+    batch_hash TEXT NOT NULL,
+    row_count INTEGER NOT NULL CHECK (row_count >= 0),
+    committed_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS migration_runs (
+    run_id TEXT PRIMARY KEY,
+    source_fingerprint TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('RUNNING','COMPLETED','FAILED')),
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS migration_checkpoints (
+    run_id TEXT NOT NULL,
+    table_name TEXT NOT NULL,
+    first_source_rowid INTEGER NOT NULL CHECK (first_source_rowid >= 1),
+    last_source_rowid INTEGER NOT NULL CHECK (last_source_rowid >= 0),
+    chunk_row_count INTEGER NOT NULL CHECK (chunk_row_count >= 0),
+    row_count INTEGER NOT NULL CHECK (row_count >= 0),
+    chunk_hash TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, table_name)
+);
+
+CREATE TABLE IF NOT EXISTS backup_restore_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    backup_id TEXT NOT NULL,
+    manifest_hash TEXT NOT NULL,
+    pg_dump_hash TEXT NOT NULL,
+    verified_at TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('VERIFIED','FAILED'))
+);
+
+CREATE TABLE IF NOT EXISTS archive_remote_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    object_id TEXT NOT NULL,
+    table_name TEXT,
+    day TEXT,
+    local_sha256 TEXT NOT NULL,
+    local_bytes INTEGER NOT NULL CHECK (local_bytes >= 0),
+    local_rows INTEGER NOT NULL CHECK (local_rows >= 0),
+    remote_sha256 TEXT NOT NULL,
+    remote_bytes INTEGER NOT NULL CHECK (remote_bytes >= 0),
+    remote_rows INTEGER NOT NULL CHECK (remote_rows >= 0),
+    verified_at TEXT NOT NULL,
+    transport TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('VERIFIED','FAILED'))
+);
+
+
+CREATE TABLE IF NOT EXISTS authoritative_gap_coverages (
+    coverage_id TEXT PRIMARY KEY,
+    covered_start TEXT NOT NULL,
+    covered_end TEXT NOT NULL,
+    scope_hash TEXT NOT NULL,
+    scope_json TEXT NOT NULL,
+    source_fingerprint TEXT NOT NULL,
+    table_counts_json TEXT NOT NULL,
+    evidence_hash TEXT NOT NULL,
+    producer TEXT NOT NULL,
+    verified_at TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('VERIFIED','FAILED'))
+);
+
+CREATE TABLE IF NOT EXISTS gap_recovery_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    gap_id TEXT NOT NULL,
+    covered_start TEXT NOT NULL,
+    covered_end TEXT NOT NULL,
+    scope_hash TEXT NOT NULL,
+    scope_json TEXT NOT NULL,
+    actual_reconciliation_id TEXT NOT NULL,
+    authoritative_coverage_id TEXT NOT NULL,
+    missing_intervals INTEGER NOT NULL CHECK (missing_intervals >= 0),
+    missing_rows INTEGER NOT NULL CHECK (missing_rows >= 0),
+    evidence_hash TEXT NOT NULL,
+    verified_at TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('VERIFIED','FAILED'))
+);
+
+CREATE TABLE IF NOT EXISTS data_gaps (
+    gap_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL CHECK (state IN ('OPEN','ENDED_UNRECOVERED','BACKFILLING','RECOVERED')),
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    recovered_at TEXT,
+    required_scope_hash TEXT NOT NULL,
+    required_scope_json TEXT NOT NULL,
+    backfill_receipt_id TEXT
+);
+
 -- 뷰는 남긴다. 임시 조회와 과거 호환용이고, 서비스 경로에서는 쓰지 않는다.
 CREATE VIEW IF NOT EXISTS v_latest AS
 SELECT venue, symbol, MAX(ts) AS ts, price, qty, side, latency_us

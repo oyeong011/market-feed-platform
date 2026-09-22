@@ -45,6 +45,8 @@ def cfg(tmp_path):
     run_dir = tempfile.mkdtemp(prefix="mdfs", dir="/tmp")
     c = Config()
     c.run_dir = run_dir
+    c.storage_backend = "sqlite"
+    c.storage_profile = "test"
     c.sqlite_path = str(tmp_path / "w.db")
     c.pg_dsn = ""
     c.bus_path = os.path.join(run_dir, "b.sock")

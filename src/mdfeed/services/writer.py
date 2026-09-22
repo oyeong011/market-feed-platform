@@ -41,18 +41,37 @@ import time
 
 from ..bus import UDSSubscriber
 from ..clock import ClockMonitor
+from ..config import Config
 from ..httpd import HTTPServer, Response, health_routes
 from ..metrics import Registry
-from ..models import (MSG_BOOK, MSG_SIGNAL, MSG_TRADE, Bar, BookTop, Signal, Trade)
-from ..protocol import SequenceTracker
-from ..storage.db import open_storage
+from ..models import MSG_BOOK, MSG_SIGNAL, MSG_TRADE, Bar, BookTop, Signal, Trade
+from ..protocol import Frame, SequenceTracker
+from ..storage.db import (
+    Storage,
+    StorageBatch,
+    StorageRow,
+    make_storage_batch,
+    open_storage,
+)
+
+BarKey = tuple[str, str, int]
+
+
+class ArchiveRunResult:
+    __slots__ = ("archived", "failed", "rows")
+
+    def __init__(self, archived: list[str], failed: list[str], rows: int) -> None:
+        self.archived = archived
+        self.failed = failed
+        self.rows = rows
+
 
 # 삭제가 밀렸을 때 다시 오는 간격. 정상 주기(1시간)를 기다리면
 # 첫 삭제가 반나절 걸린다.
 RETRY_INTERVAL_S = 60.0
 
 
-def _iso_us(us):
+def _iso_us(us: int | None) -> str | None:
     if not us:
         return None
     import datetime as _dt
@@ -66,25 +85,27 @@ BOOK_SAMPLE_S = 1.0
 
 
 class Writer:
-    def __init__(self, cfg):
+    def __init__(self, cfg: Config):
         self.cfg = cfg
         self.registry = Registry(SERVICE)
         self.registry.declare_counters(
             "gap_messages_total", "rows_written_total", "bars_written_total",
             "db_errors_total",
+            "rows_dropped_total",
             # 보존이 꺼져 있어도 0 으로 존재해야 한다. 사건이 나야 생기는
             # 지표에는 그 전에 알람을 걸 수 없다.
             "rows_pruned_total",
             # 아카이브를 안 켜도 0 으로 존재해야 알람이 평가된다.
             "rows_archived_total")
-        self.storage = None
+        self.storage: Storage | None = None
         # 샤드마다 seq 공간이 독립이다. 하나로 추적하면 샤드 전환마다
         # 거짓 갭이 잡힌다 — 구독자별 재넘버링 때 겪은 것과 같은 문제다.
         self.seqtracks: dict[str, SequenceTracker] = {}
-        self._trades: list[tuple] = []
-        self._books: list[tuple] = []
-        self._signals: list[tuple] = []
-        self._bars: dict[tuple, Bar] = {}          # (venue,symbol,bucket) → Bar
+        self._trades: list[StorageRow] = []
+        self._books: list[StorageRow] = []
+        self._signals: list[StorageRow] = []
+        self._bars: dict[BarKey, Bar] = {}          # (venue,symbol,bucket) → Bar
+        self._retry_batch: StorageBatch | None = None
         self._last_book_at: dict[str, float] = {}
         self.rows_written = 0
         self.bars_written = 0
@@ -92,6 +113,7 @@ class Writer:
         self.last_frame_at = 0.0
         self.upstream_ok = False
         self.db_errors = 0
+        self.dropped_rows = 0
         self.clock = ClockMonitor()
         from ..retention import DiskWatch
         self.disk = DiskWatch(cfg.sqlite_path)
@@ -115,8 +137,26 @@ class Writer:
         self.tracker = make_tracker()
         self._started = time.time()
 
+    def _pending_row_count(self) -> int:
+        retry_rows = (
+            self._retry_batch.rows_written + self._retry_batch.bars_written
+            if self._retry_batch is not None else 0
+        )
+        return retry_rows + len(self._trades) + len(self._books) + len(self._signals)
+
+    def _storage(self) -> Storage:
+        if self.storage is None:
+            raise RuntimeError("storage is not open")
+        return self.storage
+
+    def _remote_archive_required(self) -> bool:
+        return (
+            self.cfg.storage_profile.lower() == "production"
+            or self.cfg.retention_requires_archive
+        )
+
     # ── 수신 ──────────────────────────────────────────────────────────────
-    def _ingest(self, frame, source: str = "-") -> None:
+    def _ingest(self, frame: Frame, source: str = "-") -> None:
         self.frames_in += 1
         self.last_frame_at = time.time()
         self.upstream_ok = True
@@ -128,6 +168,12 @@ class Writer:
             self.registry.counter("gap_messages_total", lost)
             log.warning("시퀀스 갭 %d건 (%s seq=%d). 그 구간 데이터는 영구 유실",
                         lost, source, frame.seq)
+
+        if self._pending_row_count() >= self.cfg.writer_pending_max_rows:
+            self.dropped_rows += 1
+            self.registry.counter("rows_dropped_total")
+            log.warning("writer pending buffer full; dropped one inbound row")
+            return
 
         mt = frame.msg_type
         if mt == MSG_TRADE and len(frame.payload) >= Trade.SIZE:
@@ -167,6 +213,11 @@ class Writer:
             return self._flush_locked()
 
     def _flush_locked(self) -> tuple[int, int]:
+        if self._retry_batch is not None:
+            receipt = self._storage().write_batch(self._retry_batch)
+            self._retry_batch = None
+            return receipt.rows_written, receipt.bars_written
+
         trades, self._trades = self._trades, []
         books, self._books = self._books, []
         sigs, self._signals = self._signals, []
@@ -177,19 +228,22 @@ class Writer:
         done = [k for k in self._bars if k[2] < cutoff]
         bar_rows = []
         for k in done:
-            b = self._bars.pop(k)
+            b = self._bars[k]
             bar_rows.append((b.bucket_ns // 1000, b.venue, b.symbol, b.open, b.high,
                              b.low, b.close, b.volume, b.notional, b.vwap, b.tick_count))
 
-        n = 0
-        n += self.storage.insert_trades(trades)
-        n += self.storage.insert_book(books)
-        n += self.storage.insert_signals(sigs)
-        nb = self.storage.upsert_bars(bar_rows)
-        return n, nb
+        batch = make_storage_batch(trades=trades, books=books, signals=sigs, bars=bar_rows)
+        self._retry_batch = batch
+        receipt = self._storage().write_batch(batch)
+        self._retry_batch = None
+        for k in done:
+            current = self._bars.get(k)
+            if current is not None and current.bucket_ns // 1000 in {row[0] for row in bar_rows}:
+                self._bars.pop(k, None)
+        return receipt.rows_written, receipt.bars_written
 
     async def _flush(self) -> None:
-        if not (self._trades or self._books or self._signals or self._bars):
+        if not (self._retry_batch or self._trades or self._books or self._signals or self._bars):
             return
         try:
             n, nb = await asyncio.to_thread(self._flush_sync)
@@ -223,10 +277,10 @@ class Writer:
     def _close_storage(self) -> None:
         """진행 중인 flush 가 끝난 뒤에만 커넥션을 닫는다."""
         with self._db_lock:
-            self.storage.close()
+            self._storage().close()
 
     # ── 아카이브 ──────────────────────────────────────────────────────────
-    def _archive_once(self) -> dict:
+    def _archive_once(self) -> ArchiveRunResult:
         """아직 안 올린 날들을 내보내고, 목적지에서 다시 읽어 검증한다.
 
         블로킹이라 스레드에서 돈다. 읽기만 하므로 적재 락은 안 잡는다 —
@@ -240,8 +294,12 @@ class Writer:
         # 올린 뒤에야 book_top 첫 날을 시작하는데, 삭제 빗장은 "그 날의 모든
         # 테이블"을 요구하므로 그동안 빗장이 한 발짝도 못 올라간다.
         # 실측으로 그렇게 됐다 — trades 4일치가 올라갔는데 삭제 허용은 계속 0.
-        pend = {t: ar.pending_days(self.storage, out_dir, t,
-                                   lag_s=cfg.archive_lag_s)
+        remote_enabled = bool(cfg.archive_push_command and cfg.archive_fetch_command)
+        remote_dir = out_dir if remote_enabled else None
+        storage = self._storage()
+        pend = {t: ar.pending_days(storage, out_dir, t,
+                                   lag_s=cfg.archive_lag_s,
+                                   remote_receipt_dir=remote_dir)
                 for t in ar.ARCHIVE_TABLES}
         for day in sorted({d for v in pend.values() for d in v}):
             for table in ar.ARCHIVE_TABLES:
@@ -252,34 +310,43 @@ class Writer:
                 # 안 된다.** 지금 무엇을 하는 중인지 먼저 올린다.
                 self.archive_current = f"{table}/{day}"
                 try:
-                    man = ar.export_day(self.storage, table, day, out_dir)
+                    segment_rows = 0
+                    if remote_enabled:
+                        if not (cfg.archive_push_command and cfg.archive_fetch_command):
+                            failed.append(f"{table}/{day}(원격검증설정)")
+                            continue
+                        man, receipt = ar.archive_day_remote(
+                            storage, table, day, out_dir,
+                            cfg.archive_push_command, cfg.archive_fetch_command,
+                            receipt_dir=out_dir)
+                        if receipt.status != "verified":
+                            failed.append(f"{table}/{day}(원격검증)")
+                            continue
+                        segment_rows = receipt.local_rows
+                    else:
+                        man = ar.export_day(storage, table, day, out_dir)
+                        path = os.path.join(out_dir, ar._name(table, day))
+                        if not ar.verify_file(path, man):
+                            failed.append(f"{table}/{day}(검증)")
+                            continue
+                        if man.get("skipped"):
+                            continue
+                        segment_rows = man.rows
                 except Exception as e:                    # noqa: BLE001
-                    log.warning("[archive] %s %s 내보내기 실패: %s: %s",
+                    log.warning("[archive] %s %s 내보내기/검증 실패: %s: %s",
                                 table, day, type(e).__name__, e)
                     failed.append(f"{table}/{day}")
                     continue
-                path = os.path.join(out_dir, ar._name(table, day))
-                if cfg.archive_upload and not man.get("skipped"):
-                    if not ar.upload(path, path + ".json", cfg.archive_upload):
-                        failed.append(f"{table}/{day}(업로드)")
-                        continue
-                # 올린 뒤 **다시 읽어** 확인한다. 올렸다는 종료코드 0 은
-                # 올라갔다는 증거가 아니다 — 이 프로젝트에서 네 번 난 사고가
-                # 전부 "선언은 됐는데 실제로는 안 돌았다"였다.
-                if not ar.verify_file(path, man):
-                    failed.append(f"{table}/{day}(검증)")
-                    continue
-                if not man.get("skipped"):
-                    done.append(f"{table}/{day}")
-                    rows += man.rows
-                    # 조각이 끝날 때마다 올린다. 전부 끝난 뒤에 한꺼번에
-                    # 올리면 진행 중인 20분이 통째로 안 보인다.
-                    self.archived_days += 1
-                    self.archived_rows += man.rows
-                    self.registry.counter("rows_archived_total",
-                                          value=man.rows)
+                done.append(f"{table}/{day}")
+                rows += segment_rows
+                # 조각이 끝날 때마다 올린다. 전부 끝난 뒤에 한꺼번에
+                # 올리면 진행 중인 20분이 통째로 안 보인다.
+                self.archived_days += 1
+                self.archived_rows += segment_rows
+                self.registry.counter("rows_archived_total",
+                                      value=segment_rows)
         self.archive_current = None
-        return {"archived": done, "failed": failed, "rows": rows}
+        return ArchiveRunResult(done, failed, rows)
 
     def _archive_floor_us(self) -> int | None:
         """지워도 되는 상한. 아카이브를 안 쓰면 None(제한 없음).
@@ -290,14 +357,19 @@ class Writer:
         **목적지에 무엇이 검증돼 있는가**이고, 그게 이 값이다.
         """
         cfg = self.cfg
-        if not (cfg.archive_dir and cfg.retention_requires_archive):
+        if (cfg.retention_days > 0 and self._remote_archive_required()
+                and not (cfg.archive_dir and cfg.archive_push_command and cfg.archive_fetch_command)):
+            self.archive_floor_us = 0
+            return 0
+        if not (cfg.archive_dir and self._remote_archive_required()):
             self.archive_floor_us = None
             return None
-        from .. import archive as ar
-        self.archive_floor_us = ar.safe_delete_cutoff_us(cfg.archive_dir)
+        from ..retention import retention_cutoff
+        cutoff = retention_cutoff(self._storage(), cfg.archive_dir)
+        self.archive_floor_us = cutoff.cutoff_us if cutoff.allowed else 0
         return self.archive_floor_us
 
-    def _prune_locked(self, prune_fn) -> dict:
+    def _prune_locked(self, prune_fn) -> dict[str, int]:
         """락은 prune 이 **배치마다** 잡는다. 여기서 통째로 잡으면 안 된다.
 
         예전엔 이 함수가 락을 잡고 prune 을 통째로 돌렸다. 그러면 50,000행
@@ -307,7 +379,8 @@ class Writer:
         return prune_fn(self.storage, self.cfg.retention_days,
                         guard=self._db_lock,
                         budget_s=self.cfg.retention_budget_s,
-                        floor_us=self._archive_floor_us())
+                        floor_us=self._archive_floor_us(),
+                        remote_receipt_dir=self.cfg.archive_dir or None)
 
     async def _retention_loop(self, stop: asyncio.Event) -> None:
         """디스크를 재고, 보존 기간이 지난 원시 데이터를 지운다.
@@ -321,13 +394,16 @@ class Writer:
         while not stop.is_set():
             self.disk.sample()
             r = self.disk.report()
-            self.registry.gauge("db_bytes", r["db_bytes"])
-            self.registry.gauge("disk_free_bytes", r["disk_free_bytes"])
+            db_bytes = float(r["db_bytes"] or 0)
+            disk_free_bytes = float(r["disk_free_bytes"] or 0)
+            reclaimable_bytes = float(r["reclaimable_bytes"] or 0)
+            self.registry.gauge("db_bytes", db_bytes)
+            self.registry.gauge("disk_free_bytes", disk_free_bytes)
             # 증가율은 항상 낸다. 조건부로 내면 "안 늘고 있다"와 "계측이 안 된다"가
             # 구분되지 않고, 알람은 지표가 없는 동안 평가 자체가 안 된다.
             self.registry.gauge("db_growth_bytes_per_hour",
                                 self.disk.growth_bytes_per_hour())
-            self.registry.gauge("db_reclaimable_bytes", r["reclaimable_bytes"])
+            self.registry.gauge("db_reclaimable_bytes", reclaimable_bytes)
             # 보존이 꺼져 있어도 0 으로 낸다. 조건부로 내면 지표가 없는 동안
             # 알람 평가 자체가 안 돈다 — 바로 위 growth 주석과 같은 이유다.
             # make verify-alerts 가 이걸 잡아 줬다.
@@ -336,13 +412,14 @@ class Writer:
             self.registry.gauge("archive_enabled", 1 if cfg.archive_dir else 0)
             self.registry.gauge("archive_failed_segments",
                                 len(self.archive_failures))
-            if r["hours_until_full"] is not None:
-                self.registry.gauge("disk_hours_until_full", r["hours_until_full"])
-                if r["hours_until_full"] < cfg.disk_warn_hours:
+            hours_until_full = r["hours_until_full"]
+            if hours_until_full is not None:
+                self.registry.gauge("disk_hours_until_full", hours_until_full)
+                if hours_until_full < cfg.disk_warn_hours:
                     log.warning("디스크가 약 %.1f시간 뒤에 찬다 "
                                 "(여유 %.1fGB · 증가 %.0fMB/h). 보존 일수를 줄이거나 "
                                 "MDFEED_RETENTION_DAYS 를 켜라",
-                                r["hours_until_full"], r["disk_free_bytes"] / 1e9,
+                                hours_until_full, disk_free_bytes / 1e9,
                                 r["growth_mb_per_hour"])
 
             # 지우기 전에 옮긴다. 순서가 뒤바뀌면 되돌릴 수 없다.
@@ -353,16 +430,16 @@ class Writer:
                 # 캐시가 있어 이 계산은 싸다.
                 await asyncio.to_thread(self._archive_floor_us)
                 r2 = await asyncio.to_thread(self._archive_once)
-                if r2["archived"]:
+                if r2.archived:
                     # 집계는 _archive_once 가 조각마다 이미 올렸다.
                     log.info("[archive] %d개 조각 · %d행 완료",
-                             len(r2["archived"]), r2["rows"])
-                self.archive_failures = r2["failed"]
+                             len(r2.archived), r2.rows)
+                self.archive_failures = r2.failed
                 self.registry.gauge("archive_failed_segments",
-                                    len(r2["failed"]))
-                if r2["failed"]:
+                                    len(r2.failed))
+                if r2.failed:
                     log.warning("[archive] 실패 %d건: %s",
-                                len(r2["failed"]), ", ".join(r2["failed"][:5]))
+                                len(r2.failed), ", ".join(r2.failed[:5]))
 
             # 아카이브가 새로 만든 조각을 반영해 다시 낸다. 보존이 꺼져
             # 있어도 구해 둔다 — 켜기 전에 "지금 켜면 어디까지 지워지나"를
@@ -391,15 +468,18 @@ class Writer:
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=wait)
 
-    def health(self) -> dict:
+    def health(self) -> dict[str, object]:
         age = time.time() - self.last_frame_at if self.last_frame_at else None
+        pending_rows = self._pending_row_count()
+        pending_backpressure = pending_rows >= self.cfg.writer_pending_max_rows
         return {
             # 태스크별 상태. 합쳐서 세면 하나가 죽어도 안 보인다 —
             # 그게 8/28·8/31·9/1·9/2 사고의 공통점이었다.
             **self.sup.report(),
             "service": SERVICE,
             "healthy": (self.upstream_ok and (age is None or age < 30.0)
-                        and self.db_errors < 10),
+                        and self.db_errors < 10 and self.dropped_rows == 0
+                        and not pending_backpressure),
             "uptime_s": round(time.time() - self._started, 1),
             "backend": self.storage.kind if self.storage else None,
             "upstream_connected": self.upstream_ok,
@@ -407,7 +487,10 @@ class Writer:
             "frames_in": self.frames_in,
             "rows_written": self.rows_written,
             "bars_written": self.bars_written,
-            "pending_rows": len(self._trades) + len(self._books),
+            "pending_rows": pending_rows,
+            "pending_max_rows": self.cfg.writer_pending_max_rows,
+            "pending_backpressure": pending_backpressure,
+            "dropped_rows": self.dropped_rows,
             "open_bars": len(self._bars),
             "db_errors": self.db_errors,
             "storage": {**self.disk.report(),
@@ -435,7 +518,7 @@ class Writer:
 
         http = HTTPServer(cfg.http_host, cfg.writer_admin_port, SERVICE, self.registry)
         health_routes(http, self.health, tracker=self.tracker)
-        http.route("GET", "/counts", lambda r: Response.json(self.storage.counts()))
+        http.route("GET", "/counts", lambda r: Response.json(self._storage().counts()))
         await http.start()
 
         sources = list(cfg.bus_paths or [cfg.bus_path]) + [cfg.signal_bus_path]
@@ -466,7 +549,7 @@ class Writer:
             if rows:
                 def _final():
                     with self._db_lock:
-                        return self.storage.upsert_bars(rows)
+                        return self._storage().upsert_bars(rows)
                 await asyncio.to_thread(_final)
                 log.info("진행 중이던 봉 %d개 확정", len(rows))
         except Exception as e:                      # noqa: BLE001

@@ -31,7 +31,7 @@ from ..adapters.base import CLOCK
 from ..bus import UDSPublisher
 from ..httpd import HTTPServer, Response, health_routes
 from ..metrics import Registry
-from ..models import (MSG_BOOK, MSG_TRADE, BookTop, Trade, now_ns)
+from ..models import MSG_BOOK, MSG_TRADE, BookTop, Trade, now_ns
 from ..protocol import encode, heartbeat
 from ..ringbuffer import RingBuffer
 
@@ -343,7 +343,19 @@ class FeedDaemon:
 
 def main() -> int:
     from .. import config, runtime
+    from ..storage.db import (
+        StorageConfigurationError,
+        StorageUnavailableError,
+        open_storage,
+    )
     cfg = config.load()
+    try:
+        storage = open_storage(cfg)
+    except (StorageConfigurationError, StorageUnavailableError) as exc:
+        import sys
+        print(f"STORAGE_PREFLIGHT_FAILED: {exc}", file=sys.stderr)
+        return 2
+    storage.close()
     daemon = FeedDaemon(cfg)
     return runtime.run(SERVICE, daemon.run, cfg)
 

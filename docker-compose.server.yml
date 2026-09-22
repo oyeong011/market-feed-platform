@@ -1,0 +1,23 @@
+name: mdfeed
+
+services:
+  postgres:
+    restart: unless-stopped
+
+  feedd:
+    restart: unless-stopped
+
+  tcp-gateway:
+    restart: unless-stopped
+
+  ws-gateway:
+    restart: unless-stopped
+
+  writer:
+    restart: unless-stopped
+
+  rest-api:
+    restart: unless-stopped
+
+  strategy:
+    restart: unless-stopped

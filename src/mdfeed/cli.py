@@ -62,6 +62,11 @@ def cmd_up(args) -> int:
     env.setdefault("PYTHONPATH", os.path.join(os.getcwd(), "src"))
     env.setdefault("PYTHONUNBUFFERED", "1")
 
+    preflight_error = _storage_preflight()
+    if preflight_error:
+        print(json.dumps({"error": "STORAGE_PREFLIGHT_FAILED", "detail": preflight_error}), file=sys.stderr)
+        return 2
+
     procs: dict[str, subprocess.Popen] = {}
     shard_env: dict[str, dict] = {}
     restarts: dict[str, int] = {}
@@ -184,6 +189,22 @@ def cmd_status(_args) -> int:
     return 1 if bad else 0
 
 
+def _storage_preflight() -> str | None:
+    from .config import Config
+    from .storage.db import (
+        StorageConfigurationError,
+        StorageUnavailableError,
+        open_storage,
+    )
+
+    try:
+        store = open_storage(Config())
+    except (StorageConfigurationError, StorageUnavailableError) as exc:
+        return str(exc)
+    store.close()
+    return None
+
+
 def cmd_health(args) -> int:
     for name, _mod, port in SERVICES:
         if args.service and name != args.service:
@@ -249,8 +270,6 @@ def cmd_retention(args) -> int:
 
 def cmd_archive(args) -> int:
     """원시 데이터를 바깥으로 내보낸다. 지우기 전에 옮기는 쪽이다."""
-    import datetime as dt
-
     from . import archive as ar
     from .config import Config
     from .storage.db import open_storage
@@ -265,7 +284,9 @@ def cmd_archive(args) -> int:
     store = open_storage(cfg)
 
     print(f"목적지: {out_dir}")
-    todo = {t: ar.pending_days(store, out_dir, t, lag_s=cfg.archive_lag_s)
+    remote_dir = out_dir if cfg.archive_push_command and cfg.archive_fetch_command else None
+    todo = {t: ar.pending_days(store, out_dir, t, lag_s=cfg.archive_lag_s,
+                               remote_receipt_dir=remote_dir)
             for t in ar.ARCHIVE_TABLES}
     total = sum(len(v) for v in todo.values())
     if not total:
@@ -282,14 +303,21 @@ def cmd_archive(args) -> int:
     made = rows = 0
     for table, days in todo.items():
         for day in days[:args.limit] if args.limit else days:
-            man = ar.export_day(store, table, day, out_dir)
-            path = os.path.join(out_dir, ar._name(table, day))
-            mark = "건너뜀" if man.get("skipped") else "완료"
-            if cfg.archive_upload and not man.get("skipped"):
-                mark = "업로드" if ar.upload(path, path + ".json",
-                                           cfg.archive_upload) else "업로드실패"
-            # 올린 뒤 다시 읽어 확인한다. 종료코드 0 은 증거가 아니다.
-            ok = ar.verify_file(path, man)
+            if cfg.archive_push_command and cfg.archive_fetch_command:
+                man, _receipt = ar.archive_day_remote(
+                    store, table, day, out_dir,
+                    cfg.archive_push_command, cfg.archive_fetch_command,
+                    receipt_dir=out_dir)
+                mark = "원격검증"
+                ok = True
+            else:
+                man = ar.export_day(store, table, day, out_dir)
+                path = os.path.join(out_dir, ar._name(table, day))
+                mark = "건너뜀" if man.get("skipped") else "완료"
+                if cfg.archive_upload and not man.get("skipped"):
+                    mark = "업로드" if ar.upload(path, path + ".json",
+                                               cfg.archive_upload) else "업로드실패"
+                ok = ar.verify_file(path, man)
             print(f"  {table} {day}  {man.rows:>10,}행 "
                   f"{man.get('bytes', 0) / 1e6:>7.1f}MB  {mark}  "
                   f"검증 {'OK' if ok else '실패'}")
@@ -300,6 +328,73 @@ def cmd_archive(args) -> int:
         print(f"\n{made}개 조각 · {rows:,}행")
     _print_floor(ar, out_dir)
     return 0
+
+
+def cmd_gap(args) -> int:
+    from . import gaps
+
+    storage = None
+    if args.state_file:
+        repo = gaps.open_repository(args.state_file)
+    else:
+        from .config import Config
+        from .storage.db import open_storage
+        storage = open_storage(Config())
+        repo = gaps.open_repository(storage=storage)
+    record = repo.get(args.id) if args.id else None
+    try:
+        if args.gap_cmd == "status":
+            if args.id and record is None:
+                print(json.dumps({"error": "GAP_NOT_FOUND", "id": args.id}, ensure_ascii=False))
+                return 2
+            records = [record] if record else repo.list()
+            payload = gaps.summarize(records)
+            print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+            return 1 if payload["open_count"] else 0
+        if record is None:
+            print(json.dumps({"error": "GAP_NOT_FOUND", "id": args.id}, ensure_ascii=False))
+            return 2
+        if args.gap_cmd == "close":
+            updated = gaps.close_gap(record, gaps.parse_utc(args.ended_at))
+            repo.save(updated)
+            print(json.dumps(updated.to_public_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+            return 1
+        if args.gap_cmd == "verify-recovery":
+            if args.receipt:
+                raise gaps.GapTransitionError(
+                    gaps.GAP_RECOVERY_EVIDENCE_INCOMPLETE,
+                    "hand-authored recovery receipt JSON is not trusted",
+                )
+            if not args.receipt_id or storage is None:
+                raise gaps.GapTransitionError(
+                    gaps.GAP_RECOVERY_EVIDENCE_INCOMPLETE,
+                    "stored receipt id is required",
+                )
+            from .gap_repository import StorageTrustedReceiptStore
+            updated = gaps.mark_recovered_from_store(
+                record, args.receipt_id, StorageTrustedReceiptStore(storage))
+            repo.save(updated)
+            print(json.dumps(updated.to_public_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+            return 0
+    except gaps.GapTransitionError as exc:
+        print(json.dumps({"error": exc.code, "detail": exc.detail}, ensure_ascii=False))
+        return 2
+    return 2
+
+
+def cmd_migrate(args) -> int:
+    from .migration.__main__ import main as migration_main
+    old_argv = sys.argv
+    sys.argv = ["python -m mdfeed.migration", *args.forwarded]
+    try:
+        return migration_main()
+    finally:
+        sys.argv = old_argv
+
+
+def cmd_backup(args) -> int:
+    from .backup import main as backup_main
+    return backup_main(args.forwarded)
 
 
 def _print_floor(ar, out_dir: str) -> None:
@@ -352,6 +447,40 @@ def build_parser() -> argparse.ArgumentParser:
     rt.add_argument("--days", type=float, nargs="*", default=[1, 3, 7, 14],
                     help="비교할 보존 일수 (기본 1 3 7 14)")
     rt.set_defaults(fn=cmd_retention)
+
+    gp = sub.add_parser("gap", help="마켓데이터 공백 상태와 복구 증거를 확인")
+    gap_sub = gp.add_subparsers(dest="gap_cmd", required=True)
+    gs = gap_sub.add_parser("status", help="공백 상태 JSON 출력")
+    gs.add_argument("--id")
+    gs.add_argument("--state-file")
+    gs.set_defaults(fn=cmd_gap)
+    gc = gap_sub.add_parser("close", help="공백 종료 시각만 기록 (복구 아님)")
+    gc.add_argument("--id", required=True)
+    gc.add_argument("--ended-at", required=True)
+    gc.add_argument("--state-file")
+    gc.set_defaults(fn=cmd_gap)
+    gv = gap_sub.add_parser("verify-recovery", help="저장된 재조정 증거로만 복구 전환")
+    gv.add_argument("--id", required=True)
+    gv.add_argument("--receipt-id")
+    gv.add_argument("--receipt")
+    gv.add_argument("--state-file")
+    gv.set_defaults(fn=cmd_gap)
+
+    mg = sub.add_parser(
+        "migrate",
+        help="SQLite 원본을 PostgreSQL 로 이전",
+        epilog="subcommands: plan, run, status, verify; options: --source, --target-dsn-env, --run-id",
+    )
+    mg.add_argument("forwarded", nargs=argparse.REMAINDER, metavar="COMMAND_AND_ARGS")
+    mg.set_defaults(fn=cmd_migrate)
+
+    bu = sub.add_parser(
+        "backup",
+        help="PostgreSQL 백업과 원격 복원 검증",
+        epilog="subcommands: create, verify-remote, restore-drill, status; use --receipt-dir for audit receipts",
+    )
+    bu.add_argument("forwarded", nargs=argparse.REMAINDER, metavar="COMMAND_AND_ARGS")
+    bu.set_defaults(fn=cmd_backup)
 
     rc = sub.add_parser("record", help="피드를 파일로 녹화 (리플레이용)")
     rc.add_argument("-o", "--output", default="data/replay/sample.mdf")

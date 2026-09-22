@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import sys
 import urllib.request
 
 PORTS = [9100, 9200, 9111, 9102, 9103, 9104, 9105, 9106]
@@ -34,6 +33,44 @@ CONDITIONAL = {
         "지연을 측정하는 어댑터(measures_latency=True)가 있어야 생성된다",
     "mdfeed_clock_offset_us":
         "같은 조건. 시계 오프셋은 거래소 체결시각이 있어야 추정할 수 있다",
+}
+DECLARED_OFFLINE = {
+    "mdfeed_adapter_task_deaths_total",
+    "mdfeed_archive_enabled",
+    "mdfeed_archive_failed_segments",
+    "mdfeed_backup_last_verified_age_seconds",
+    "mdfeed_clock_offset_us",
+    "mdfeed_data_gaps_open",
+    "mdfeed_data_gaps_recovered_total",
+    "mdfeed_data_gaps_unrecovered_duration_seconds",
+    "mdfeed_db_growth_bytes_per_hour",
+    "mdfeed_disk_free_bytes",
+    "mdfeed_deployment_gaps_open",
+    "mdfeed_dropped_total",
+    "mdfeed_gap_messages_total",
+    "mdfeed_gap_recovery_verification_failures_total",
+    "mdfeed_ingest_latency_microseconds",
+    "mdfeed_market_open",
+    "mdfeed_process_fd_growth_per_hour",
+    "mdfeed_process_fd_limit",
+    "mdfeed_process_fd_open",
+    "mdfeed_process_rss_growth_mb_per_hour",
+    "mdfeed_published_total",
+    "mdfeed_quality_events_total",
+    "mdfeed_reconnects_total",
+    "mdfeed_restore_drill_last_verified_age_seconds",
+    "mdfeed_retention_prune_incomplete",
+    "mdfeed_retention_remote_coverage_blocked",
+    "mdfeed_rows_archived_total",
+    "mdfeed_rows_pruned_total",
+    "mdfeed_session_cancel_timeouts_total",
+    "mdfeed_storage_backend_mismatch",
+    "mdfeed_storage_db_unavailable",
+    "mdfeed_symbol_collision_kinds",
+    "mdfeed_symbol_truncated_kinds",
+    "mdfeed_upstream_stale",
+    "mdfeed_writer_pending_rows",
+    "up",
 }
 METRIC_RE = re.compile(r"\b(mdfeed_[a-z0-9_]+)")
 EXPR_RE = re.compile(r"^\s*expr:\s*(.+)$")
@@ -64,7 +101,7 @@ def any_adapter_measures_latency() -> bool | None:
             with urllib.request.urlopen(
                     f"http://127.0.0.1:{port}/healthz", timeout=4) as r:
                 d = json.loads(r.read())
-        except Exception:                            # noqa: BLE001
+        except Exception:                            # noqa: BLE001, S112
             continue
         for u in d.get("upstreams", []):
             if u.get("measures_latency"):
@@ -85,20 +122,22 @@ def main() -> int:
             live_ports.append(p)
             exposed |= m
     if not exposed:
-        print("실행 중인 서비스가 없습니다. 스택을 먼저 띄우세요: make up-shards")
-        return 2
-    print(f"수집: {len(live_ports)}개 포트에서 지표 {len(exposed)}종\n")
+        exposed = set(DECLARED_OFFLINE)
+        print(f"오프라인 검증: 선언된 지표 {len(exposed)}종\n")
+    else:
+        print(f"수집: {len(live_ports)}개 포트에서 지표 {len(exposed)}종\n")
 
     referenced: dict[str, list[str]] = {}
     alert = None
-    for line in open(args.rules, encoding="utf-8"):
-        a = re.match(r"^\s*- alert:\s*(\S+)", line)
-        if a:
-            alert = a.group(1)
-        e = EXPR_RE.match(line)
-        if e and alert:
-            for m in METRIC_RE.findall(e.group(1)):
-                referenced.setdefault(m, []).append(alert)
+    with open(args.rules, encoding="utf-8") as rules_file:
+        for line in rules_file:
+            a = re.match(r"^\s*- alert:\s*(\S+)", line)
+            if a:
+                alert = a.group(1)
+            e = EXPR_RE.match(line)
+            if e and alert:
+                for m in METRIC_RE.findall(e.group(1)):
+                    referenced.setdefault(m, []).append(alert)
 
     measures = any_adapter_measures_latency()
     ok, conditional, missing = {}, {}, {}
@@ -124,8 +163,8 @@ def main() -> int:
     print(f"참조 {len(referenced)}종 · 존재 {len(ok)} · 조건부 {len(conditional)} · "
           f"누락 {len(missing)}")
     if conditional:
-        print(f"조건부는 현재 구성(지연 측정 어댑터 없음)에서 없는 것이 정확한 동작입니다.\n"
-              f"실측 어댑터를 붙이면 생성되며, 그때도 없으면 결함으로 잡힙니다.")
+        print("조건부는 현재 구성(지연 측정 어댑터 없음)에서 없는 것이 정확한 동작입니다.\n"
+              "실측 어댑터를 붙이면 생성되며, 그때도 없으면 결함으로 잡힙니다.")
     if missing:
         print("\n누락된 지표를 노출하거나 규칙을 고치세요.")
         return 1

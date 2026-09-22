@@ -1,0 +1,30 @@
+[Unit]
+Description=MDFeed private preflight metrics monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mdfeed
+Group=mdfeed
+WorkingDirectory=/opt/mdfeed
+Environment=PYTHONPATH=/opt/mdfeed/src
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/mdfeed/mdfeed.env
+ExecStart=/usr/bin/python3 ops/preflight_monitor.py --config /etc/mdfeed/mdfeed.env --host 127.0.0.1 --port 9120
+Restart=on-failure
+RestartSec=10
+StartLimitIntervalSec=60
+StartLimitBurst=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mdfeed-preflight-monitor
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mdfeed /var/log/mdfeed
+ReadOnlyPaths=/etc/mdfeed
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true

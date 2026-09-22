@@ -50,9 +50,14 @@ import io
 import json
 import logging
 import os
+import pathlib
+import re
 import shlex
+import shutil
 import subprocess
+import tempfile
 import time
+from dataclasses import dataclass
 
 log = logging.getLogger("mdfeed.archive")
 
@@ -84,6 +89,70 @@ DAY_US = 86_400 * 1_000_000
 # 한 번에 DB 에서 꺼내는 행 수. 하루치를 통째로 메모리에 올리면
 # 950만 행 × 9열이라 GB 단위가 된다. 스트리밍으로 흘린다.
 FETCH_CHUNK = 50_000
+REMOTE_RECEIPT_SCHEMA_VERSION = 1
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteArtifactReceipt:
+    schema_version: int
+    object_id: str
+    artifact: str
+    manifest: str
+    table: str | None
+    day: str | None
+    local_sha256: str
+    local_bytes: int
+    local_rows: int
+    remote_fetch_sha256: str
+    remote_fetch_bytes: int
+    remote_fetch_rows: int
+    manifest_sha256: str
+    remote_manifest_sha256: str
+    source_table: str | None
+    source_day: str | None
+    source_from_us: int | None
+    source_to_us: int | None
+    source_rows: int | None
+    source_content_sha256: str | None
+    verified_at: str
+    transport: str
+    status: str
+
+    def to_json(self) -> dict[str, str | int | None]:
+        return {
+            "schema_version": self.schema_version,
+            "object_id": self.object_id,
+            "artifact": self.artifact,
+            "manifest": self.manifest,
+            "table": self.table,
+            "day": self.day,
+            "local_sha256": self.local_sha256,
+            "local_bytes": self.local_bytes,
+            "local_rows": self.local_rows,
+            "remote_fetch_sha256": self.remote_fetch_sha256,
+            "remote_fetch_bytes": self.remote_fetch_bytes,
+            "remote_fetch_rows": self.remote_fetch_rows,
+            "manifest_sha256": self.manifest_sha256,
+            "remote_manifest_sha256": self.remote_manifest_sha256,
+            "source_table": self.source_table,
+            "source_day": self.source_day,
+            "source_from_us": self.source_from_us,
+            "source_to_us": self.source_to_us,
+            "source_rows": self.source_rows,
+            "source_content_sha256": self.source_content_sha256,
+            "verified_at": self.verified_at,
+            "transport": self.transport,
+            "status": self.status,
+        }
+
+
+class RemoteArtifactError(Exception):
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+    def __str__(self) -> str:
+        return self.reason
 
 
 def day_bounds_us(day: dt.date) -> tuple[int, int]:
@@ -97,7 +166,7 @@ def _name(table: str, day: dt.date) -> str:
     return f"{table}-{day.isoformat()}.csv.gz"
 
 
-class Manifest(dict):
+class Manifest(dict[str, object]):
     """아카이브 한 조각의 검증 근거. 파일 옆에 .json 으로 같이 둔다.
 
     행수만 적으면 내용이 바뀐 걸 못 잡고, 해시만 적으면 몇 행인지 모른다.
@@ -106,11 +175,72 @@ class Manifest(dict):
 
     @property
     def rows(self) -> int:
-        return int(self.get("rows", 0))
+        value = self.get("rows", 0)
+        return int(value) if isinstance(value, (int, float, str)) else 0
+
+    @property
+    def bytes(self) -> int:
+        value = self.get("bytes", 0)
+        return int(value) if isinstance(value, (int, float, str)) else 0
+
+    @property
+    def export_s(self) -> float:
+        value = self.get("export_s", 0.0)
+        return float(value) if isinstance(value, (int, float, str)) else 0.0
 
     @property
     def sha256(self) -> str:
         return str(self.get("sha256", ""))
+
+
+def _query_bounds(storage, lo: int, hi: int) -> tuple[object, object]:
+    if getattr(storage, "kind", "") == "postgres":
+        from mdfeed.migration.time import epoch_us_to_datetime
+
+        return epoch_us_to_datetime(lo), epoch_us_to_datetime(hi)
+    return lo, hi
+
+
+def _version_paths(out_dir: str, man: Manifest) -> tuple[str, str]:
+    object_id = object_id_for_manifest(man)
+    path = os.path.join(out_dir, object_id)
+    return path, path + ".json"
+
+
+def _restore_versioned_archive(out_dir: str, table: str, day: dt.date,
+                               path: str, mpath: str) -> Manifest | None:
+    root = pathlib.Path(out_dir) / "archive" / table / day.isoformat()
+    try:
+        manifests = sorted(root.glob("*.csv.gz.json"))
+    except OSError:
+        return None
+    candidates: list[tuple[int, pathlib.Path, Manifest]] = []
+    for manifest_path in manifests:
+        artifact_path = pathlib.Path(str(manifest_path)[:-5])
+        man = read_manifest(str(manifest_path))
+        if man is None or not verify_file(str(artifact_path), man, use_cache=False):
+            continue
+        candidates.append((man.rows, manifest_path, man))
+    if not candidates:
+        return None
+    _rows, manifest_path, man = max(candidates, key=lambda item: item[0])
+    artifact_path = pathlib.Path(str(manifest_path)[:-5])
+    shutil.copy2(artifact_path, path)
+    shutil.copy2(manifest_path, mpath)
+    restored = read_manifest(mpath)
+    if restored is None or not verify_file(path, restored, use_cache=False):
+        return None
+    restored["skipped"] = True
+    return restored
+
+
+def _preserve_versioned_archive(out_dir: str, path: str, mpath: str, man: Manifest) -> None:
+    version_path, version_manifest = _version_paths(out_dir, man)
+    os.makedirs(os.path.dirname(version_path), exist_ok=True)
+    if not os.path.exists(version_path):
+        shutil.copy2(path, version_path)
+    if not os.path.exists(version_manifest):
+        shutil.copy2(mpath, version_manifest)
 
 
 def export_day(storage, table: str, day: dt.date, out_dir: str) -> Manifest:
@@ -131,14 +261,20 @@ def export_day(storage, table: str, day: dt.date, out_dir: str) -> Manifest:
 
     existing = read_manifest(mpath)
     if existing and verify_file(path, existing):
+        _preserve_versioned_archive(out_dir, path, mpath, existing)
         log.info("[archive] %s 이미 있고 검증됨 — 건너뛴다", os.path.basename(path))
         existing["skipped"] = True
         return existing
+    restored = _restore_versioned_archive(out_dir, table, day, path, mpath)
+    if restored is not None:
+        log.info("[archive] %s 버전 보관본 복구 — 건너뛴다", os.path.basename(path))
+        return restored
 
     lo, hi = day_bounds_us(day)
     ph = getattr(storage, "placeholder", "?")
+    order_cols = ", ".join(cols)
     sql = (f"SELECT {', '.join(cols)} FROM {table} "
-           f"WHERE ts >= {ph} AND ts < {ph} ORDER BY ts")
+           f"WHERE ts >= {ph} AND ts < {ph} ORDER BY {order_cols}")
 
     # 임시 이름으로 쓰고 다 끝난 뒤에 옮긴다. 도중에 죽으면 반쪽 파일이
     # 정상 이름으로 남고, 다음 실행이 그걸 완성본으로 착각한다.
@@ -153,6 +289,7 @@ def export_day(storage, table: str, day: dt.date, out_dir: str) -> Manifest:
     rows = 0
     started = time.time()
     digest = hashlib.sha256()
+    source_digest = hashlib.sha256()
     # mtime=0 으로 고정한다. 같은 입력이 같은 바이트를 내야 해시가
     # 검증 수단이 된다 — gzip 은 기본으로 현재 시각을 헤더에 넣는다.
     with open(tmp, "wb") as fh:
@@ -161,18 +298,23 @@ def export_day(storage, table: str, day: dt.date, out_dir: str) -> Manifest:
             buf = io.StringIO()
             w = csv.writer(buf, lineterminator="\n")
             w.writerow(cols)                       # 헤더는 행수에서 뺀다
-            for chunk in _iter_rows(storage, sql, (lo, hi)):
+            for chunk in _iter_rows(storage, sql, _query_bounds(storage, lo, hi)):
                 w.writerows(chunk)
                 rows += len(chunk)
                 data = buf.getvalue().encode()
+                source_digest.update(data)
                 gz.write(data)
                 buf.seek(0)
                 buf.truncate(0)
-            gz.write(buf.getvalue().encode())
+            tail = buf.getvalue().encode()
+            source_digest.update(tail)
+            gz.write(tail)
         finally:
             gz.close()
     with open(tmp, "rb") as fh:
         for block in iter(lambda: fh.read(1 << 20), b""):
+            if not isinstance(block, bytes):
+                raise TypeError("archive digest expected bytes")
             digest.update(block)
     os.replace(tmp, path)
 
@@ -183,16 +325,21 @@ def export_day(storage, table: str, day: dt.date, out_dir: str) -> Manifest:
         "rows": rows,
         "ts_from_us": lo,
         "ts_to_us": hi,
+        "source_table": table,
+        "source_day": day.isoformat(),
+        "source_from_us": lo,
+        "source_to_us": hi,
+        "source_rows": rows,
+        "source_content_sha256": source_digest.hexdigest(),
         "bytes": os.path.getsize(path),
         "sha256": digest.hexdigest(),
-        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "export_s": round(time.time() - started, 1),
         "format": "csv.gz (헤더 1줄 포함, UTF-8, ts 오름차순)",
     })
     with open(mpath, "w", encoding="utf-8") as fh:
         json.dump(man, fh, ensure_ascii=False, indent=2)
+    _preserve_versioned_archive(out_dir, path, mpath, man)
     log.info("[archive] %s %d행 %.1fMB (%.1fs)", os.path.basename(path),
-             rows, man["bytes"] / 1e6, man["export_s"])
+             rows, man.bytes / 1e6, round(time.time() - started, 1))
     return man
 
 
@@ -257,6 +404,8 @@ def _verify_file_uncached(path: str, man: Manifest) -> bool:
         rows = 0
         with open(path, "rb") as fh:
             for block in iter(lambda: fh.read(1 << 20), b""):
+                if not isinstance(block, bytes):
+                    raise TypeError("archive digest expected bytes")
                 digest.update(block)
         if digest.hexdigest() != man.sha256:
             log.warning("[archive] %s 해시 불일치", os.path.basename(path))
@@ -277,6 +426,214 @@ def _verify_file_uncached(path: str, man: Manifest) -> bool:
         return False
 
 
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _redact(text: str) -> str:
+    redacted = re.sub(r"(?i)(password|token|secret|key)=\S+", r"\1=<redacted>", text)
+    redacted = re.sub(r"(?i)(--(?:password|token|secret|key))\s+\S+", r"\1 <redacted>", redacted)
+    return redacted[:400]
+
+
+def _transport_id(command: str) -> str:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return "invalid"
+    if not parts:
+        return "empty"
+    return pathlib.Path(parts[0]).name
+
+
+def _validate_object_id(object_id: str) -> None:
+    if not object_id or object_id.startswith("/") or ".." in pathlib.PurePosixPath(object_id).parts:
+        raise RemoteArtifactError("remote object id must be a relative immutable name")
+
+
+def _run_transfer(command: str, *, source: str | None = None,
+                  object_id: str, destination: str | None = None,
+                  timeout_s: float = 1800.0) -> None:
+    if not command.strip():
+        raise RemoteArtifactError("remote transfer command is missing")
+    _validate_object_id(object_id)
+    required = {"{object}"}
+    if source is not None:
+        required.add("{source}")
+    if destination is not None:
+        required.add("{destination}")
+    missing = [placeholder for placeholder in sorted(required) if placeholder not in command]
+    if missing:
+        raise RemoteArtifactError(f"remote command missing placeholders: {', '.join(missing)}")
+    if "{file}" in command:
+        raise RemoteArtifactError("remote command must use {source}, {object}, and {destination}")
+    try:
+        parts = shlex.split(command)
+    except ValueError as exc:
+        raise RemoteArtifactError(f"remote command parse failed: {_redact(str(exc))}") from exc
+    values = {
+        "{source}": source or "",
+        "{object}": object_id,
+        "{destination}": destination or "",
+    }
+    argv = [part.replace("{source}", values["{source}"])
+            .replace("{object}", values["{object}"])
+            .replace("{destination}", values["{destination}"])
+            for part in parts]
+    try:
+        result = subprocess.run(argv, capture_output=True, timeout=timeout_s,
+                                check=False)
+    except OSError as exc:
+        raise RemoteArtifactError(f"remote transfer failed: {type(exc).__name__}: {_redact(str(exc))}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RemoteArtifactError(f"remote transfer timed out after {timeout_s:g}s: {_redact(str(exc))}") from exc
+    if result.returncode != 0:
+        stderr = result.stderr.decode(errors="replace")
+        raise RemoteArtifactError(
+            f"remote transfer exited {result.returncode}: {_redact(stderr)}")
+
+
+def _write_receipt(receipt: RemoteArtifactReceipt, receipt_dir: str) -> None:
+    os.makedirs(receipt_dir, exist_ok=True)
+    safe_name = receipt.object_id.replace("/", "_") + ".json"
+    path = os.path.join(receipt_dir, safe_name)
+    fd, tmp = tempfile.mkstemp(prefix=safe_name, suffix=".partial", dir=receipt_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(receipt.to_json(), fh, ensure_ascii=False, sort_keys=True, indent=2)
+            fh.write("\n")
+        os.replace(tmp, path)
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+
+
+def _manifest_int(man: Manifest, key: str) -> int | None:
+    value = man.get(key)
+    return value if isinstance(value, int) else None
+
+
+def verify_remote_roundtrip(
+    path: str,
+    mpath: str,
+    object_id: str,
+    push_command: str,
+    fetch_command: str,
+    receipt_dir: str,
+    *,
+    table: str | None = None,
+    day: dt.date | None = None,
+    timeout_s: float = 1800.0,
+    push_first: bool = True,
+) -> RemoteArtifactReceipt:
+    man = read_manifest(mpath)
+    if man is None:
+        raise RemoteArtifactError("local manifest is missing or invalid")
+    if not verify_file(path, man, use_cache=False):
+        raise RemoteArtifactError("local artifact does not match its manifest")
+    manifest_sha = _sha256_file(mpath)
+    manifest_object_id = f"{object_id}.json"
+    if push_first:
+        _run_transfer(push_command, source=path, object_id=object_id, timeout_s=timeout_s)
+        _run_transfer(push_command, source=mpath, object_id=manifest_object_id, timeout_s=timeout_s)
+    with tempfile.TemporaryDirectory(prefix="mdfeed-remote-fetch-") as tmpdir:
+        fetched_artifact = os.path.join(tmpdir, pathlib.Path(path).name)
+        fetched_manifest = fetched_artifact + ".json"
+        _run_transfer(
+            fetch_command,
+            object_id=object_id,
+            destination=fetched_artifact,
+            timeout_s=timeout_s,
+        )
+        _run_transfer(
+            fetch_command,
+            object_id=manifest_object_id,
+            destination=fetched_manifest,
+            timeout_s=timeout_s,
+        )
+        fetched_manifest_sha = _sha256_file(fetched_manifest)
+        if fetched_manifest_sha != manifest_sha:
+            raise RemoteArtifactError("fetched manifest digest does not match local manifest")
+        fetched_man = read_manifest(fetched_manifest)
+        if fetched_man is None or not verify_file(fetched_artifact, fetched_man, use_cache=False):
+            raise RemoteArtifactError("fetched artifact does not match fetched manifest")
+        if (fetched_man.sha256 != man.sha256 or fetched_man.rows != man.rows
+                or fetched_man.get("bytes") != man.get("bytes")):
+            raise RemoteArtifactError("fetched manifest content does not match local manifest")
+        receipt = RemoteArtifactReceipt(
+            schema_version=REMOTE_RECEIPT_SCHEMA_VERSION,
+            object_id=object_id,
+            artifact=os.path.basename(path),
+            manifest=os.path.basename(mpath),
+            table=table,
+            day=day.isoformat() if day is not None else None,
+            local_sha256=man.sha256,
+            local_bytes=man.bytes,
+            local_rows=man.rows,
+            remote_fetch_sha256=fetched_man.sha256,
+            remote_fetch_bytes=fetched_man.bytes,
+            remote_fetch_rows=fetched_man.rows,
+            manifest_sha256=manifest_sha,
+            remote_manifest_sha256=fetched_manifest_sha,
+            source_table=str(man.get("source_table")) if man.get("source_table") is not None else None,
+            source_day=str(man.get("source_day")) if man.get("source_day") is not None else None,
+            source_from_us=_manifest_int(man, "source_from_us"),
+            source_to_us=_manifest_int(man, "source_to_us"),
+            source_rows=_manifest_int(man, "source_rows"),
+            source_content_sha256=(str(man.get("source_content_sha256"))
+                                   if man.get("source_content_sha256") is not None else None),
+            verified_at=dt.datetime.now(dt.timezone.utc).isoformat(),
+            transport=_transport_id(fetch_command),
+            status="verified",
+        )
+    _write_receipt(receipt, receipt_dir)
+    return receipt
+
+
+def object_id_for_manifest(man: Manifest) -> str:
+    table = man.get("source_table") or man.get("table")
+    day = man.get("source_day") or man.get("day")
+    source_sha = man.get("source_content_sha256")
+    if not isinstance(table, str) or not isinstance(day, str):
+        raise RemoteArtifactError("archive manifest missing table/day for object id")
+    if not isinstance(source_sha, str) or len(source_sha) != 64:
+        raise RemoteArtifactError("archive manifest missing source content digest")
+    return f"archive/{table}/{day}/{source_sha}.csv.gz"
+
+
+def archive_day_remote(
+    storage,
+    table: str,
+    day: dt.date,
+    out_dir: str,
+    push_command: str,
+    fetch_command: str,
+    *,
+    receipt_dir: str | None = None,
+    timeout_s: float = 1800.0,
+) -> tuple[Manifest, RemoteArtifactReceipt]:
+    man = export_day(storage, table, day, out_dir)
+    path = os.path.join(out_dir, _name(table, day))
+    object_id = object_id_for_manifest(man)
+    receipt = verify_remote_roundtrip(
+        path,
+        path + ".json",
+        object_id,
+        push_command,
+        fetch_command,
+        receipt_dir or out_dir,
+        table=table,
+        day=day,
+        timeout_s=timeout_s,
+        push_first=True,
+    )
+    return man, receipt
+
+
 def upload(path: str, mpath: str, command: str) -> bool:
     """명령 틀로 올린다. `{file}` 자리에 파일 경로가 들어간다.
 
@@ -293,7 +650,8 @@ def upload(path: str, mpath: str, command: str) -> bool:
     for f in (path, mpath):
         argv = [a.replace("{file}", f) for a in shlex.split(command)]
         try:
-            r = subprocess.run(argv, capture_output=True, timeout=1800)
+            r = subprocess.run(argv, capture_output=True, timeout=1800,
+                               check=False)
         except (OSError, subprocess.TimeoutExpired) as e:
             log.warning("[archive] 업로드 실패 %s: %s: %s",
                         os.path.basename(f), type(e).__name__, e)
@@ -328,6 +686,51 @@ def archived_days(archive_dir: str, table: str) -> list[dt.date]:
     return out
 
 
+def _looks_like_sha256(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(
+        ch in "0123456789abcdef" for ch in value.lower())
+
+
+def remote_receipt_days(receipt_dir: str, table: str) -> set[dt.date]:
+    days: set[dt.date] = set()
+    try:
+        names = os.listdir(receipt_dir)
+    except OSError:
+        return days
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(receipt_dir, name), encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        day_value = data.get("day")
+        if data.get("schema_version") != REMOTE_RECEIPT_SCHEMA_VERSION:
+            continue
+        if data.get("status") != "verified" or data.get("table") != table:
+            continue
+        if not isinstance(day_value, str):
+            continue
+        if not all(_looks_like_sha256(data.get(key)) for key in (
+                "local_sha256", "remote_fetch_sha256", "manifest_sha256",
+                "remote_manifest_sha256", "source_content_sha256")):
+            continue
+        if data.get("local_sha256") != data.get("remote_fetch_sha256"):
+            continue
+        if data.get("manifest_sha256") != data.get("remote_manifest_sha256"):
+            continue
+        if data.get("source_table") != table or data.get("source_day") != day_value:
+            continue
+        try:
+            days.add(dt.date.fromisoformat(day_value))
+        except ValueError:
+            continue
+    return days
+
+
 def safe_delete_cutoff_us(archive_dir: str, tables=None) -> int:
     """여기 이전은 지워도 된다 — **검증된 아카이브가 연속으로 있는 구간**.
 
@@ -351,7 +754,8 @@ def safe_delete_cutoff_us(archive_dir: str, tables=None) -> int:
 
 
 def pending_days(storage, archive_dir: str, table: str,
-                 lag_s: float = 3600.0, now: float | None = None) -> list[dt.date]:
+                 lag_s: float = 3600.0, now: float | None = None,
+                 remote_receipt_dir: str | None = None) -> list[dt.date]:
     """아직 안 올린 날들. 오늘과 너무 최근인 날은 뺀다.
 
     끝나지 않은 날을 올리면 반쪽이 올라가고, 그 뒤에 온 체결은 영원히
@@ -372,7 +776,10 @@ def pending_days(storage, archive_dir: str, table: str,
         return []
     now = now if now is not None else time.time()
     settled_before = now - lag_s
-    have = set(archived_days(archive_dir, table))
+    if remote_receipt_dir is not None:
+        have = remote_receipt_days(remote_receipt_dir, table)
+    else:
+        have = set(archived_days(archive_dir, table))
     first = dt.datetime.fromtimestamp(row["lo"] / 1e6, dt.timezone.utc).date()
     last = dt.datetime.fromtimestamp(row["hi"] / 1e6, dt.timezone.utc).date()
     out = []

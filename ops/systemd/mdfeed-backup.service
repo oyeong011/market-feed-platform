@@ -1,0 +1,26 @@
+[Unit]
+Description=MDFeed verified PostgreSQL backup push and fetch
+After=network-online.target mdfeed.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=mdfeed-backup
+Group=mdfeed
+WorkingDirectory=/opt/mdfeed
+Environment=PYTHONPATH=/opt/mdfeed/src
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/mdfeed/mdfeed.env
+ExecStart=/usr/bin/python3 ops/backup_create.py
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mdfeed-backup
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mdfeed /var/log/mdfeed
+ReadOnlyPaths=/etc/mdfeed
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true

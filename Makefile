@@ -41,7 +41,7 @@ lint:  ## 문법·임포트 점검 (외부 린터 없이)
 	  import mdfeed.cli, mdfeed.services.feedd, mdfeed.services.tcp_gateway, \
 	         mdfeed.services.ws_gateway, mdfeed.services.rest_api, \
 	         mdfeed.services.writer, mdfeed.services.strategy; print('임포트 OK')"
-	@bash -n ops/ops.sh ops/watchdog.sh && echo "셸 문법 OK"
+	@bash -n ops/ops.sh ops/watchdog.sh ops/testbed/*.sh && echo "셸 문법 OK"
 	@$(PY) scripts/find_unused_params.py --check && echo "안 쓰는 인자 OK"
 
 archive:  ## 원시 데이터를 외부 저장소로 내보낸다 (지우기 전에 옮긴다)
@@ -75,13 +75,19 @@ chaos:  ## 장애 주입 — 복구 경로가 실제로 도는지 확인
 obs-up:  ## Prometheus + Grafana 기동
 	docker compose -f docker-compose.observability.yml up -d
 	@echo "  Prometheus http://localhost:9090"
-	@echo "  Grafana    http://localhost:3000 (admin/admin)"
+	@echo "  Grafana    http://localhost:3000 (admin password from secret file)"
 
 obs-down:  ## 관측 스택 종료
 	docker compose -f docker-compose.observability.yml down
 
 verify-alerts:  ## 알람이 실재하는 지표를 참조하는지 검증
 	$(PY) scripts/verify_alerts.py
+
+preflight:  ## 배포 전 저장소/백업/공백 게이트 검사
+	$(PY) ops/preflight.py --config ops/mdfeed.env.example --json
+
+verify-storage-controls:  ## gap CLI/REST 제어면 실제 구동 검증
+	$(PY) scripts/verify_storage_control_surfaces.py --evidence .omo/evidence/task-10-control-surfaces.json
 
 load:  venv  ## 배포단 부하 시험 → docs/data/load.json
 	@echo "리플레이를 고정 속도로 돌린 뒤 실행하세요: MDFEED_ADAPTERS=replay make up"
@@ -163,7 +169,13 @@ record:  ## 실시간 피드를 녹화 (Ctrl-C 로 종료)
 	MDFEED_RECORD_FILE=data/replay/sample.mdf $(PY) -m mdfeed.services.feedd
 
 replay:  ## 녹화 파일로 오프라인 데모 (네트워크 불필요)
-	MDFEED_ADAPTERS=replay $(PY) -m mdfeed.cli up
+	@tmp=$$(mktemp -d /tmp/mdfeed-replay.XXXXXX); \
+	mkdir -p "$$tmp/run"; \
+	MDFEED_ADAPTERS=replay MDFEED_REPLAY_LOOP=1 \
+	MDFEED_STORAGE_BACKEND=sqlite MDFEED_STORAGE_PROFILE=test \
+	MDFEED_SQLITE_PATH="$$tmp/mdfeed.db" MDFEED_RUN_DIR="$$tmp/run" \
+	MDFEED_BUS_PATH="$$tmp/run/bus.sock" MDFEED_SIGNAL_BUS_PATH="$$tmp/run/signals.sock" \
+	$(PY) -m mdfeed.cli up
 
 demo:  ## 원클릭 데모 — 스택 기동 + 대시보드 안내
 	@bash scripts/demo.sh
@@ -205,5 +217,4 @@ ci: lint test  ## CI 가 실행하는 것
 
 clean:  ## 산출물 정리 (녹화 파일은 남긴다)
 	rm -rf .pytest_cache **/__pycache__ src/**/__pycache__ .venv
-	rm -f data/mdfeed.db data/mdfeed.db-wal data/mdfeed.db-shm
-	@echo "정리 완료"
+	@echo "정리 완료 (market data DB files are not deleted by clean)"

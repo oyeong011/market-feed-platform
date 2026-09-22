@@ -8,21 +8,36 @@ G=$'\e[32m'; B=$'\e[1m'; C=$'\e[36m'; N=$'\e[0m'
 echo "${B}MDFeed 데모${N}"
 echo "───────────────────────────────────────────────"
 
-if [ ! -f data/replay/sample.mdf ] && ! curl -s --max-time 3 https://api.upbit.com/v1/market/all >/dev/null 2>&1; then
-  echo "네트워크도 없고 녹화 파일도 없습니다."
-  echo "인터넷이 되는 곳에서 'make record' 로 먼저 녹화하세요."
+if [ ! -f data/replay/sample.mdf ]; then
+  echo "오프라인 데모 녹화 파일이 없습니다: data/replay/sample.mdf"
+  echo "라이브 녹화는 'make record' 로 명시적으로 실행하세요."
   exit 1
 fi
 
-MODE="live"
-if [ "${MDFEED_ADAPTERS:-}" = "replay" ]; then MODE="replay"; fi
-echo "모드: $MODE  (오프라인 재생은 MDFEED_ADAPTERS=replay make demo)"
+if [ -n "${MDFEED_DEMO_DIR:-}" ]; then
+  DEMO_DIR="$MDFEED_DEMO_DIR"
+  CLEAN_DEMO_DIR=0
+else
+  DEMO_DIR="$(mktemp -d /tmp/mdfeed-demo.XXXXXX)"
+  CLEAN_DEMO_DIR=1
+fi
+mkdir -p "$DEMO_DIR/run"
+export MDFEED_ADAPTERS=replay
+export MDFEED_REPLAY_LOOP="${MDFEED_REPLAY_LOOP:-1}"
+export MDFEED_STORAGE_BACKEND=sqlite
+export MDFEED_STORAGE_PROFILE=test
+export MDFEED_SQLITE_PATH="$DEMO_DIR/mdfeed.db"
+export MDFEED_RUN_DIR="$DEMO_DIR/run"
+export MDFEED_BUS_PATH="$DEMO_DIR/run/bus.sock"
+export MDFEED_SIGNAL_BUS_PATH="$DEMO_DIR/run/signals.sock"
+
+echo "모드: replay + synthetic SQLite ($MDFEED_SQLITE_PATH)"
 
 pkill -f "mdfeed.cli up" 2>/dev/null; pkill -f "mdfeed.services" 2>/dev/null; sleep 1
 
 PYTHONPATH=src python3 -m mdfeed.cli up > /tmp/mdfeed-demo.log 2>&1 &
 SUP=$!
-trap 'echo ""; echo "종료 중..."; kill $SUP 2>/dev/null; pkill -f "mdfeed.services" 2>/dev/null; exit 0' INT TERM
+trap 'echo ""; echo "종료 중..."; kill $SUP 2>/dev/null; pkill -f "mdfeed.services" 2>/dev/null; if [ "$CLEAN_DEMO_DIR" = 1 ]; then rm -rf "$DEMO_DIR"; fi; exit 0' INT TERM
 
 echo -n "기동 대기"
 for _ in $(seq 1 20); do

@@ -41,10 +41,16 @@ SQLite 는 auto_vacuum=0 이면 DELETE 한 페이지를 freelist 에 넣고 파�
 """
 from __future__ import annotations
 
+import csv
+import datetime as dt
+import hashlib
+import io
+import json
 import logging
 import os
 import shutil
 import time
+from dataclasses import dataclass
 
 log = logging.getLogger("mdfeed.retention")
 
@@ -52,6 +58,13 @@ log = logging.getLogger("mdfeed.retention")
 PRUNE_TABLES = (("trades", "ts"), ("book_top", "ts"))
 # 한 번에 지우는 행 수 상한. 통째로 DELETE 하면 락을 오래 잡아 적재가 밀린다.
 DELETE_BATCH = 50_000
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionCutoff:
+    allowed: bool
+    cutoff_us: int
+    reason: str
 
 
 class DiskWatch:
@@ -116,7 +129,7 @@ class DiskWatch:
         except Exception:                                  # noqa: BLE001
             return 0
 
-    def report(self) -> dict:
+    def report(self) -> dict[str, int | float | None]:
         h = self.hours_until_full()
         return {
             "db_bytes": self.db_bytes(),
@@ -130,19 +143,21 @@ class DiskWatch:
         }
 
 
-class PruneResult(dict):
+class PruneResult(dict[str, int]):
     """테이블별 삭제 행수. dict 라서 기존 호출부(sum(values()))가 그대로 돈다.
 
     다 못 지웠는지를 같이 들고 다닌다. 이게 없으면 "지웠다"와 "지우다 말았다"가
     구분되지 않고, 예산에 걸려 매 주기 같은 자리를 맴돌아도 아무도 모른다.
     """
 
-    def __init__(self, *a, budget_hit: bool = False, elapsed_s: float = 0.0,
-                 batches: int = 0, **kw):
-        super().__init__(*a, **kw)
-        self.budget_hit = budget_hit
-        self.elapsed_s = elapsed_s
-        self.batches = batches
+    def __init__(self, rows: dict[str, int] | None = None, *,
+                 budget_hit: bool = False, elapsed_s: float = 0.0,
+                 batches: int = 0, blocked_reason: str | None = None):
+        super().__init__(rows or {})
+        self.budget_hit: bool = budget_hit
+        self.elapsed_s: float = elapsed_s
+        self.batches: int = batches
+        self.blocked_reason: str | None = blocked_reason
 
 
 def _fmt_us(us: int) -> str:
@@ -156,6 +171,230 @@ def _cutoff_us(retention_days: float, now_us: int | None) -> int:
                - retention_days * 86400) * 1_000_000
 
 
+def _day_start_us(day: dt.date) -> int:
+    return int(dt.datetime.combine(day, dt.time.min, tzinfo=dt.timezone.utc).timestamp() * 1_000_000)
+
+
+def _source_floor_day(storage) -> dt.date | None:
+    floors = []
+    for table, col in PRUNE_TABLES:
+        try:
+            row = storage.query(f"SELECT MIN({col}) AS v FROM {table}")[0]
+        except (IndexError, KeyError):
+            return None
+        value = row.get("v")
+        if value is None:
+            continue
+        if isinstance(value, dt.datetime):
+            instant = value if value.tzinfo is not None else value.replace(tzinfo=dt.timezone.utc)
+            floors.append(instant.astimezone(dt.timezone.utc).date())
+        else:
+            floors.append(dt.datetime.fromtimestamp(int(value) / 1e6, dt.timezone.utc).date())
+    return min(floors) if floors else None
+
+
+
+def _is_sha256(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(
+        ch in "0123456789abcdef" for ch in value.lower())
+
+
+def _positive_int(value: object) -> int | None:
+    return value if isinstance(value, int) and value >= 0 else None
+
+
+def _strict_receipt(data: object, table: str) -> dict[str, object] | None:
+    if not isinstance(data, dict):
+        return None
+    if data.get("schema_version") != 1 or data.get("status") != "verified":
+        return None
+    day_value = data.get("day")
+    if data.get("table") != table or not isinstance(day_value, str):
+        return None
+    try:
+        day = dt.date.fromisoformat(day_value)
+    except ValueError:
+        return None
+    local_sha = data.get("local_sha256")
+    remote_sha = data.get("remote_fetch_sha256")
+    manifest_sha = data.get("manifest_sha256")
+    remote_manifest_sha = data.get("remote_manifest_sha256")
+    source_sha = data.get("source_content_sha256")
+    if not all(_is_sha256(v) for v in (local_sha, remote_sha, manifest_sha,
+                                       remote_manifest_sha, source_sha)):
+        return None
+    if local_sha != remote_sha or manifest_sha != remote_manifest_sha:
+        return None
+    local_bytes = _positive_int(data.get("local_bytes"))
+    remote_bytes = _positive_int(data.get("remote_fetch_bytes"))
+    local_rows = _positive_int(data.get("local_rows"))
+    remote_rows = _positive_int(data.get("remote_fetch_rows"))
+    source_rows = _positive_int(data.get("source_rows"))
+    if None in (local_bytes, remote_bytes, local_rows, remote_rows, source_rows):
+        return None
+    if local_bytes != remote_bytes or local_rows != remote_rows or local_rows != source_rows:
+        return None
+    lo, hi = _day_bounds_us(day)
+    if data.get("source_table") != table or data.get("source_day") != day_value:
+        return None
+    if data.get("source_from_us") != lo or data.get("source_to_us") != hi:
+        return None
+    object_id = data.get("object_id")
+    if not isinstance(object_id, str) or not object_id:
+        return None
+    return {
+        "day": day,
+        "source_rows": source_rows,
+        "source_content_sha256": source_sha,
+    }
+
+
+def _remote_verified_receipts(receipt_dir: str, table: str) -> dict[dt.date, dict[str, object]]:
+    receipts: dict[dt.date, dict[str, object]] = {}
+    try:
+        names = os.listdir(receipt_dir)
+    except OSError:
+        return receipts
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(receipt_dir, name), encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        receipt = _strict_receipt(data, table)
+        if receipt is None:
+            continue
+        day = receipt["day"]
+        if isinstance(day, dt.date):
+            receipts[day] = receipt
+    return receipts
+
+
+def _day_bounds_us(day: dt.date) -> tuple[int, int]:
+    start = _day_start_us(day)
+    return start, start + 86_400 * 1_000_000
+
+
+def _query_bounds(storage, lo: int, hi: int) -> tuple[object, object]:
+    if getattr(storage, "kind", "") == "postgres":
+        from mdfeed.migration.time import epoch_us_to_datetime
+
+        return epoch_us_to_datetime(lo), epoch_us_to_datetime(hi)
+    return lo, hi
+
+
+def _source_day_proof(storage, table: str, day: dt.date) -> tuple[int, str]:
+    from mdfeed.archive import ARCHIVE_TABLES, FETCH_CHUNK
+
+    cols = ARCHIVE_TABLES[table]
+    lo, hi = _day_bounds_us(day)
+    ph = getattr(storage, "placeholder", "?")
+    order_cols = ", ".join(cols)
+    sql = (f"SELECT {', '.join(cols)} FROM {table} "
+           f"WHERE ts >= {ph} AND ts < {ph} ORDER BY {order_cols}")
+    digest = hashlib.sha256()
+    rows = 0
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(cols)
+    cursor = getattr(storage, "stream", None)
+    if cursor is not None:
+        iterator = cursor(sql, _query_bounds(storage, lo, hi), FETCH_CHUNK)
+    else:
+        queried = storage.query(sql, _query_bounds(storage, lo, hi))
+        iterator = (queried[i:i + FETCH_CHUNK]
+                    for i in range(0, len(queried), FETCH_CHUNK))
+    for chunk in iterator:
+        values = [tuple(row.get(col) for col in cols) if isinstance(row, dict)
+                  else tuple(row) for row in chunk]
+        writer.writerows(values)
+        rows += len(values)
+        data = buf.getvalue().encode()
+        digest.update(data)
+        buf.seek(0)
+        buf.truncate(0)
+    data = buf.getvalue().encode()
+    digest.update(data)
+    return rows, digest.hexdigest()
+
+
+def _progress_path(receipt_dir: str, table: str, day: dt.date) -> str:
+    return os.path.join(receipt_dir, f".retention-progress-{table}-{day.isoformat()}.json")
+
+
+def _read_progress(receipt_dir: str, table: str, day: dt.date) -> dict[str, object] | None:
+    try:
+        with open(_progress_path(receipt_dir, table, day), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("table") != table or data.get("day") != day.isoformat():
+        return None
+    rows = _positive_int(data.get("remaining_rows"))
+    sha = data.get("remaining_content_sha256")
+    if rows is None or not _is_sha256(sha):
+        return None
+    return data
+
+
+def _write_progress(receipt_dir: str, table: str, day: dt.date, rows: int, sha: str) -> None:
+    data = {
+        "schema_version": 1,
+        "table": table,
+        "day": day.isoformat(),
+        "remaining_rows": rows,
+        "remaining_content_sha256": sha,
+        "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    os.makedirs(receipt_dir, exist_ok=True)
+    path = _progress_path(receipt_dir, table, day)
+    tmp = f"{path}.partial"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, sort_keys=True, indent=2)
+        fh.write("\n")
+    os.replace(tmp, path)
+
+
+def _source_matches_receipt(storage, receipt_dir: str, table: str,
+                            receipt: dict[str, object]) -> str | None:
+    day = receipt.get("day")
+    if not isinstance(day, dt.date):
+        return "invalid_remote_receipt"
+    rows, sha = _source_day_proof(storage, table, day)
+    progress = _read_progress(receipt_dir, table, day)
+    if progress is not None:
+        if (progress.get("remaining_rows") == rows
+                and progress.get("remaining_content_sha256") == sha):
+            return None
+        return "source_day_changed"
+    if receipt.get("source_rows") != rows or receipt.get("source_content_sha256") != sha:
+        return "source_day_changed"
+    return None
+
+
+def retention_cutoff(storage, remote_receipt_dir: str) -> RetentionCutoff:
+    floor = _source_floor_day(storage)
+    if floor is None:
+        return RetentionCutoff(False, 0, "no_source_rows")
+    per_table = {table: _remote_verified_receipts(remote_receipt_dir, table)
+                 for table, _col in PRUNE_TABLES}
+    common = set.intersection(*(set(receipts) for receipts in per_table.values())) if per_table else set()
+    if floor not in common:
+        return RetentionCutoff(False, 0, "missing_remote_coverage")
+    day = floor
+    while day in common:
+        for table, receipts in per_table.items():
+            reason = _source_matches_receipt(storage, remote_receipt_dir, table, receipts[day])
+            if reason is not None:
+                return RetentionCutoff(False, 0, reason)
+        day += dt.timedelta(days=1)
+    return RetentionCutoff(True, _day_start_us(day), "verified_remote_coverage")
+
+
 class _NoGuard:
     def __enter__(self): return self
     def __exit__(self, *a): return False
@@ -163,7 +402,9 @@ class _NoGuard:
 
 def prune(storage, retention_days: float, now_us: int | None = None,
           *, guard=None, budget_s: float | None = None,
-          floor_us: int | None = None) -> PruneResult:
+          floor_us: int | None = None,
+          remote_receipt_dir: str | None = None,
+          allow_local_archive_floor: bool = False) -> PruneResult:
     """보존 기간이 지난 원시 데이터를 지운다. 지운 행 수를 테이블별로 반환.
 
     guard    배치마다 잡았다 놓는 컨텍스트 매니저(보통 적재용 락). 루프
@@ -178,13 +419,15 @@ def prune(storage, retention_days: float, now_us: int | None = None,
     """
     if retention_days <= 0:
         return PruneResult()
+    if floor_us is not None and remote_receipt_dir is None and not allow_local_archive_floor:
+        return PruneResult(blocked_reason="missing_remote_coverage")
     cutoff = _cutoff_us(retention_days, now_us)
     if floor_us is not None:
         if floor_us <= 0:
             # 아카이브를 요구하는데 검증된 게 하나도 없다. 아무것도 안 지운다.
             # "설정은 켰는데 아무 일도 안 일어난다"로 보이면 안 되므로 남긴다.
             log.info("[retention] 검증된 아카이브가 없다 — 삭제를 보류한다")
-            return PruneResult(budget_hit=False)
+            return PruneResult(blocked_reason="missing_remote_coverage" if remote_receipt_dir else None)
         if floor_us < cutoff:
             log.info("[retention] 아카이브가 %s 까지만 검증됨 — 보존 기준(%s)"
                      " 대신 그쪽에 맞춘다",
@@ -205,10 +448,34 @@ def prune(storage, retention_days: float, now_us: int | None = None,
                 # 락은 여기서만 잡는다. 배치 하나가 끝나면 놓아서 적재가
                 # 끼어들 수 있게 한다.
                 with lock:
-                    # rowid / ctid 차이는 저장소가 흡수한다. 여기서 SQL 을 쓰면
-                    # 한쪽 백엔드에서만 조용히 안 도는 코드가 된다.
-                    got = storage.delete_older_than(table, col, cutoff,
+                    batch_cutoff = cutoff
+                    batch_day: dt.date | None = None
+                    if remote_receipt_dir is not None:
+                        remote_cutoff = retention_cutoff(storage,
+                                                         remote_receipt_dir)
+                        if not remote_cutoff.allowed:
+                            reason = remote_cutoff.reason
+                            current_floor = _source_floor_day(storage)
+                            if (reason == "missing_remote_coverage" and floor_us is not None
+                                    and current_floor is not None
+                                    and _day_start_us(current_floor) < floor_us):
+                                reason = "source_floor_changed"
+                            if reason == "no_source_rows" and deleted:
+                                break
+                            return PruneResult(deleted, budget_hit=False,
+                                               elapsed_s=time.monotonic() - started,
+                                               batches=batches,
+                                               blocked_reason=reason)
+                        batch_cutoff = min(cutoff, remote_cutoff.cutoff_us)
+                        batch_day = _source_floor_day(storage)
+                        if batch_day is not None:
+                            _lo, day_hi = _day_bounds_us(batch_day)
+                            batch_cutoff = min(batch_cutoff, day_hi)
+                    got = storage.delete_older_than(table, col, batch_cutoff,
                                                     DELETE_BATCH)
+                    if got > 0 and remote_receipt_dir is not None and batch_day is not None:
+                        rows, sha = _source_day_proof(storage, table, batch_day)
+                        _write_progress(remote_receipt_dir, table, batch_day, rows, sha)
             except AttributeError:
                 log.warning("[retention] %s: 저장소가 삭제를 지원하지 않는다 "
                             "(읽기 전용?) — 건너뛴다", table)
@@ -238,7 +505,7 @@ def prune(storage, retention_days: float, now_us: int | None = None,
 
 
 def prune_plan(storage, retention_days: float,
-               now_us: int | None = None) -> dict:
+               now_us: int | None = None) -> dict[str, object]:
     """지우지 않고 **무엇이 지워질지만** 낸다.
 
     보존 일수는 되돌릴 수 없는 결정이다. 숫자를 모르고 고르면 안 된다 —
@@ -246,7 +513,7 @@ def prune_plan(storage, retention_days: float,
     테이블별 대상 행수와 남는 기간을 먼저 보여 준다.
     """
     cutoff = _cutoff_us(retention_days, now_us) if retention_days > 0 else 0
-    out = {"retention_days": retention_days, "cutoff_us": cutoff, "tables": {}}
+    tables: dict[str, object] = {}
     total = 0
     for table, col in PRUNE_TABLES:
         try:
@@ -258,11 +525,11 @@ def prune_plan(storage, retention_days: float,
                 f"SELECT COUNT(*) AS n FROM {table} WHERE {col} < {ph}",
                 (cutoff,))[0]["n"] if retention_days > 0 else 0
         except Exception as e:                            # noqa: BLE001
-            out["tables"][table] = {"error": f"{type(e).__name__}: {e}"}
+            tables[table] = {"error": f"{type(e).__name__}: {e}"}
             continue
         n, lo, hi = row["n"], row["lo"], row["hi"]
         span_days = (hi - lo) / 1e6 / 86400 if n else 0.0
-        out["tables"][table] = {
+        tables[table] = {
             "rows": n,
             "span_days": round(span_days, 2),
             "delete_rows": doomed,
@@ -271,5 +538,10 @@ def prune_plan(storage, retention_days: float,
             "batches": (doomed + DELETE_BATCH - 1) // DELETE_BATCH,
         }
         total += doomed
+    out: dict[str, object] = {
+        "retention_days": retention_days,
+        "cutoff_us": cutoff,
+        "tables": tables,
+    }
     out["delete_rows_total"] = total
     return out

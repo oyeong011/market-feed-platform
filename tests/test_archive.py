@@ -9,8 +9,11 @@
 """
 import datetime as dt
 import gzip
+import json
 import os
 import sqlite3
+import subprocess
+import sys
 import time
 
 import pytest
@@ -181,7 +184,7 @@ def test_검증된_구간까지만_지운다(store, tmp_path):
     assert floor == ar.day_bounds_us(DAYS[1])[0]     # 8/30 까지만
 
     # 아주 옛날까지 지우라는 설정이어도 floor 가 막는다
-    r = prune(store, retention_days=0.000001, floor_us=floor)
+    r = prune(store, retention_days=0.000001, floor_us=floor, allow_local_archive_floor=True)
     assert store.count("trades") == 100             # 8/31 · 9/1 은 남는다
     assert sum(r.values()) == 60                    # 8/30 의 50 + 10
 
@@ -192,7 +195,7 @@ def test_아카이브가_없으면_아무것도_안_지운다(store, tmp_path):
     os.makedirs(out)
     floor = ar.safe_delete_cutoff_us(out)
     assert floor == 0
-    r = prune(store, retention_days=0.000001, floor_us=floor)
+    r = prune(store, retention_days=0.000001, floor_us=floor, allow_local_archive_floor=True)
     assert sum(r.values()) == 0
     assert store.count("trades") == 150
 
@@ -235,7 +238,7 @@ def test_보존이_아카이브보다_짧으면_보존을_따른다(store, tmp_p
             ar.export_day(store, t, d, out)
     floor = ar.safe_delete_cutoff_us(out)            # 9/2 00:00
     # 보존 10,000일 = 아무것도 안 지운다. floor 가 더 크지만 따르면 안 된다.
-    r = prune(store, retention_days=10_000, floor_us=floor)
+    r = prune(store, retention_days=10_000, floor_us=floor, allow_local_archive_floor=True)
     assert sum(r.values()) == 0
     assert store.count("trades") == 150
 
@@ -285,6 +288,8 @@ def test_조각마다_진행_상황을_올린다(store, tmp_path, monkeypatch):
     from mdfeed.services.writer import Writer
 
     monkeypatch.setenv("MDFEED_SQLITE_PATH", str(tmp_path / "w.db"))
+    monkeypatch.setenv("MDFEED_STORAGE_PROFILE", "test")
+    monkeypatch.setenv("MDFEED_RETENTION_REQUIRES_ARCHIVE", "0")
     monkeypatch.setenv("MDFEED_ARCHIVE_DIR", str(tmp_path / "arc"))
     monkeypatch.setenv("MDFEED_ARCHIVE_LAG_S", "0")
     w = Writer(Config())
@@ -301,7 +306,7 @@ def test_조각마다_진행_상황을_올린다(store, tmp_path, monkeypatch):
     monkeypatch.setattr(ar, "export_day", spy)
     r = w._archive_once()
 
-    assert not r["failed"], r["failed"]
+    assert not r.failed, r.failed
     assert len(seen) == 6                       # 2테이블 × 3일
     # 첫 조각을 만드는 동안 이미 "무엇을 하는 중"이 나와 있다
     assert seen[0][0] == f"trades/{DAYS[0]}"
@@ -333,7 +338,7 @@ def test_아카이브가_막히면_삭제_상한도_안_올라간다(store, tmp_
 
     monkeypatch.setattr(ar, "export_day", boom)
     r = w._archive_once()
-    assert len(r["failed"]) == 6
+    assert len(r.failed) == 6
     assert w._archive_floor_us() == 0          # 지워도 되는 구간이 없다
 
 
@@ -397,6 +402,7 @@ def test_최소_최대_시각은_인덱스를_탄다(tmp_path):
     아무것도 안 하고 헬스에도 표시가 없다 — 멈춘 것처럼 보인다.
     """
     import sqlite3
+
     from mdfeed.storage import db as dbmod
     conn = sqlite3.connect(str(tmp_path / "p.db"))
     with open(os.path.join(os.path.dirname(dbmod.__file__),
@@ -430,6 +436,8 @@ def test_날짜별로_돈다_테이블별이_아니라(store, tmp_path, monkeypa
     from mdfeed.services.writer import Writer
 
     monkeypatch.setenv("MDFEED_SQLITE_PATH", str(tmp_path / "w.db"))
+    monkeypatch.setenv("MDFEED_STORAGE_PROFILE", "test")
+    monkeypatch.setenv("MDFEED_RETENTION_REQUIRES_ARCHIVE", "0")
     monkeypatch.setenv("MDFEED_ARCHIVE_DIR", str(tmp_path / "arc"))
     monkeypatch.setenv("MDFEED_ARCHIVE_LAG_S", "0")
     w = Writer(Config())
@@ -447,3 +455,292 @@ def test_날짜별로_돈다_테이블별이_아니라(store, tmp_path, monkeypa
     assert [d for d, _ in order] == sorted(d for d, _ in order)
     # 첫 날을 마친 시점에 이미 빗장이 한 칸 올라가 있어야 한다
     assert ar.safe_delete_cutoff_us(str(tmp_path / "arc")) > 0
+
+
+def _remote_helper(tmp_path):
+    script = tmp_path / "remote.py"
+    script.write_text(
+        "import pathlib, shutil, sys\n"
+        "root = pathlib.Path(sys.argv[2])\n"
+        "root.mkdir(parents=True, exist_ok=True)\n"
+        "if sys.argv[1] == 'push':\n"
+        "    target = root / sys.argv[4]\n"
+        "    target.parent.mkdir(parents=True, exist_ok=True)\n"
+        "    shutil.copyfile(sys.argv[3], target)\n"
+        "elif sys.argv[1] == 'fetch':\n"
+        "    shutil.copyfile(root / sys.argv[3], sys.argv[4])\n"
+        "else:\n"
+        "    raise SystemExit(2)\n",
+        encoding="utf-8",
+    )
+    remote = tmp_path / "remote"
+    push = f"{sys.executable} {script} push {remote} {{source}} {{object}}"
+    fetch = f"{sys.executable} {script} fetch {remote} {{object}} {{destination}}"
+    return push, fetch
+
+
+def test_remote_roundtrip_success(store, tmp_path):
+    out = str(tmp_path / "arc")
+    man = ar.export_day(store, "trades", DAYS[0], out)
+    path = os.path.join(out, ar._name("trades", DAYS[0]))
+    push, fetch = _remote_helper(tmp_path)
+
+    receipt = ar.verify_remote_roundtrip(
+        path,
+        path + ".json",
+        f"trades/{DAYS[0].isoformat()}",
+        push,
+        fetch,
+        str(tmp_path / "receipts"),
+        table="trades",
+        day=DAYS[0],
+        timeout_s=5,
+    )
+
+    assert receipt.status == "verified"
+    assert receipt.local_sha256 == man.sha256
+    assert receipt.remote_fetch_sha256 == man.sha256
+    assert receipt.local_bytes == receipt.remote_fetch_bytes == man["bytes"]
+    assert receipt.local_rows == receipt.remote_fetch_rows == man.rows
+    assert "secret" not in json.dumps(receipt.to_json()).lower()
+
+
+def test_push_only_not_verified(store, tmp_path):
+    out = str(tmp_path / "arc")
+    ar.export_day(store, "trades", DAYS[0], out)
+    path = os.path.join(out, ar._name("trades", DAYS[0]))
+    push, _fetch = _remote_helper(tmp_path)
+
+    with pytest.raises(ar.RemoteArtifactError):
+        ar.verify_remote_roundtrip(
+            path,
+            path + ".json",
+            "trades/push-only",
+            push,
+            "",
+            str(tmp_path / "receipts"),
+            table="trades",
+            day=DAYS[0],
+            timeout_s=5,
+        )
+    assert not list((tmp_path / "receipts").glob("*.json"))
+
+
+def test_remote_fetch_tamper(store, tmp_path):
+    out = str(tmp_path / "arc")
+    ar.export_day(store, "trades", DAYS[0], out)
+    path = os.path.join(out, ar._name("trades", DAYS[0]))
+    push, fetch = _remote_helper(tmp_path)
+    remote = tmp_path / "remote"
+    ar._run_transfer(push, source=path, object_id="trades/tamper", timeout_s=5)
+    ar._run_transfer(push, source=path + ".json", object_id="trades/tamper.json", timeout_s=5)
+    (remote / "trades" / "tamper").write_bytes(b"corrupt")
+
+    with pytest.raises(ar.RemoteArtifactError):
+        ar.verify_remote_roundtrip(
+            path,
+            path + ".json",
+            "trades/tamper",
+            "",
+            fetch,
+            str(tmp_path / "receipts"),
+            table="trades",
+            day=DAYS[0],
+            timeout_s=5,
+            push_first=False,
+        )
+    assert not list((tmp_path / "receipts").glob("*.json"))
+
+
+def test_remote_manifest_tamper(store, tmp_path):
+    out = str(tmp_path / "arc")
+    ar.export_day(store, "trades", DAYS[0], out)
+    path = os.path.join(out, ar._name("trades", DAYS[0]))
+    push, fetch = _remote_helper(tmp_path)
+    remote = tmp_path / "remote"
+    ar._run_transfer(push, source=path, object_id="trades/manifest", timeout_s=5)
+    ar._run_transfer(push, source=path + ".json", object_id="trades/manifest.json", timeout_s=5)
+    (remote / "trades" / "manifest.json").write_text('{"rows": 0}', encoding="utf-8")
+
+    with pytest.raises(ar.RemoteArtifactError):
+        ar.verify_remote_roundtrip(
+            path,
+            path + ".json",
+            "trades/manifest",
+            "",
+            fetch,
+            str(tmp_path / "receipts"),
+            table="trades",
+            day=DAYS[0],
+            timeout_s=5,
+            push_first=False,
+        )
+    assert not list((tmp_path / "receipts").glob("*.json"))
+
+
+def test_remote_command_requires_placeholders_and_redacts_secret(tmp_path):
+    source = tmp_path / "x"
+    source.write_text("x", encoding="utf-8")
+
+    with pytest.raises(ar.RemoteArtifactError) as err:
+        ar._run_transfer(
+            f"{sys.executable} -c 'raise SystemExit(3)' --token never-print-this "
+            "{source} {object}",
+            source=str(source),
+            object_id="obj",
+            timeout_s=5,
+        )
+    assert "never-print-this" not in str(err.value)
+
+    with pytest.raises(ar.RemoteArtifactError):
+        ar._run_transfer("true {source}", source=str(source), object_id="obj", timeout_s=5)
+
+
+
+def test_identical_remote_rearchive_preserves_old_manifest_and_receipt(store, tmp_path):
+    out = tmp_path / "arc"
+    push, fetch = _remote_helper(tmp_path)
+    first_man, first_receipt = ar.archive_day_remote(
+        store, "book_top", DAYS[0], str(out), push, fetch, receipt_dir=str(out), timeout_s=5)
+    object_id = first_receipt.object_id
+    remote_manifest = tmp_path / "remote" / f"{object_id}.json"
+    remote_artifact = tmp_path / "remote" / object_id
+    first_remote_manifest_hash = ar._sha256_file(str(remote_manifest))
+    first_remote_artifact_hash = ar._sha256_file(str(remote_artifact))
+    (out / ar._name("book_top", DAYS[0])).unlink()
+    (out / f"{ar._name('book_top', DAYS[0])}.json").unlink()
+    version_root = out / "archive"
+    if version_root.exists():
+        import shutil
+
+        shutil.rmtree(version_root)
+
+    second_man, second_receipt = ar.archive_day_remote(
+        store, "book_top", DAYS[0], str(out), push, fetch, receipt_dir=str(out), timeout_s=5)
+
+    assert second_receipt.object_id == object_id
+    assert second_man.sha256 == first_man.sha256
+    assert ar._sha256_file(str(remote_artifact)) == first_remote_artifact_hash
+    assert ar._sha256_file(str(remote_manifest)) == first_remote_manifest_hash
+    assert second_receipt.manifest_sha256 == first_receipt.manifest_sha256
+    assert ar.verify_remote_roundtrip(
+        str(out / ar._name("book_top", DAYS[0])),
+        str(out / f"{ar._name('book_top', DAYS[0])}.json"),
+        object_id,
+        "",
+        fetch,
+        str(tmp_path / "old-recheck-receipts"),
+        table="book_top",
+        day=DAYS[0],
+        timeout_s=5,
+        push_first=False,
+    ).manifest_sha256 == first_receipt.manifest_sha256
+
+def test_positive_local_floor_without_remote_receipts_does_not_prune(store, tmp_path):
+    out = str(tmp_path / "arc")
+    for table in ("trades", "book_top"):
+        ar.export_day(store, table, DAYS[0], out)
+    floor = ar.safe_delete_cutoff_us(out)
+
+    result = prune(store, retention_days=0.000001, floor_us=floor)
+
+    assert result.blocked_reason == "missing_remote_coverage"
+    assert sum(result.values()) == 0
+    assert store.count("trades") == 150
+
+
+def test_archive_object_id_changes_when_remaining_day_content_changes(store, tmp_path):
+    full_dir = str(tmp_path / "full")
+    remaining_dir = str(tmp_path / "remaining")
+    full = ar.export_day(store, "trades", DAYS[0], full_dir)
+    lo, _hi = ar.day_bounds_us(DAYS[0])
+    store.delete_older_than("trades", "ts", lo + 10_000, 10)
+    remaining = ar.export_day(store, "trades", DAYS[0], remaining_dir)
+
+    assert full.rows == 50
+    assert remaining.rows == 40
+    assert ar.object_id_for_manifest(full) != ar.object_id_for_manifest(remaining)
+
+
+def test_pending_days_retries_local_export_without_remote_receipt(store, tmp_path):
+    out = str(tmp_path / "arc")
+    ar.export_day(store, "trades", DAYS[0], out)
+    now = ar.day_bounds_us(DAYS[2])[1] / 1e6 + 7200
+
+    assert DAYS[0] not in ar.pending_days(store, out, "trades", now=now)
+    assert DAYS[0] in ar.pending_days(
+        store, out, "trades", now=now, remote_receipt_dir=out)
+
+
+def test_archive_day_remote_uses_content_addressed_object(store, tmp_path):
+    out = str(tmp_path / "arc")
+    push, fetch = _remote_helper(tmp_path)
+
+    man, receipt = ar.archive_day_remote(
+        store, "trades", DAYS[0], out, push, fetch, receipt_dir=out, timeout_s=5)
+
+    expected = ar.object_id_for_manifest(man)
+    assert receipt.object_id == expected
+    assert (tmp_path / "remote" / expected).exists()
+    assert list((tmp_path / "remote" / "archive" / "trades" / DAYS[0].isoformat()).glob("*.csv.gz"))
+
+
+def test_writer_archive_once_produces_remote_receipts(store, tmp_path, monkeypatch):
+    from mdfeed.config import Config
+    from mdfeed.services.writer import Writer
+
+    out = tmp_path / "arc"
+    push, fetch = _remote_helper(tmp_path)
+    monkeypatch.setenv("MDFEED_SQLITE_PATH", str(tmp_path / "w.db"))
+    monkeypatch.setenv("MDFEED_ARCHIVE_DIR", str(out))
+    monkeypatch.setenv("MDFEED_ARCHIVE_PUSH_COMMAND", push)
+    monkeypatch.setenv("MDFEED_ARCHIVE_FETCH_COMMAND", fetch)
+    monkeypatch.setenv("MDFEED_ARCHIVE_LAG_S", "0")
+    writer = Writer(Config())
+    writer.storage = store
+
+    result = writer._archive_once()
+
+    assert not result.failed
+    receipts = list(out.glob("archive_trades_*.json"))
+    assert receipts
+    data = json.loads(receipts[0].read_text(encoding="utf-8"))
+    assert data["status"] == "verified"
+    assert data["object_id"].startswith("archive/trades/")
+
+
+def test_cli_archive_produces_remote_receipts(tmp_path, monkeypatch):
+    db_path = tmp_path / "cli.db"
+    source = _Store(str(db_path))
+    lo, _hi = ar.day_bounds_us(DAYS[0])
+    source.conn.execute(
+        "INSERT INTO trades VALUES (?,?,?,?,?,?,?,?,?)",
+        (lo, "UPBIT", "KRW-BTC", 100.0, 1.0, "buy", lo, 0, 1),
+    )
+    source.conn.execute(
+        "INSERT INTO book_top VALUES (?,?,?,?,?,?,?,?)",
+        (lo, "UPBIT", "KRW-BTC", 99.0, 1.0, 101.0, 1.0, 20.0),
+    )
+    source.conn.commit()
+    source.conn.close()
+    push, fetch = _remote_helper(tmp_path)
+    env = os.environ.copy()
+    env.update({
+        "PYTHONPATH": "src",
+        "MDFEED_STORAGE_BACKEND": "sqlite",
+        "MDFEED_STORAGE_PROFILE": "test",
+        "MDFEED_SQLITE_PATH": str(db_path),
+        "MDFEED_ARCHIVE_DIR": str(tmp_path / "arc"),
+        "MDFEED_ARCHIVE_PUSH_COMMAND": push,
+        "MDFEED_ARCHIVE_FETCH_COMMAND": fetch,
+        "MDFEED_ARCHIVE_LAG_S": "0",
+    })
+
+    result = subprocess.run(
+        [sys.executable, "-m", "mdfeed.cli", "archive", "--limit", "1"],
+        cwd=os.getcwd(), env=env, capture_output=True, text=True, timeout=20, check=False)
+
+    assert result.returncode == 0, result.stderr
+    receipts = list((tmp_path / "arc").glob("archive_*.json"))
+    assert receipts
+    assert "원격검증" in result.stdout

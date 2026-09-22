@@ -262,17 +262,23 @@ print(f"  적재 {d.get(\"rows_written\",0):,}행 / {d.get(\"bars_written\",0):,
 cmd_install() {
   [ "$(id -u)" -ne 0 ] && { echo "root 권한이 필요합니다: sudo $0 install"; exit 1; }
   id mdfeed >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin mdfeed
+  id mdfeed-backup >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin mdfeed-backup
+  id mdfeed-maintenance >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin mdfeed-maintenance
   install -d -o mdfeed -g mdfeed /opt/mdfeed /var/lib/mdfeed /var/log/mdfeed /run/mdfeed /etc/mdfeed
+  install -d -o mdfeed-backup -g mdfeed /var/lib/mdfeed/backups /var/lib/mdfeed/backup/receipts
+  install -d -o mdfeed-maintenance -g mdfeed /var/lib/mdfeed/restore-drills
   cp -r src quant docs "$0" /opt/mdfeed/ 2>/dev/null
   [ -f /etc/mdfeed/mdfeed.env ] || install -m 640 -o root -g mdfeed ops/mdfeed.env.example /etc/mdfeed/mdfeed.env
   cp ops/systemd/*.service ops/systemd/*.target /etc/systemd/system/
+  cp ops/systemd/*.timer /etc/systemd/system/
   cp ops/logrotate.conf /etc/logrotate.d/mdfeed
   # /run 은 재부팅 시 사라지므로 tmpfiles 로 매번 만든다
   echo "d /run/mdfeed 0755 mdfeed mdfeed -" > /etc/tmpfiles.d/mdfeed.conf
   systemd-tmpfiles --create /etc/tmpfiles.d/mdfeed.conf
   systemctl daemon-reload
   systemctl enable mdfeed.target mdfeed-feedd mdfeed-tcp-gateway mdfeed-ws-gateway \
-                   mdfeed-rest-api mdfeed-writer mdfeed-strategy
+                   mdfeed-rest-api mdfeed-writer mdfeed-strategy \
+                   mdfeed-backup.timer mdfeed-restore-drill.timer mdfeed-preflight-monitor
   echo "설치 완료. 기동: systemctl start mdfeed.target"
 }
 
