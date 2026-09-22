@@ -43,9 +43,11 @@ jobs:
           json.dump(d, open("gateway_compare_linux.json", "w"), ensure_ascii=False, indent=1)
           PY
       - name: Verify the C++ gateway actually ran on epoll
+        # 폴백 poll 로 돌면서 통과하면 안 된다. 게이트웨이 기동 로그의 첫 줄(JSON)에 백엔드가 찍힌다.
         run: |
           grep -q '"event_loop":"epoll"' /tmp/mdfcmp/gw_cpp.log || {
-            echo "::error::C++ gateway did not report epoll on Linux"; head -3 /tmp/mdfcmp/gw_cpp.log; exit 1; }
+            echo "::error::C++ gateway did not report epoll on Linux"; head -3 /tmp/mdfcmp/gw_cpp.log || true; exit 1; }
+          echo "epoll confirmed"
       - uses: actions/upload-artifact@v4
         with:
           name: gateway-bench-linux-${{ github.run_id }}

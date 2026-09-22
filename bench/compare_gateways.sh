@@ -1,4 +1,5 @@
-#!/bin/zsh
+#!/usr/bin/env bash
+# bash 로 쓴다 — 리눅스 CI 러너에는 zsh 가 없다 (첫 실행에서 'required file not found' 로 죽었다).
 # 같은 feedd(리플레이 40배속) 아래에서 파이썬/C++ 게이트웨이를 번갈아 같은 부하 시험에 건다.
 # 결과: docs/data/load_gateway_{python,cpp}.json + docs/data/gateway_compare.json
 set -u
@@ -20,15 +21,15 @@ run_round() {
   local GW=$!; sleep 1.5
   echo "[$label] $(curl -sf http://127.0.0.1:29111/healthz | head -c 90)"
   if [ "$CLIENT" = "cpp" ]; then
-    ./cpp/build/load_client --port 29101 --admin 29111 --subscribers ${=SUBS} \
+    ./cpp/build/load_client --port 29101 --admin 29111 --subscribers $SUBS \
       --seconds "$SECONDS_PER" --out "docs/data/load_gateway_${label}${SUFFIX}.json"
   else
-    .venv/bin/python bench/load_test.py --port 29101 --admin 29111 --subscribers ${=SUBS} \
+    .venv/bin/python bench/load_test.py --port 29101 --admin 29111 --subscribers $SUBS \
       --seconds "$SECONDS_PER" --processes "$PROCS" --out "docs/data/load_gateway_${label}${SUFFIX}.json"
   fi
   kill $GW; wait $GW 2>/dev/null
 }
-for g in ${=GATEWAYS}; do
+for g in $GATEWAYS; do
   case $g in
     python) run_round python .venv/bin/python -m mdfeed.services.tcp_gateway ;;
     cpp)    run_round cpp ./cpp/build/tcp_gateway ;;
