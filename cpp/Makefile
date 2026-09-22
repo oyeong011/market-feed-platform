@@ -5,7 +5,7 @@ INC      := -Iinclude
 BUILD    := build
 
 .PHONY: all test bench clean
-all: $(BUILD)/test_protocol $(BUILD)/bench_protocol $(BUILD)/conformance $(BUILD)/tcp_gateway $(BUILD)/load_client $(BUILD)/mcast_publisher
+all: $(BUILD)/test_protocol $(BUILD)/bench_protocol $(BUILD)/conformance $(BUILD)/tcp_gateway $(BUILD)/load_client $(BUILD)/mcast_publisher $(BUILD)/test_ringbuffer $(BUILD)/ring_conform $(BUILD)/bench_ring
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -28,8 +28,18 @@ $(BUILD)/load_client: bench/load_client.cpp include/mdfp/*.hpp | $(BUILD)
 $(BUILD)/mcast_publisher: src/mcast_publisher.cpp include/mdfp/*.hpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INC) $< -o $@
 
-test: $(BUILD)/test_protocol
+$(BUILD)/test_ringbuffer: tests/test_ringbuffer.cpp include/mdfp/*.hpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INC) $< -o $@
+
+$(BUILD)/ring_conform: tests/ring_conform.cpp include/mdfp/*.hpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INC) $< -o $@
+
+$(BUILD)/bench_ring: bench/bench_ring.cpp include/mdfp/*.hpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INC) $< -o $@
+
+test: $(BUILD)/test_protocol $(BUILD)/test_ringbuffer
 	./$(BUILD)/test_protocol
+	./$(BUILD)/test_ringbuffer
 
 bench: $(BUILD)/bench_protocol
 	./$(BUILD)/bench_protocol $(N)

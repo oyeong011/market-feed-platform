@@ -3,7 +3,7 @@
 [![CI](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml)
 [![Pages](https://github.com/oyeong011/market-feed-platform/actions/workflows/pages.yml/badge.svg)](https://oyeong011.github.io/market-feed-platform/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![tests](https://img.shields.io/badge/tests-520-brightgreen)
+![tests](https://img.shields.io/badge/tests-523-brightgreen)
 ![cpp](https://img.shields.io/badge/C%2B%2B-data%20plane-blue)
 ![obs](https://img.shields.io/badge/알람-18개%20지표%20검증-blue)
 ![venues](https://img.shields.io/badge/수집경로-5개%20실연결-blue)
@@ -68,7 +68,7 @@ make demo        # replay + disposable synthetic SQLite 로 6개 프로세스 �
 make status      # 서비스 상태 (프로세스 + HTTP 헬스 + 포트)
 make client      # 참조 TCP 구독 클라이언트 (갭 탐지 포함)
 make diag        # 장애 진단 원스톱
-make test        # 520개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
+make test        # 523개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
 ```
 
 데모와 CI는 라이브 어댑터를 상속하지 않습니다. 저장소에 든 녹화 파일을 replay로 읽고, 임시 SQLite DB를 만들어 검증합니다.
@@ -133,7 +133,7 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 |---|---|---|
 | 금융 데이터 FEED 개발·운영 | 수집 경로 5개, 배포 프로토콜 3종 | 무결성 48.5% → **100.0000%** |
 | Linux 서비스·프로세스 점검·안정화 | systemd 6유닛 + 자동 검증 + 장애 주입 | 11항목 · 복구 4종 확인 |
-| 파이프라인·배포·점검 자동화 | Makefile · CI 6잡 · Pages 자동 갱신 | 테스트 **520개** |
+| 파이프라인·배포·점검 자동화 | Makefile · CI 6잡 · Pages 자동 갱신 | 테스트 **523개** |
 | Python | 소스 8,835줄 | 핵심 의존성 **0** |
 | SQL · 관계형 DB | 복합 인덱스 · 사전 집계 · 하이퍼테이블 | 적재 **480,586 rows/s** |
 | Linux 명령·프로세스·로그 | `ops.sh diag` · RUNBOOK 8종 | 1차 진단 한 줄 |
@@ -213,9 +213,11 @@ feed handler 와 distributor 를 나누는 구조와 같습니다. 여기서도 
 ```
 cpp/include/mdfp/protocol.hpp   MDFP/1 인코더·스트리밍 파서·갭 탐지·Trade/BookTop (헤더 전용)
 cpp/include/mdfp/crc32.hpp      CRC-32 슬라이싱-바이-8, 표는 컴파일 시점 생성
+cpp/include/mdfp/ringbuffer.hpp 공유메모리 SPSC 링버퍼 — 파이썬 ringbuffer.py 와 같은 레이아웃, 메모리 펜스 추가
 cpp/src/tcp_gateway.cpp         배포 게이트웨이 — 파이썬 tcp_gateway 와 같은 배선 규약
 cpp/tests/  cpp/bench/          파이썬 테스트를 옮긴 C++ 테스트 · 같은 방법의 벤치
 tests/test_cpp_conformance.py   파이썬이 쓴 바이트를 C++ 가, C++ 가 쓴 바이트를 파이썬이 읽는 양방향 검증
+tests/test_cpp_ringbuffer.py    같은 공유메모리 세그먼트를 파이썬·C++ 가 번갈아 쓰고 읽는 3방향 검증
 tests/test_cpp_gateway.py       파이썬 발행자 → C++ 게이트웨이 → 파이썬 참조 클라이언트 통합 시험
 ```
 
@@ -233,6 +235,7 @@ make cpp-compare   # 같은 수집기 아래 두 게이트웨이 부하 비교 �
 | MDFP 인코딩 | 474 ns | **47 ns** | 10배 |
 | MDFP 파싱 (재동기화 포함) | 1,316 ns | **57 ns** | 23배 |
 | Trade 디코딩 | 717 ns | **17 ns** | 42배 |
+| 공유메모리 링버퍼 push | 641 ns | **19 ns** | 34배 |
 
 **배포 게이트웨이 (같은 수집기 · 상류 약 600~700 msg/s · 회차 8초 · C++ 부하 클라이언트)**
 
@@ -324,7 +327,7 @@ src/mdfeed/
 
 ops/     systemd 유닛 6종 · ops.sh · watchdog.sh · healthcheck.py · logrotate
 quant/   backtest.py · run_backtest.py · integrations.py · factor_screen.py
-tests/   520개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
+tests/   523개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
          복구 경로 · 종료 기한 · 컨플레이션 · 토큰 발급 · 운영 기록 환산 ·
          PostgreSQL 마이그레이션/백업/복구 27개는 실서버 연결 시에만)
 bench/   계층별 성능 측정 → docs/data/bench.json · 게이트웨이 비교 → gateway_compare.json
