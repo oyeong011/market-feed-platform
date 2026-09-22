@@ -30,6 +30,7 @@ MSG_SIGNAL = 4
 MSG_SNAPSHOT = 5
 MSG_SUBSCRIBE = 6
 MSG_ACK = 7
+MSG_RETRANS = 8      # 멀티캐스트 복구 채널: 재전송 요청 (페이로드 = from u64 · to u64, 빅엔디언, 양끝 포함)
 
 MSG_NAMES = {
     MSG_HEARTBEAT: "HEARTBEAT",
@@ -39,6 +40,7 @@ MSG_NAMES = {
     MSG_SNAPSHOT: "SNAPSHOT",
     MSG_SUBSCRIBE: "SUBSCRIBE",
     MSG_ACK: "ACK",
+    MSG_RETRANS: "RETRANS",
 }
 
 # ── 체결 방향 ──────────────────────────────────────────────────────────────

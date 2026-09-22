@@ -10,7 +10,7 @@ export PYTHONPATH
 .DEFAULT_GOAL := help
 .PHONY: help venv install test lint bench up down status health logs \
         demo record replay backtest factor clean docker-build docker-up docker-down \
-        ci docs schema cpp cpp-test cpp-bench cpp-gateway cpp-compare
+        ci docs schema cpp cpp-test cpp-bench cpp-gateway cpp-compare mcast-pub mcast-client
 
 help:  ## 사용 가능한 명령
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -58,13 +58,19 @@ cpp:  ## C++ 데이터 평면 빌드 (컴파일러만 필요, 의존성 0)
 
 cpp-test: cpp  ## C++ 단위 테스트 + 파이썬↔C++ 교차 검증
 	$(MAKE) -C cpp -s test
-	$(BIN)/python -m pytest tests/test_cpp_conformance.py tests/test_cpp_gateway.py tests/test_cpp_load_client.py -q
+	$(BIN)/python -m pytest tests/test_cpp_conformance.py tests/test_cpp_gateway.py tests/test_cpp_load_client.py tests/test_mcast.py -q
 
 cpp-bench: cpp  ## C++ 프로토콜 벤치 → docs/data/bench_cpp.json (파이썬 bench.json 과 같은 방법)
 	./cpp/build/bench_protocol 300000 | tee docs/data/bench_cpp.json
 
 cpp-gateway: cpp  ## C++ 배포 게이트웨이 기동 (파이썬 tcp_gateway 와 같은 환경변수·포트)
 	./cpp/build/tcp_gateway
+
+mcast-pub: cpp  ## UDP 멀티캐스트 발행자 + TCP 복구 채널 기동 (MDFEED_MCAST_GROUP/PORT, 유실 주입 MDFEED_MCAST_DROP_EVERY)
+	./cpp/build/mcast_publisher
+
+mcast-client: venv  ## 멀티캐스트 참조 구독자 — 갭 탐지·재전송 복구 통계를 JSON 으로
+	$(BIN)/python -m mdfeed.mcast_client --duration $${DURATION:-10}
 
 cpp-compare: cpp venv  ## 같은 수집기 아래 파이썬/C++ 게이트웨이 부하 비교 → docs/data/gateway_compare.json (CLIENT=cpp 로 C++ 클라이언트)
 	bench/compare_gateways.sh

@@ -37,6 +37,7 @@ inline constexpr size_t MAX_PAYLOAD = size_t{1} << 20;   // 1MB. 넘으면 스�
 enum MsgType : uint8_t {
     MSG_HEARTBEAT = 1, MSG_TRADE = 2, MSG_BOOK = 3, MSG_SIGNAL = 4,
     MSG_SNAPSHOT = 5, MSG_SUBSCRIBE = 6, MSG_ACK = 7,
+    MSG_RETRANS = 8,   // 멀티캐스트 복구 채널 재전송 요청: from u64 · to u64 (양끝 포함)
 };
 inline constexpr uint16_t FLAG_SNAPSHOT = 1u << 0;
 inline constexpr uint16_t FLAG_COMPRESSED = 1u << 1;

@@ -3,7 +3,7 @@
 [![CI](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml)
 [![Pages](https://github.com/oyeong011/market-feed-platform/actions/workflows/pages.yml/badge.svg)](https://oyeong011.github.io/market-feed-platform/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![tests](https://img.shields.io/badge/tests-517-brightgreen)
+![tests](https://img.shields.io/badge/tests-520-brightgreen)
 ![cpp](https://img.shields.io/badge/C%2B%2B-data%20plane-blue)
 ![obs](https://img.shields.io/badge/알람-18개%20지표%20검증-blue)
 ![venues](https://img.shields.io/badge/수집경로-5개%20실연결-blue)
@@ -68,7 +68,7 @@ make demo        # replay + disposable synthetic SQLite 로 6개 프로세스 �
 make status      # 서비스 상태 (프로세스 + HTTP 헬스 + 포트)
 make client      # 참조 TCP 구독 클라이언트 (갭 탐지 포함)
 make diag        # 장애 진단 원스톱
-make test        # 517개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
+make test        # 520개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
 ```
 
 데모와 CI는 라이브 어댑터를 상속하지 않습니다. 저장소에 든 녹화 파일을 replay로 읽고, 임시 SQLite DB를 만들어 검증합니다.
@@ -115,6 +115,9 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 | 26 | **장애 주입 테스트가 안 돌고 통과** | CRC 시나리오의 주입 조건이 안 맞아 오염을 거의 안 넣었는데 "재동기화 0회" 로 통과 처리 | 주입 횟수를 판정 조건에 포함 — 안 돌았으면 실패 |
 | 27 | **C++ 게이트웨이가 구독자 200명에서 파이썬보다 4.6배 느림** (p99 422ms vs 92ms) | 프레임마다 구독자 전원에게 `send()` 를 따로 불렀다. 버스가 30프레임을 묶어 주면 시스템 콜이 6,000번 나간다. 게이트웨이 CPU 는 25% 였는데 클라이언트가 잘게 쪼개진 패킷을 못 따라갔다 | 버스에서 받은 묶음을 다 나눠 담은 뒤 **구독자당 한 번** 쓴다(최대 64KB 결합). 200명 p99 **165ms → 6.2ms** (파이썬 대비 26배). 파이썬 쪽이 배치를 되돌린 이유(이벤트 루프 공평성)는 단일 스레드 C++ 에는 해당하지 않았다 |
 | 28 | **200명 회차의 C++ p99 가 7·28·284ms 로 요동** | 서버 큐 0 · CPU 10% — 게이트웨이가 아니라 파이썬 부하 클라이언트(스레드 200개)의 GIL 스케줄링. 파이썬 게이트웨이는 서버 지연이 100ms 대라 이 소음이 가려졌을 뿐 | 단일 스레드 poll 기반 C++ 부하 클라이언트(같은 측정 정의·출력 키). 200명 p99 **10ms** 로 안정, 500명 p99 24ms · 유실 0. 파이썬 게이트웨이는 500명에서 p50 1.2초로 포화 |
+| 29 | **멀티캐스트 구독자가 3,000건 중 4건을 조용히 잃음** | 마지막 데이터그램이 유실 주입에 걸리면 뒤에 오는 프레임이 없어 갭을 알 길이 없다. 꼬리 유실은 순번만으로는 안 보인다 | 발행자 유휴 하트비트(250ms). 꼬리 유실이 다음 하트비트에서 드러나 재전송된다. 시험이 이걸 고정 |
+| 30 | 멀티캐스트 시험에서 **첫 체결 하나가 늘 사라짐** | 발행자 프로세스는 "버스 연결됨"인데 파이썬 버스 서버가 그 연결을 등록하기 전 창이 있고, 그 사이 발행은 아무에게도 안 간다. 버스의 정상 의미(등록된 구독자에게만 큐잉)다 | 시험이 발행자 헬스가 아니라 버스의 구독자 등록을 기다린다. 운영에서는 스냅샷+순번이 이 창을 덮는다 |
+| 31 | macOS 에서 멀티캐스트 전송이 조용히 실패 (send_errors 만 증가) | 송신 인터페이스가 없으면 ENETUNREACH. 세기만 하면 "발행은 되는데 아무도 못 받는" 상태를 아무도 모른다 | 첫 실패와 1,000회마다 원인·조치(MDFEED_MCAST_IF=127.0.0.1) 로그. 시험은 루프백 명시 → 기본 인터페이스 순으로 탐색 |
 | 17 | Postgres 조회 시각이 UTC | 국내 장 시간 09:00~15:30 이 00:00~06:30 으로 보인다. 장 시작 전인지 마감 후인지 눈으로 판단 불가 | 스키마에서 DB 기본 시간대를 `Asia/Seoul` 로 설정 (저장 값은 그대로, 표시만) |
 
 ---
@@ -130,7 +133,7 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 |---|---|---|
 | 금융 데이터 FEED 개발·운영 | 수집 경로 5개, 배포 프로토콜 3종 | 무결성 48.5% → **100.0000%** |
 | Linux 서비스·프로세스 점검·안정화 | systemd 6유닛 + 자동 검증 + 장애 주입 | 11항목 · 복구 4종 확인 |
-| 파이프라인·배포·점검 자동화 | Makefile · CI 6잡 · Pages 자동 갱신 | 테스트 **517개** |
+| 파이프라인·배포·점검 자동화 | Makefile · CI 6잡 · Pages 자동 갱신 | 테스트 **520개** |
 | Python | 소스 8,835줄 | 핵심 의존성 **0** |
 | SQL · 관계형 DB | 복합 인덱스 · 사전 집계 · 하이퍼테이블 | 적재 **480,586 rows/s** |
 | Linux 명령·프로세스·로그 | `ops.sh diag` · RUNBOOK 8종 | 1차 진단 한 줄 |
@@ -260,6 +263,43 @@ make cpp-compare   # 같은 수집기 아래 두 게이트웨이 부하 비교 �
 
 ---
 
+## UDP 멀티캐스트 피드와 갭 복구
+
+TCP 게이트웨이는 구독자마다 `send()` 를 부르니 비용이 구독자 수에 비례합니다. 거래소가 실제로 쓰는 배포는
+**UDP 멀티캐스트**입니다. 한 번 쏘면 끝이라 구독자가 10명이든 1,000명이든 발행 비용이 같습니다. 대신 UDP 는
+유실과 순서 뒤바뀜이 정상이라, **수신자가 순번으로 갭을 잡고 복구 채널로 메우는** 구조가 따라와야 합니다.
+ITCH/MoldUDP64, CME MDP 3.0 이 전부 이 모양입니다.
+
+```
+UDS 버스 ─▶ cpp/src/mcast_publisher.cpp ─┬─▶ UDP 멀티캐스트 (증분, 채널 seq, 데이터그램당 최대 1,400B 로 묶음)
+                                        └─▶ 재전송 버퍼 (최근 65,536 프레임)
+TCP 복구 채널: MSG_SUBSCRIBE → 스냅샷 + MSG_SNAPSHOT{next_seq}
+               MSG_RETRANS{from,to} → 프레임 재전송 + MSG_ACK{sent, unavailable, oldest_available}
+참조 구독자:   src/mdfeed/mcast_client.py — 그룹에 먼저 가입 → 스냅샷 → 갭이면 재전송 요청, 순서가 맞을 때까지 보관
+```
+
+```bash
+make mcast-pub                         # 발행자 (MDFEED_MCAST_GROUP=239.192.0.1 MDFEED_MCAST_PORT=9130)
+make mcast-client                      # 참조 구독자 10초 → 갭·재전송·복구 불가 통계 JSON
+MDFEED_MCAST_DROP_EVERY=20 make mcast-pub   # 20번째 데이터그램마다 버리는 결정적 유실 주입
+```
+
+**실측 (리플레이 수집기 · 상류 약 700 msg/s · 유실 주입 1/20 · 참조 구독자 10초)**
+
+| 배달 | 갭 탐지 | 재전송 요청 / 받은 프레임 | 복구 불가 | 중복 | 지연 p50 | p99 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 6,218 | 119 | 119 / 309 | **0** | **0** | 394 µs | 4.6 ms |
+
+발행자가 135개 데이터그램을 일부러 버렸고, 구독자는 그 전부를 순서대로 되맞췄습니다. `tests/test_mcast.py` 가
+유니캐스트 경로(어디서나), 실제 멀티캐스트 그룹(호스트가 지원할 때), 그리고 **재전송 버퍼 밖으로 밀린 구간을
+숨기지 않고 세는지**를 고정합니다.
+
+> **하트비트가 없으면 꼬리 유실은 영원히 안 보입니다** (결함 29). 마지막 데이터그램이 사라지면 뒤에 오는
+> 프레임이 없어 수신자가 갭을 알 길이 없습니다. 첫 구현이 정확히 그렇게 3,000건 중 4건을 조용히 잃었습니다.
+> 발행자가 유휴 시 250ms 마다 자체 하트비트를 쏘게 한 뒤에야 잡혔습니다. MoldUDP64 가 하트비트를 쏘는 이유입니다.
+
+---
+
 ## 프로젝트 구조
 
 ```
@@ -277,17 +317,18 @@ src/mdfeed/
   runtime.py       시그널 처리 · PID · 구조화 로깅
   cli.py           프로세스 감독기 · 진단 도구
   client.py        MDFP/1 참조 구독 클라이언트
+  mcast_client.py  멀티캐스트 참조 구독자 (갭 탐지 · 재전송 복구 · 복구 불가 집계)
   adapters/        upbit · binance · kis · replay
   services/        feedd · tcp_gateway · ws_gateway · rest_api · writer · strategy
   storage/         schema.sql (PG+Timescale) · schema_sqlite.sql · db.py
 
 ops/     systemd 유닛 6종 · ops.sh · watchdog.sh · healthcheck.py · logrotate
 quant/   backtest.py · run_backtest.py · integrations.py · factor_screen.py
-tests/   517개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
+tests/   520개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
          복구 경로 · 종료 기한 · 컨플레이션 · 토큰 발급 · 운영 기록 환산 ·
          PostgreSQL 마이그레이션/백업/복구 27개는 실서버 연결 시에만)
 bench/   계층별 성능 측정 → docs/data/bench.json · 게이트웨이 비교 → gateway_compare.json
-cpp/     C++ 데이터 평면 — MDFP/1 헤더 라이브러리 · tcp_gateway · 테스트 · 벤치 (의존성 0)
+cpp/     C++ 데이터 평면 — MDFP/1 헤더 라이브러리 · tcp_gateway · mcast_publisher · 부하 클라이언트 · 테스트 (의존성 0)
 docs/    GitHub Pages 대시보드 (정적/실시간 겸용)
 ```
 
