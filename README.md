@@ -3,7 +3,7 @@
 [![CI](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml)
 [![Pages](https://github.com/oyeong011/market-feed-platform/actions/workflows/pages.yml/badge.svg)](https://oyeong011.github.io/market-feed-platform/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![tests](https://img.shields.io/badge/tests-541-brightgreen)
+![tests](https://img.shields.io/badge/tests-542-brightgreen)
 ![cpp](https://img.shields.io/badge/C%2B%2B-data%20plane-blue)
 ![obs](https://img.shields.io/badge/알람-18개%20지표%20검증-blue)
 ![venues](https://img.shields.io/badge/수집경로-5개%20실연결-blue)
@@ -68,7 +68,7 @@ make demo        # replay + disposable synthetic SQLite 로 6개 프로세스 �
 make status      # 서비스 상태 (프로세스 + HTTP 헬스 + 포트)
 make client      # 참조 TCP 구독 클라이언트 (갭 탐지 포함)
 make diag        # 장애 진단 원스톱
-make test        # 541개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
+make test        # 542개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
 ```
 
 데모와 CI는 라이브 어댑터를 상속하지 않습니다. 저장소에 든 녹화 파일을 replay로 읽고, 임시 SQLite DB를 만들어 검증합니다.
@@ -120,6 +120,8 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 | 31 | macOS 에서 멀티캐스트 전송이 조용히 실패 (send_errors 만 증가) | 송신 인터페이스가 없으면 ENETUNREACH. 세기만 하면 "발행은 되는데 아무도 못 받는" 상태를 아무도 모른다 | 첫 실패와 1,000회마다 원인·조치(MDFEED_MCAST_IF=127.0.0.1) 로그. 시험은 루프백 명시 → 기본 인터페이스 순으로 탐색 |
 | 32 | **kqueue 로 바꿨는데 안 빨라짐** (1,000명 p99 poll 78ms · kqueue 308ms, 2,000명은 둘 다 포화) | 병목이 fd 감시가 아니었다. 상류 4,000 msg/s × 1,000명 = 초당 프레임 400만 건, `send()` 15만 회, 365MB/s. 시스템 콜 하나하나의 TCP 세그먼트 생성 비용이 CPU 를 다 쓴다. 구독자별 재인코딩은 초당 0.2초 CPU 로 무관(측정) | 지표에 `send_calls_total` `send_bytes_total` `send_eagain_total` `bus_reads_total` 을 노출해 비용이 어디 있는지 보이게 함. 결론을 문서에 그대로 적음: 이 규모는 TCP 팬아웃의 한계이고 멀티캐스트가 답이다. EventLoop 추상은 리눅스 epoll 이식용으로 유지 |
 | 33 | **순서가 잠깐 뒤바뀔 때마다 재전송을 요청** | UDP 는 유실만 정상인 게 아니다. 경로가 갈리면 뒤 것이 먼저 온다. 수신자가 그걸 즉시 갭으로 보고 재전송을 불렀는데, 잠시 뒤 원래 것이 도착해 요청이 통째로 헛일이었다. 발행자에 재배열을 주입해 재보니 3,000프레임에 167건이 헛요청 | 갭필 지연(기본 20ms) — 갭을 보고 바로 부르지 않고 기다린다. 같은 주입에서 요청 **167건 → 0건**, 배달은 그대로 전부·순서대로. 상용 피드의 gap-fill timer 와 같은 장치다. 지연을 0 으로 두면 헛요청이 돌아오는 것까지 시험으로 고정 |
+| 34 | **공백 알람 셋이 요청이 없으면 영원히 안 울림** | 공백 지표가 `/healthz` 와 `/api/v1/gaps` 요청의 부수 효과로만 만들어졌다. **Prometheus 는 `/metrics` 만 긁는다.** 시험이 이걸 못 잡은 이유는 픽스처가 준비 확인으로 `/healthz` 를 불렀기 때문이다 — 그 호출이 지표를 만들고 있었다 | 30초 주기 갱신 루프로 값을 책임진다. 시험은 준비 확인조차 TCP 접속으로만 하고 HTTP 요청을 안 한다 |
+| 35 | **알람 검사기가 여러 줄 식의 둘째 줄을 안 읽음** | `expr:` 로 시작하는 줄만 파싱했다. 이어지는 줄에만 있는 지표는 없어져도 "모든 알람이 실재한다"가 나온다 — 검사기가 눈을 감는다 | 이어쓰기 파싱. 고친 뒤 참조 지표 36종 → 41종. 그동안 5종을 못 보고 있었다. 둘째 줄에 가짜 지표를 넣으면 잡히는지를 시험으로 고정 |
 | 17 | Postgres 조회 시각이 UTC | 국내 장 시간 09:00~15:30 이 00:00~06:30 으로 보인다. 장 시작 전인지 마감 후인지 눈으로 판단 불가 | 스키마에서 DB 기본 시간대를 `Asia/Seoul` 로 설정 (저장 값은 그대로, 표시만) |
 
 ---
@@ -135,7 +137,7 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 |---|---|---|
 | 금융 데이터 FEED 개발·운영 | 수집 경로 5개, 배포 프로토콜 3종 | 무결성 48.5% → **100.0000%** |
 | Linux 서비스·프로세스 점검·안정화 | systemd 6유닛 + 자동 검증 + 장애 주입 | 11항목 · 복구 4종 확인 |
-| 파이프라인·배포·점검 자동화 | Makefile · CI 7잡 · Pages 자동 갱신 | 테스트 **541개** |
+| 파이프라인·배포·점검 자동화 | Makefile · CI 7잡 · Pages 자동 갱신 | 테스트 **542개** |
 | Python | 소스 8,835줄 | 핵심 의존성 **0** |
 | SQL · 관계형 DB | 복합 인덱스 · 사전 집계 · 하이퍼테이블 | 적재 **480,586 rows/s** |
 | Linux 명령·프로세스·로그 | `ops.sh diag` · RUNBOOK 8종 | 1차 진단 한 줄 |
@@ -395,7 +397,7 @@ src/mdfeed/
 
 ops/     systemd 유닛 6종 · ops.sh · watchdog.sh · healthcheck.py · logrotate
 quant/   backtest.py · run_backtest.py · integrations.py · factor_screen.py
-tests/   541개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
+tests/   542개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
          복구 경로 · 종료 기한 · 컨플레이션 · 토큰 발급 · 운영 기록 환산 ·
          PostgreSQL 마이그레이션/백업/복구 27개는 실서버 연결 시에만)
 bench/   계층별 성능 측정 → docs/data/bench.json · 게이트웨이 비교 → gateway_compare.json

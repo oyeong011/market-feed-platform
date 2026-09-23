@@ -193,3 +193,57 @@ def test_health_blocking_reason_ignores_recovered_gap(api):
     assert health["data_completeness"]["open_gaps"] == 1
     assert health["data_completeness"]["blocking_reason"]
     assert "collection stopped" in health["data_completeness"]["blocking_reason"]
+
+
+def test_gap_metrics_exist_without_any_request(tmp_path):
+    """Prometheus 는 /metrics 만 긁는다. 아무도 /healthz 를 안 불러도 공백 지표가 있어야 한다.
+
+    예전에는 `/healthz` 와 `/api/v1/gaps` 요청의 **부수 효과로만** 값이 생겼다. 그러면 Prometheus
+    입장에서는 지표가 없는 것이고, 그걸 참조하는 알람 셋(MarketDataGapOpen ·
+    …UnrecoveredTooLong · …RecoveryVerificationFailed)은 영원히 안 울린다 — 결함 23과 같은 유형이다.
+
+    이 시험은 준비 확인조차 /healthz 로 하지 않는다. 그 호출이 바로 지표를 만들어 버리기 때문이다
+    (위 `api` 픽스처가 그래서 이 결함을 못 잡고 있었다). TCP 접속만으로 기다린다.
+    """
+    import threading
+
+    cfg = Config()
+    cfg.storage_backend = "sqlite"
+    cfg.storage_profile = "test"
+    cfg.incidents_dir = str(Path(__file__).resolve().parents[1] / "ops" / "incidents")
+    cfg.sqlite_path = str(tmp_path / "gapmetrics.db")
+    cfg.http_port = free_port()
+    cfg.http_host = "127.0.0.1"
+    cfg.stats_ttl_s = 60.0
+    cfg.gap_metrics_interval_s = 0.2
+
+    stop = asyncio.Event()
+    loop = asyncio.new_event_loop()
+    svc = RestAPI(cfg)
+
+    def run():
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(svc.run(stop))
+
+    th = threading.Thread(target=run, daemon=True)
+    th.start()
+    try:
+        deadline = time.time() + 20
+        text = ""
+        while time.time() < deadline:
+            time.sleep(0.2)
+            try:                                     # 포트만 열렸는지 본다 — HTTP 요청은 아직 안 한다
+                socket.create_connection(("127.0.0.1", cfg.http_port), timeout=1).close()
+            except OSError:
+                continue
+            with urllib.request.urlopen(f"http://127.0.0.1:{cfg.http_port}/metrics", timeout=5) as r:
+                text = r.read().decode()
+            if "mdfeed_data_gaps_open" in text:
+                break
+        for name in ("mdfeed_data_gaps_open",
+                     "mdfeed_data_gaps_unrecovered_duration_seconds",
+                     "mdfeed_gap_recovery_verification_failures_total"):
+            assert name in text, f"{name} 가 요청 없이는 안 나온다"
+    finally:
+        loop.call_soon_threadsafe(stop.set)
+        th.join(timeout=15)

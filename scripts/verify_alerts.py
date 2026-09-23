@@ -43,6 +43,8 @@ PREFLIGHT_METRICS = {
 # 다만 **실측 어댑터가 붙어 있는데도 없으면 그건 진짜 결함**이다.
 # 그래서 조건을 확인한 뒤에 판정한다.
 CONDITIONAL = {
+    "mdfeed_send_eagain_total":
+        "C++ 배포 게이트웨이에서만 생성된다 (파이썬 판은 asyncio 가 쓰기를 대신해 EAGAIN 을 셀 자리가 없다)",
     "mdfeed_ingest_latency_microseconds":
         "지연을 측정하는 어댑터(measures_latency=True)가 있어야 생성된다",
     "mdfeed_clock_offset_us":
@@ -98,6 +100,12 @@ DECLARED_OFFLINE = {
 # 멀티캐스트 발행자는 선택 서비스(MDFEED_MCAST_ENABLED). 안 켠 구성에서 이 지표가 없는 건
 # 정확한 동작이다. 켜져 있는데 없으면 그건 결함이다 — 아래에서 구분한다.
 MCAST_PORT = 9132
+GATEWAY_PORT = 9111
+
+# C++ 배포 게이트웨이만 내는 지표. 파이썬 판은 asyncio 가 쓰기를 대신하므로 EAGAIN 을 셀 자리가
+# 아예 없다 — 같은 값을 억지로 만들면 "0 이니까 괜찮다" 는 거짓말이 된다. 구현이 다르면 낼 수
+# 있는 것도 다르고, 그 사실을 분류로 적는다.
+CPP_GATEWAY_METRICS = {"mdfeed_send_eagain_total"}
 MCAST_METRICS = {
     "mdfeed_mcast_send_errors_total",
     "mdfeed_mcast_retrans_unavailable_total",
@@ -171,6 +179,15 @@ def any_adapter_measures_latency() -> bool | None:
     return False
 
 
+def gateway_impl() -> str | None:
+    """배포 게이트웨이가 파이썬 판인지 C++ 판인지. 못 물어보면 None(판단 유보)."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{GATEWAY_PORT}/healthz", timeout=4) as r:
+            return str(json.loads(r.read()).get("impl", "python"))
+    except Exception:                                # noqa: BLE001, S112
+        return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser("verify_alerts")
     ap.add_argument("--rules", default="ops/observability/alerts.yml")
@@ -216,6 +233,7 @@ def main() -> int:
 
     measures = any_adapter_measures_latency()
     preflight_live = PREFLIGHT_PORT in live_ports
+    impl = gateway_impl()
     ok, conditional, missing = {}, {}, {}
     notes = dict(CONDITIONAL)
     for m, alerts in referenced.items():
@@ -224,6 +242,10 @@ def main() -> int:
         elif m in CONDITIONAL and measures is False:
             # 지연을 재는 어댑터가 없으므로 없는 것이 정확한 동작이다
             conditional[m] = alerts
+        elif m in CPP_GATEWAY_METRICS and impl is not None and impl != "c++":
+            # 파이썬 게이트웨이가 도는 중. 이 지표가 없는 것이 정확한 동작이다.
+            conditional[m] = alerts
+            notes[m] = f"C++ 배포 게이트웨이에서만 생성된다 (현재 impl={impl})"
         elif m in MCAST_METRICS and live_ports and MCAST_PORT not in live_ports:
             # 멀티캐스트 발행자를 안 켠 구성. 없는 것이 정확한 동작이다.
             conditional[m] = alerts

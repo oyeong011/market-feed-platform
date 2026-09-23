@@ -167,6 +167,9 @@ class Config:
     # 알려진 데이터 공백(사고) 기록 폴더. 비우면 프로파일이 결정한다 —
     # production 은 ops/incidents/ 를 심고, test(합성 데이터)는 아무것도 심지 않는다.
     incidents_dir: str = field(default_factory=lambda: _env("INCIDENTS_DIR", ""))
+    # 공백 지표 갱신 주기. Prometheus 는 /metrics 만 긁으므로 요청과 무관하게 값이 있어야 한다.
+    gap_metrics_interval_s: float = field(
+        default_factory=lambda: float(_env("GAP_METRICS_INTERVAL_S", "30")))
     pg_dsn: str = field(default_factory=lambda: os.getenv("DATABASE_URL", ""))
     sqlite_path: str = field(default_factory=lambda: _env("SQLITE_PATH", "data/mdfeed.db"))
     bar_interval_s: int = field(default_factory=lambda: _int("BAR_INTERVAL_S", 60))

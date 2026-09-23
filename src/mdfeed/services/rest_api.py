@@ -208,6 +208,25 @@ class RestAPI:
                 "uptime_s": round(time.time() - self._started, 1),
                 "db_errors": self.db_errors}
 
+    async def _gap_metrics_loop(self, stop: asyncio.Event) -> None:
+        """공백 지표를 주기적으로 갱신한다.
+
+        예전에는 `/healthz` 나 `/api/v1/gaps` 요청이 들어올 때만 값이 생겼다. 그런데
+        **Prometheus 는 /metrics 만 긁는다.** 아무도 저 둘을 안 부르면 지표가 아예 없고,
+        그걸 참조하는 알람 세 개(MarketDataGapOpen · …UnrecoveredTooLong ·
+        …RecoveryVerificationFailed)는 영원히 안 울린다. 결함 23과 같은 유형이다.
+        요청에 딸려 나오는 부수 효과가 아니라 이 루프가 값을 책임진다.
+        """
+        while not stop.is_set():
+            try:
+                summary = await asyncio.to_thread(
+                    lambda: gaps.summarize(self.gap_repo.list()))
+                self._publish_gap_metrics(summary)
+            except Exception:                        # noqa: BLE001
+                log.exception("공백 지표 갱신 실패")
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(stop.wait(), timeout=self.cfg.gap_metrics_interval_s)
+
     def _publish_gap_metrics(self, summary: dict) -> None:
         self.registry.gauge("data_gaps_open", float(summary["open_count"]))
         self.registry.gauge("data_gaps_unrecovered_duration_seconds",
@@ -246,12 +265,16 @@ class RestAPI:
         from ..runtime import sample_resources
         res_task = asyncio.create_task(sample_resources(self.tracker, stop))
         counts_task = asyncio.create_task(self._counts_loop(stop))
+        gap_task = asyncio.create_task(self._gap_metrics_loop(stop))
         await stop.wait()
         res_task.cancel()
         counts_task.cancel()
         # CancelledError 는 BaseException 이라 suppress(Exception) 이 못 잡는다
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await counts_task
+        gap_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await gap_task
         # HTTP 를 먼저 닫아 새 조회가 안 들어오게 한 뒤에 저장소를 닫는다.
         await http.close()
         await asyncio.to_thread(self.storage.close)
