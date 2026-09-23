@@ -46,9 +46,10 @@ import time
 from ..bus import UDSSubscriber
 from ..httpd import HTTPServer, Response, health_routes
 from ..metrics import Registry
-from ..models import (MSG_BOOK, MSG_HEARTBEAT, MSG_SNAPSHOT, MSG_SUBSCRIBE,
+from ..models import (MSG_ACK, MSG_BOOK, MSG_HEARTBEAT, MSG_SNAPSHOT, MSG_SUBSCRIBE,
                       MSG_TRADE, BookTop, Trade, now_ns)
 from ..protocol import FLAG_SNAPSHOT, FrameParser, encode
+from .. import entitlements as ent
 
 log = logging.getLogger("mdfeed.tcp_gateway")
 SERVICE = "tcp-gateway"
@@ -84,13 +85,13 @@ class Subscriber:
 
     __slots__ = ("id", "writer", "queue", "symbols", "dropped", "sent",
                  "connected_at", "peer", "out_seq", "mode",
-                 "pending", "conflated")
+                 "pending", "conflated", "token")
 
     def __init__(self, cid: int, writer, queue_size: int, peer: str):
         self.id = cid
         self.writer = writer
         self.queue: asyncio.Queue = asyncio.Queue(maxsize=queue_size)
-        self.symbols: set[str] | None = None      # None = 전체 구독
+        self.symbols: set[str] | None = None      # None = 전체 구독 (권한 검사가 켜지면 접속 직후 빈 집합)
         self.dropped = 0
         self.sent = 0
         self.connected_at = time.time()
@@ -100,6 +101,7 @@ class Subscriber:
         # conflate 전용: 키 → (msg_type, payload, flags). 큐에는 키만 넣는다.
         self.pending: dict[str, tuple] = {}
         self.conflated = 0          # 합쳐지며 생략된 프레임 수
+        self.token = ""             # 구독 권한 토큰 (검사가 꺼져 있으면 빈 값)
 
     def wants(self, key: str) -> bool:
         return self.symbols is None or key in self.symbols
@@ -142,9 +144,11 @@ class TCPGateway:
         # 사건이 나기 전에도 지표가 존재해야 알람이 평가된다
         self.registry.declare_counters(
             "dropped_total", "sent_total", "frames_in_total", "connections_total",
-            "conflated_total")
+            "conflated_total", "entitlement_denied_total")
         self.subs: dict[int, Subscriber] = {}
         self._next_id = 0
+        self.ent = ent.load(cfg.entitlements_file)
+        self.entitlement_denied = 0
         self.last: dict[str, bytes] = {}          # "VENUE:SYMBOL" → 최신 프레임 페이로드
         self.last_type: dict[str, int] = {}
         self.frames_in = 0
@@ -239,6 +243,9 @@ class TCPGateway:
         self._next_id += 1
         peer = _peer(writer)
         s = Subscriber(cid, writer, self.cfg.client_queue_size, peer)
+        if self.ent.enabled:
+            # 토큰을 보내기 전에는 아무것도 주지 않는다. 기본값이 "전체"면 권한이 의미가 없다.
+            s.symbols = set()
         self.subs[cid] = s
         log.info("구독자 #%d 접속 (%s). 현재 %d명", cid, peer, len(self.subs))
         self.registry.counter("connections_total")
@@ -330,8 +337,19 @@ class TCPGateway:
             req = json.loads(payload)
         except json.JSONDecodeError:
             return
+        s.token = str(req.get("token", "") or "")
         syms = req.get("symbols")
-        s.symbols = set(syms) if syms else None
+        granted, denied, why = self.ent.resolve(s.token, list(syms) if syms else None)
+        s.symbols = granted
+        if why:
+            # **조용히 거절하지 않는다.** 구독자가 "요청했는데 안 온다"를 스스로 알 수 있어야 한다.
+            self.entitlement_denied += 1
+            self.registry.counter("entitlement_denied_total")
+            log.warning("구독자 #%d 권한 거절(%s): %s", s.id, why, denied or "전체")
+            with contextlib.suppress(Exception):
+                s.writer.write(encode(MSG_ACK, 0, json.dumps(
+                    {"type": "entitlement", "error": why, "denied": denied,
+                     "granted": sorted(granted) if granted else []}).encode()))
         mode = str(req.get("mode", s.mode)).lower()
         if mode in (MODE_STREAM, MODE_CONFLATE) and mode != s.mode:
             # 모드를 바꾸면 큐에 남은 것의 형태가 섞인다. 비우고 새로 시작한다.
@@ -360,6 +378,8 @@ class TCPGateway:
             "frames_in": self.frames_in,
             "subscribers": len(self.subs),
             "cached_symbols": len(self.last),
+            "entitlements": {"enabled": self.ent.enabled, "tokens": len(self.ent.by_token),
+                             "denied": self.entitlement_denied},
             "total_dropped": sum(s.dropped for s in self.subs.values()),
             "max_backlog": max((s.queue.qsize() for s in self.subs.values()), default=0),
             "max_wire_bytes": max((s.wire_bytes() for s in self.subs.values()), default=0),
@@ -369,6 +389,11 @@ class TCPGateway:
         cfg = self.cfg
         server = await asyncio.start_server(self._handle_client, cfg.tcp_host, cfg.tcp_port)
         log.info("MDFP/1 배포 서버 listening on %s:%d", cfg.tcp_host, cfg.tcp_port)
+        if self.ent.enabled:
+            log.info("구독 권한 검사 켜짐 — 토큰 %d개 (%s)", len(self.ent.by_token), self.ent.source)
+        else:
+            log.warning("구독 권한 검사 꺼짐 — 이 포트에 닿는 누구나 전 종목을 받는다 "
+                        "(MDFEED_ENTITLEMENTS_FILE 로 켠다)")
 
         http = HTTPServer(cfg.http_host, cfg.tcp_admin_port, SERVICE, self.registry)
         health_routes(http, self.health, tracker=self.tracker)

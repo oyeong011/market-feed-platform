@@ -368,6 +368,16 @@ groups:
           summary: "결함 주입이 켜진 채 돌고 있다 — 일부러 데이터를 버리는 중"
           action: "MDFEED_MCAST_DROP_EVERY / REORDER_EVERY / DUPLICATE_EVERY 를 끄고 재기동한다"
 
+      - alert: EntitlementDenialSpike
+        # 권한 거절이 갑자기 늘면 둘 중 하나다: 권한 파일과 실제 구독 설정이 어긋났거나,
+        # 권한 없는 쪽이 계속 두드리고 있거나. 둘 다 사람이 봐야 한다.
+        expr: increase(mdfeed_entitlement_denied_total[10m]) > 50
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "구독 권한 거절이 급증했다"
+          action: "게이트웨이 로그의 거절 사유(TOKEN_REQUIRED/UNKNOWN_TOKEN/NOT_ENTITLED)와 권한 파일을 대조한다"
+
       - alert: FanoutUnfair
         # 순차 팬아웃을 늘 같은 순서로 돌면 접속이 이른 구독자가 구조적으로 유리해진다.
         # 실측(구독자 100명): 고정 순서 62배, 시작점 회전 1.0배. 같은 값을 파는 피드에서

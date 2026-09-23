@@ -160,6 +160,9 @@ class Config:
     record_file: str = field(default_factory=lambda: _env("RECORD_FILE", ""))
     heartbeat_s: float = field(default_factory=lambda: float(_env("HEARTBEAT_S", "5")))
     client_queue_size: int = field(default_factory=lambda: _int("CLIENT_QUEUE", 2048))
+    # 구독 권한 파일. 비우면 검사가 꺼진다(누구나 전 종목). 켜고 끄는 것은 명시적 결정이어야 하므로
+    # 기동 로그에 어느 쪽인지 남긴다. 형식은 src/mdfeed/entitlements.py 참고.
+    entitlements_file: str = field(default_factory=lambda: _env("ENTITLEMENTS_FILE", ""))
 
     # ── 저장소 ─────────────────────────────────────────────────────────────
     storage_backend: str = field(default_factory=lambda: _env("STORAGE_BACKEND", "postgres"))

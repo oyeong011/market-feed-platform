@@ -3,7 +3,7 @@
 [![CI](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml)
 [![Pages](https://github.com/oyeong011/market-feed-platform/actions/workflows/pages.yml/badge.svg)](https://oyeong011.github.io/market-feed-platform/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![tests](https://img.shields.io/badge/tests-544-brightgreen)
+![tests](https://img.shields.io/badge/tests-553-brightgreen)
 ![cpp](https://img.shields.io/badge/C%2B%2B-data%20plane-blue)
 ![obs](https://img.shields.io/badge/알람-18개%20지표%20검증-blue)
 ![venues](https://img.shields.io/badge/수집경로-5개%20실연결-blue)
@@ -68,7 +68,7 @@ make demo        # replay + disposable synthetic SQLite 로 6개 프로세스 �
 make status      # 서비스 상태 (프로세스 + HTTP 헬스 + 포트)
 make client      # 참조 TCP 구독 클라이언트 (갭 탐지 포함)
 make diag        # 장애 진단 원스톱
-make test        # 544개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
+make test        # 553개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
 ```
 
 데모와 CI는 라이브 어댑터를 상속하지 않습니다. 저장소에 든 녹화 파일을 replay로 읽고, 임시 SQLite DB를 만들어 검증합니다.
@@ -138,7 +138,7 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 |---|---|---|
 | 금융 데이터 FEED 개발·운영 | 수집 경로 5개, 배포 프로토콜 3종 | 무결성 48.5% → **100.0000%** |
 | Linux 서비스·프로세스 점검·안정화 | systemd 6유닛 + 자동 검증 + 장애 주입 | 11항목 · 복구 4종 확인 |
-| 파이프라인·배포·점검 자동화 | Makefile · CI 7잡 · Pages 자동 갱신 | 테스트 **544개** |
+| 파이프라인·배포·점검 자동화 | Makefile · CI 7잡 · Pages 자동 갱신 | 테스트 **553개** |
 | Python | 소스 8,835줄 | 핵심 의존성 **0** |
 | SQL · 관계형 DB | 복합 인덱스 · 사전 집계 · 하이퍼테이블 | 적재 **480,586 rows/s** |
 | Linux 명령·프로세스·로그 | `ops.sh diag` · RUNBOOK 8종 | 1차 진단 한 줄 |
@@ -238,6 +238,28 @@ curl -s localhost:9111/healthz | grep impl   # "impl": "c++" 이어야 진짜 C+
 
 컨테이너는 다단계 빌드로 C++ 바이너리만 담고 컴파일러는 남기지 않습니다. systemd 는
 `ops/systemd/mdfeed-tcp-gateway.service.d/cpp.conf` 드롭인으로 실행 파일만 갈아 끼웁니다.
+
+**구독 권한(entitlement)** — 누가 어떤 종목을 볼 수 있는지가 마켓데이터의 핵심 개념인데
+이 플랫폼에는 없었습니다. 배포 포트에 닿는 누구나 전 종목을 받았습니다.
+
+```bash
+MDFEED_ENTITLEMENTS_FILE=ops/entitlements.example.txt make up
+```
+
+```
+# 토큰            허용 종목 (* 는 전체)
+demo-readonly    UPBIT:KRW-BTC,BINANCE:BTCUSDT
+full-desk        *
+```
+
+구독자는 `MSG_SUBSCRIBE` 에 `token` 을 담아 보냅니다. 권한 밖 종목은 **요청해도, 필터를 비워도**
+오지 않습니다. 그리고 **조용히 거절하지 않습니다** — 거절 사유와 허용 목록을 `MSG_ACK` 로 돌려주므로
+구독자가 "요청했는데 안 온다"를 스스로 압니다. 파이썬 판과 C++ 판 **둘 다** 같은 규칙을 지키고,
+같은 시험으로 검증합니다. 한쪽에만 있으면 "켰는데 이 구현에서는 안 먹는" 상태가 되기 때문입니다.
+
+<sub>**막는 것과 못 막는 것**: 권한 없는 구독자가 데이터를 받아 가는 것은 막습니다. 도청은 못 막습니다 —
+토큰과 시세가 평문으로 흐릅니다. 전송 구간 보호는 사설망이나 TLS 종단이 맡습니다. 토큰을 비밀번호처럼
+다루되 암호로 착각하지 않습니다. 파일을 주지 않으면 검사가 꺼지고 그 사실이 기동 로그에 남습니다.</sub>
 
 **교체할 때 접속이 끊기지 않습니다.** 새 프로세스가 같은 포트를 `SO_REUSEPORT` 로 함께 듣고,
 옛 프로세스는 `SIGTERM` 에 **리스너만 닫고** 기존 구독자에게 계속 배포하다 끝냅니다. 그래서 교체
@@ -421,6 +443,7 @@ src/mdfeed/
   runtime.py       시그널 처리 · PID · 구조화 로깅
   cli.py           프로세스 감독기 · 진단 도구
   client.py        MDFP/1 참조 구독 클라이언트
+  entitlements.py  구독 권한 규칙 (토큰 → 허용 종목). 두 게이트웨이가 같은 규칙을 쓴다
   mcast_client.py  멀티캐스트 참조 구독자 (갭 탐지 · 재전송 복구 · 복구 불가 집계)
   adapters/        upbit · binance · kis · replay
   services/        feedd · tcp_gateway · ws_gateway · rest_api · writer · strategy
@@ -428,7 +451,7 @@ src/mdfeed/
 
 ops/     systemd 유닛 6종 · ops.sh · watchdog.sh · healthcheck.py · logrotate
 quant/   backtest.py · run_backtest.py · integrations.py · factor_screen.py
-tests/   544개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
+tests/   553개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
          복구 경로 · 종료 기한 · 컨플레이션 · 토큰 발급 · 운영 기록 환산 ·
          PostgreSQL 마이그레이션/백업/복구 27개는 실서버 연결 시에만)
 bench/   계층별 성능 측정 → docs/data/bench.json · 게이트웨이 비교 → gateway_compare.json

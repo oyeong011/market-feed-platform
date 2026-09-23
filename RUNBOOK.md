@@ -807,3 +807,22 @@ ops/swap_gateway.sh           # 교체 + 교체 중 접속 실패 수 확인 (0 
 
 systemd 로 돌릴 때는 `systemctl restart` 가 아니라 이 절차를 쓴다. restart 는 죽이고 나서 띄우므로
 그 사이가 곧 접속 실패 구간이다.
+
+---
+
+## 구독 권한 바꾸기
+
+```bash
+vi /etc/mdfeed/entitlements.txt      # 토큰 → 허용 종목
+ops/swap_gateway.sh                  # 무중단 교체로 반영 (재시작 아님)
+curl -s localhost:9111/healthz | python3 -c "import sys,json; print(json.load(sys.stdin)['entitlements'])"
+```
+
+확인할 것:
+- `entitlements.enabled` 가 `false` 면 **검사가 꺼져 있다.** 파일 경로(`MDFEED_ENTITLEMENTS_FILE`)를
+  확인한다. 꺼진 상태는 기동 로그에도 WARNING 으로 남는다.
+- `entitlements.denied` 가 계속 오르면 권한 파일과 실제 구독 설정이 어긋난 것이다. 게이트웨이 로그의
+  사유(`TOKEN_REQUIRED` / `UNKNOWN_TOKEN` / `NOT_ENTITLED`)를 본다. 알람 `EntitlementDenialSpike`.
+- 거절은 구독자에게 `MSG_ACK` 로도 간다. "안 온다"는 문의가 오면 클라이언트 쪽 로그를 먼저 본다.
+
+토큰은 평문으로 흐른다. 이 포트를 인터넷에 열지 않는다 — 사설망이나 TLS 종단 뒤에 둔다.

@@ -58,7 +58,7 @@ cpp:  ## C++ 데이터 평면 빌드 (컴파일러만 필요, 의존성 0)
 
 cpp-test: cpp  ## C++ 단위 테스트 + 파이썬↔C++ 교차 검증
 	$(MAKE) -C cpp -s test
-	$(BIN)/python -m pytest tests/test_cpp_conformance.py tests/test_cpp_gateway.py tests/test_cpp_load_client.py tests/test_mcast.py tests/test_cpp_ringbuffer.py -q
+	$(BIN)/python -m pytest tests/test_cpp_conformance.py tests/test_cpp_gateway.py tests/test_cpp_load_client.py tests/test_mcast.py tests/test_cpp_ringbuffer.py tests/test_entitlement_gateway.py -q
 
 cpp-bench: cpp  ## C++ 프로토콜·링버퍼 벤치 → docs/data/bench_cpp.json, bench_ring_cpp.json
 	./cpp/build/bench_protocol 300000 | tee docs/data/bench_cpp.json

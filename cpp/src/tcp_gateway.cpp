@@ -48,6 +48,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <fstream>
+#include <set>
+#include <sstream>
 #include <map>
 #include <optional>
 #include <string>
@@ -86,6 +89,7 @@ struct Cfg {
     size_t client_queue;
     uint64_t drop_limit;
     int tcp_sndbuf;   // 구독자 소켓 SO_SNDBUF (0 = 커널 기본). 리눅스는 자동조정으로 수 MB 까지 키운다
+    std::string entitlements_file;   // 구독 권한 파일. 비우면 검사가 꺼진다(누구나 전 종목)
     double drain_s;   // SIGTERM 후 기존 구독자에게 계속 배포할 시간. 0 이면 즉시 종료(옛 동작)
     bool reuseport;   // 같은 포트를 새 프로세스와 함께 듣는다 (무중단 교체)
     Cfg() {
@@ -98,6 +102,7 @@ struct Cfg {
         client_queue = size_t(env_int("MDFEED_CLIENT_QUEUE", 2048));
         drop_limit = uint64_t(env_int("MDFEED_DROP_LIMIT", 5000));
         tcp_sndbuf = int(env_int("MDFEED_TCP_SNDBUF", 0));
+        entitlements_file = env_str("MDFEED_ENTITLEMENTS_FILE", "");
         drain_s = double(env_int("MDFEED_DRAIN_SECONDS", 5));
         reuseport = env_int("MDFEED_REUSEPORT", 1) != 0;
     }
@@ -154,6 +159,46 @@ std::optional<std::string> json_string(const std::string& j, const std::string& 
     return j.substr(q1 + 1, q2 - q1 - 1);
 }
 
+// ── 구독 권한(entitlement) ──────────────────────────────────────────────────
+// src/mdfeed/entitlements.py 와 같은 파일 형식·같은 규칙을 쓴다. 한쪽에만 있으면
+// "켰는데 이 구현에서는 안 먹는" 상태가 된다.
+//
+// 막는 것: 권한 없는 구독자가 종목을 받아 가는 것. 막지 못하는 것: 도청 — 토큰과 시세가
+// 평문으로 흐른다. 전송 구간 보호는 사설망이나 TLS 종단이 맡는다.
+struct Entitlements {
+    std::map<std::string, std::set<std::string>> by_token;
+    bool enabled = false;
+    std::string source;
+
+    static Entitlements load(const std::string& path) {
+        Entitlements e;
+        if (path.empty()) return e;
+        std::ifstream in(path);
+        if (!in) { logf("ERROR", "구독 권한 파일을 못 읽습니다: %s", path.c_str()); return e; }
+        std::string line;
+        while (std::getline(in, line)) {
+            const auto hash = line.find('#');
+            if (hash != std::string::npos) line = line.substr(0, hash);
+            std::istringstream ls(line);
+            std::string token, syms;
+            if (!(ls >> token)) continue;
+            std::getline(ls, syms);
+            std::set<std::string> set;
+            std::string cur;
+            for (char c : syms) { if (c == ',') { if (!cur.empty()) set.insert(cur); cur.clear(); } else if (!isspace(uint8_t(c))) cur += c; }
+            if (!cur.empty()) set.insert(cur);
+            e.by_token[token] = std::move(set);
+        }
+        e.enabled = !e.by_token.empty();
+        e.source = path;
+        return e;
+    }
+    bool known(const std::string& t) const { return by_token.count(t) > 0; }
+    bool allows_all(const std::string& t) const {
+        auto it = by_token.find(t); return it != by_token.end() && it->second.count("*") > 0;
+    }
+};
+
 // ── 구독자 ──────────────────────────────────────────────────────────────────
 struct Cached { uint8_t msg_type; std::vector<uint8_t> payload; };
 
@@ -199,6 +244,9 @@ public:
         std::printf("{\"event\":\"listening\",\"service\":\"tcp-gateway\",\"impl\":\"c++\",\"event_loop\":\"%s\",\"tcp_port\":%d,\"admin_port\":%d}\n", EventLoop::backend(), tcp_port_, admin_port_);
         std::fflush(stdout);
         logf("INFO", "MDFP/1 배포 서버 listening on %s:%d (admin %d)", cfg_.tcp_host.c_str(), tcp_port_, admin_port_);
+        ent_ = Entitlements::load(cfg_.entitlements_file);
+        if (ent_.enabled) logf("INFO", "구독 권한 검사 켜짐 — 토큰 %zu개 (%s)", ent_.by_token.size(), ent_.source.c_str());
+        else logf("WARNING", "구독 권한 검사 꺼짐 — 이 포트에 닿는 누구나 전 종목을 받는다 (MDFEED_ENTITLEMENTS_FILE 로 켠다)");
         started_ = mono();
 
         loop_.add(listen_fd_, true, false, tag(Kind::Listen, 0)); listen_armed_ = true;
@@ -271,6 +319,7 @@ private:
     EventLoop loop_; bool listen_armed_ = false;
     uint64_t rotate_cursor_ = 0;   // 팬아웃 시작 구독자. 배치마다 한 칸씩 민다 (for_each_sub_rotated)
     std::unordered_map<std::string, Cached> last_;
+    Entitlements ent_; uint64_t entitlement_denied_ = 0;
     uint64_t next_id_ = 0, frames_in_ = 0, connections_ = 0, dropped_total_ = 0, sent_total_ = 0, conflated_total_ = 0;
     uint64_t send_calls_ = 0, send_bytes_ = 0, send_eagain_ = 0, bus_reads_ = 0;   // 시스템 콜 비용을 보이게
     double started_ = 0, last_frame_at_ = 0; bool upstream_ok_ = false;
@@ -464,6 +513,8 @@ private:
             }
             char ip[64]; inet_ntop(AF_INET, &a.sin_addr, ip, sizeof ip);
             Subscriber s; s.fd = fd; s.id = next_id_++; s.peer = std::string(ip) + ":" + std::to_string(ntohs(a.sin_port)); s.connected_at = mono();
+            // 토큰을 보내기 전에는 아무것도 주지 않는다. 기본값이 "전체"면 권한이 의미가 없다.
+            if (ent_.enabled) s.symbols = std::unordered_set<std::string>{};
             ++connections_;
             send_snapshot(s);
             auto [it, _] = subs_.emplace(s.id, std::move(s));
@@ -528,7 +579,35 @@ private:
     void apply_subscribe(Subscriber& s, const std::string& json) {
         if (!looks_like_json_object(json)) return;   // 파이썬: JSONDecodeError → 무시. 깨진 요청이 필터를 풀면 안 된다
         auto syms = json_string_array(json, "symbols");
-        if (syms && !syms->empty()) s.symbols = std::unordered_set<std::string>(syms->begin(), syms->end()); else s.symbols.reset();
+        const std::string token = json_string(json, "token").value_or("");
+        if (!ent_.enabled) {
+            if (syms && !syms->empty()) s.symbols = std::unordered_set<std::string>(syms->begin(), syms->end()); else s.symbols.reset();
+        } else {
+            std::vector<std::string> denied; std::string why;
+            if (token.empty()) { s.symbols = std::unordered_set<std::string>{}; why = "TOKEN_REQUIRED"; if (syms) denied = *syms; }
+            else if (!ent_.known(token)) { s.symbols = std::unordered_set<std::string>{}; why = "UNKNOWN_TOKEN"; if (syms) denied = *syms; }
+            else if (ent_.allows_all(token)) {
+                if (syms && !syms->empty()) s.symbols = std::unordered_set<std::string>(syms->begin(), syms->end()); else s.symbols.reset();
+            } else {
+                const auto& allow = ent_.by_token.at(token);
+                std::unordered_set<std::string> granted;
+                if (!syms || syms->empty()) { for (auto& a : allow) granted.insert(a); }        // 전체 요청도 허용 집합으로 좁힌다
+                else { for (auto& r : *syms) { if (allow.count(r)) granted.insert(r); else denied.push_back(r); } }
+                s.symbols = std::move(granted);
+                if (!denied.empty()) why = "NOT_ENTITLED";
+            }
+            if (!why.empty()) {
+                // **조용히 거절하지 않는다.** 구독자가 "요청했는데 안 온다"를 스스로 알 수 있어야 한다.
+                ++entitlement_denied_;
+                std::string dj; for (auto& d : denied) dj += (dj.empty() ? "\"" : ", \"") + json_escape(d) + "\"";
+                std::string gj; if (s.symbols) { std::vector<std::string> v(s.symbols->begin(), s.symbols->end()); std::sort(v.begin(), v.end());
+                    for (auto& g : v) gj += (gj.empty() ? "\"" : ", \"") + json_escape(g) + "\""; }
+                const std::string ack = "{\"type\": \"entitlement\", \"error\": \"" + why + "\", \"denied\": [" + dj + "], \"granted\": [" + gj + "]}";
+                auto fr = encode(MSG_ACK, 0, reinterpret_cast<const uint8_t*>(ack.data()), ack.size());
+                s.wbuf.insert(s.wbuf.end(), fr.begin(), fr.end());
+                logf("WARNING", "구독자 #%llu 권한 거절(%s)", (unsigned long long)s.id, why.c_str());
+            }
+        }
         auto mode = json_string(json, "mode");
         if (mode) for (auto& c : *mode) c = char(std::tolower(uint8_t(c)));
         if (mode && (*mode == "stream" || *mode == "conflate")) {
@@ -607,6 +686,8 @@ private:
         out += ", \"uptime_s\": " + std::to_string(mono() - started_) + ", \"upstream_connected\": " + (upstream_ok_ ? "true" : "false");
         out += ", \"last_frame_age_s\": " + (age < 0 ? std::string("null") : std::to_string(age));
         out += ", \"frames_in\": " + std::to_string(frames_in_) + ", \"subscribers\": " + std::to_string(subs_.size()) + ", \"cached_symbols\": " + std::to_string(last_.size());
+        out += ", \"entitlements\": {\"enabled\": " + std::string(ent_.enabled ? "true" : "false") +
+               ", \"tokens\": " + std::to_string(ent_.by_token.size()) + ", \"denied\": " + std::to_string(entitlement_denied_) + "}";
         out += ", \"total_dropped\": " + std::to_string(total_dropped) + ", \"max_backlog\": " + std::to_string(max_backlog) + ", \"max_wire_bytes\": " + std::to_string(max_wire);
         out += ", \"sources\": [" + srcs + "], \"degraded_sources\": [" + degraded + "], \"tasks\": {}}";
         return out;
@@ -632,7 +713,8 @@ private:
             line("dropped_total", double(dropped_total_)) + line("frames_in_total", double(frames_in_)) + line("sent_total", double(sent_total_)) +
             line("max_backlog", double(max_backlog)) + line("max_wire_bytes", double(max_wire)) + line("subscribers", double(subs_.size())) +
             line("send_calls_total", double(send_calls_)) + line("send_bytes_total", double(send_bytes_)) + line("send_eagain_total", double(send_eagain_)) + line("bus_reads_total", double(bus_reads_)) +
-            line("fanout_delay_max_us", fan_max_us) + line("fanout_delay_spread", fan_spread);
+            line("fanout_delay_max_us", fan_max_us) + line("fanout_delay_spread", fan_spread) +
+            line("entitlement_denied_total", double(entitlement_denied_));
     }
     std::string subscribers_json() const {
         std::string items;

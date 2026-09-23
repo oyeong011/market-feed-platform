@@ -62,6 +62,7 @@ DECLARED_OFFLINE = {
     "mdfeed_mcast_injected_reorders_total",
     "mdfeed_mcast_injected_duplicates_total",
     "mdfeed_send_eagain_total",
+    "mdfeed_entitlement_denied_total",
     "mdfeed_fanout_delay_spread",
     "mdfeed_fanout_delay_max_us",
     "mdfeed_adapter_task_deaths_total",

@@ -249,7 +249,7 @@ jobs:
       - name: Build, unit-test, and cross-check against the Python implementation
         run: |
           make -C cpp -s all test
-          PYTHONPATH=src python -m pytest tests/test_cpp_conformance.py tests/test_cpp_gateway.py tests/test_cpp_load_client.py tests/test_mcast.py tests/test_cpp_ringbuffer.py -q -rs | tee pytest-cpp.log
+          PYTHONPATH=src python -m pytest tests/test_cpp_conformance.py tests/test_cpp_gateway.py tests/test_cpp_load_client.py tests/test_mcast.py tests/test_cpp_ringbuffer.py tests/test_entitlement_gateway.py -q -rs | tee pytest-cpp.log
           if grep -q "compiler not found" pytest-cpp.log; then echo "::error::conformance tests skipped"; exit 1; fi
 
   postgres-integration:
