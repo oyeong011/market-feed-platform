@@ -1,0 +1,66 @@
+"""MDFEED_GATEWAY_IMPL 로 배포 게이트웨이를 C++ 구현으로 바꿔 끼울 수 있는가.
+
+이 스위치의 핵심은 **조용히 폴백하지 않는 것**이다. C++ 로 띄우라고 했는데 바이너리가 없으면
+파이썬으로 돌아가는 대신 실패해야 한다. 안 그러면 "C++ 로 배포 중"이라고 믿는 채로 파이썬이 도는
+상태가 된다 — 이 저장소가 반복해서 겪은 유형(선언과 실제가 다른 것)이다.
+"""
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from mdfeed.cli import CPP_IMPLS, service_command
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_default_is_python_module(monkeypatch):
+    monkeypatch.delenv("MDFEED_GATEWAY_IMPL", raising=False)
+    assert service_command("tcp-gateway", "mdfeed.services.tcp_gateway") == [sys.executable, "-m", "mdfeed.services.tcp_gateway"]
+
+
+def test_cpp_selects_the_binary(monkeypatch):
+    monkeypatch.setenv("MDFEED_GATEWAY_IMPL", "cpp")
+    binary = ROOT / CPP_IMPLS["tcp-gateway"]
+    if not binary.exists():
+        pytest.skip("C++ 바이너리가 없다 (make cpp)")
+    assert service_command("tcp-gateway", "mdfeed.services.tcp_gateway") == [str(binary)]
+
+
+def test_cpp_does_not_silently_fall_back(monkeypatch, tmp_path):
+    """바이너리가 없으면 파이썬으로 돌아가지 말고 실패해야 한다."""
+    monkeypatch.setenv("MDFEED_GATEWAY_IMPL", "cpp")
+    monkeypatch.setitem(CPP_IMPLS, "tcp-gateway", "cpp/build/does-not-exist")
+    with pytest.raises(SystemExit) as e:
+        service_command("tcp-gateway", "mdfeed.services.tcp_gateway")
+    assert "make cpp" in str(e.value)
+
+
+def test_unknown_impl_is_rejected(monkeypatch):
+    monkeypatch.setenv("MDFEED_GATEWAY_IMPL", "rust")
+    with pytest.raises(SystemExit):
+        service_command("tcp-gateway", "mdfeed.services.tcp_gateway")
+
+
+def test_other_services_are_unaffected(monkeypatch):
+    """스위치는 게이트웨이에만 적용된다. 수집·적재·전략은 파이썬 그대로다."""
+    monkeypatch.setenv("MDFEED_GATEWAY_IMPL", "cpp")
+    for name, module in (("feedd", "mdfeed.services.feedd"), ("writer", "mdfeed.services.writer")):
+        assert service_command(name, module) == [sys.executable, "-m", module]
+
+
+def test_ops_script_finds_the_cpp_process_pattern():
+    """상태판이 C++ 게이트웨이를 못 찾으면 '떠 있는데 안 보인다' 가 된다."""
+    out = subprocess.run(["bash", "-c", f'cd {ROOT} && MDFEED_GATEWAY_IMPL=cpp bash -c \'source ops/ops.sh >/dev/null 2>&1 || true; module_of tcp-gateway\''],
+                         capture_output=True, text=True)
+    # ops.sh 는 source 시 부작용이 있을 수 있어 함수만 추출해 평가한다
+    script = (ROOT / "ops/ops.sh").read_text()
+    start = script.index("module_of() {")
+    end = script.index("\n}\n", start) + 3
+    fn = script[start:end]
+    for impl, want in (("cpp", "cpp/build/tcp_gateway"), ("python", "mdfeed.services.tcp_gateway")):
+        r = subprocess.run(["bash", "-c", f"{fn}\nMDFEED_GATEWAY_IMPL={impl} module_of tcp-gateway"], capture_output=True, text=True)
+        assert r.stdout.strip() == want, (impl, r.stdout, r.stderr, out.stdout)

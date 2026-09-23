@@ -23,6 +23,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 SERVICES = [
     ("feedd", "mdfeed.services.feedd", 9100),
@@ -33,6 +34,32 @@ SERVICES = [
     ("strategy", "mdfeed.services.strategy", 9105),
     ("quality", "mdfeed.services.quality", 9106),
 ]
+
+
+# C++ 데이터 평면으로 바꿔 끼울 수 있는 서비스. 값은 빌드 산출물 경로다.
+# 같은 배선 규약(스냅샷→증분·구독 필터·구독자별 재번호·백프레셔·/healthz /metrics)을
+# 지키므로 파이썬 참조 클라이언트·부하 도구·운영 점검이 그대로 붙는다.
+CPP_IMPLS = {"tcp-gateway": "cpp/build/tcp_gateway"}
+
+
+def service_command(name: str, module: str) -> list[str]:
+    """이 서비스를 어떤 실행 파일로 띄울지 정한다.
+
+    MDFEED_GATEWAY_IMPL=cpp 면 C++ 바이너리를 쓴다. **바이너리가 없으면 실패한다** —
+    조용히 파이썬으로 돌아가면 "C++ 로 띄웠다"고 믿는 채로 파이썬이 도는 상태가 된다.
+    이 프로젝트에서 반복해서 겪은 유형(선언과 실제가 다른 것)이라 여기서는 막는다.
+    """
+    impl = os.getenv("MDFEED_GATEWAY_IMPL", "python").lower()
+    if impl == "cpp" and name in CPP_IMPLS:
+        binary = Path(__file__).resolve().parents[2] / CPP_IMPLS[name]
+        if not binary.exists():
+            raise SystemExit(
+                f"MDFEED_GATEWAY_IMPL=cpp 인데 {binary} 가 없습니다. "
+                f"`make cpp` 로 빌드하세요 (컴파일러만 있으면 됩니다).")
+        return [str(binary)]
+    if impl not in ("python", "cpp"):
+        raise SystemExit(f"MDFEED_GATEWAY_IMPL 은 python 또는 cpp 여야 합니다: {impl!r}")
+    return [sys.executable, "-m", module]
 
 
 def _get(url: str, timeout: float = 3.0):
@@ -74,7 +101,7 @@ def cmd_up(args) -> int:
     stopping = False
 
     def spawn(name: str, module: str) -> None:
-        p = subprocess.Popen([sys.executable, "-m", module],
+        p = subprocess.Popen(service_command(name, module),
                              env=shard_env.get(name, env))
         procs[name] = p
         last_start[name] = time.time()

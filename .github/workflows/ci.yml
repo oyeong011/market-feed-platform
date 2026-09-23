@@ -124,6 +124,55 @@ jobs:
           name: stack-logs
           path: /tmp/*.log
 
+  smoke-cpp:
+    name: 스택 스모크 (C++ 게이트웨이)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Build the C++ data plane
+        run: make -C cpp -s all
+
+      - name: 같은 스택을 C++ 배포 게이트웨이로 기동
+        # 드롭인 교체가 실제로 되는지 본다. 배선 규약이 같으므로 파이썬 참조 클라이언트와
+        # healthcheck.py 가 그대로 붙어야 한다 — 안 붙으면 "바꿔 낄 수 있다"는 말이 거짓이다.
+        run: |
+          mkdir -p data/replay
+          MDFEED_GATEWAY_IMPL=cpp \
+          MDFEED_ADAPTERS=replay MDFEED_REPLAY_LOOP=1 \
+          MDFEED_RUN_DIR=/tmp/mdfeed \
+          MDFEED_STORAGE_BACKEND=sqlite MDFEED_STORAGE_PROFILE=test \
+          MDFEED_SQLITE_PATH=/tmp/mdfeed/smoke-cpp.db \
+          PYTHONPATH=src python -m mdfeed.cli up > /tmp/stack.log 2>&1 &
+          echo $! > /tmp/sup.pid
+          sleep 15
+
+      - name: 정말 C++ 가 도는지 확인 (파이썬으로 조용히 떨어지면 실패)
+        run: |
+          impl=$(curl -s --max-time 5 localhost:9111/healthz | python -c "import sys,json; print(json.load(sys.stdin).get('impl','python'))")
+          echo "gateway impl = $impl"
+          [ "$impl" = "c++" ] || { echo "::error::C++ 게이트웨이가 아니다 ($impl)"; tail -30 /tmp/stack.log; exit 1; }
+
+      - name: 헬스체크 (CRIT 이면 실패)
+        run: |
+          set +e
+          PYTHONPATH=src python ops/healthcheck.py
+          rc=$?
+          set -e
+          [ "$rc" -ge 2 ] && { tail -30 /tmp/stack.log; exit 1; }
+          exit 0
+
+      - name: 파이썬 참조 클라이언트로 구독 검증
+        run: |
+          PYTHONPATH=src timeout 30 python -m mdfeed.cli client --duration 10 --quiet | tee /tmp/client.log
+          grep -q "데이터 무결성: 100" /tmp/client.log || {
+            echo "::error::C++ 게이트웨이에서 구독자 데이터 무결성 100% 미달"; cat /tmp/client.log; exit 1; }
+
+      - name: 종료
+        if: always()
+        run: kill "$(cat /tmp/sup.pid)" 2>/dev/null || true
+
   bench:
     name: 성능 벤치마크
     runs-on: ubuntu-latest

@@ -3,6 +3,15 @@
 # 핵심 경로가 표준 라이브러리만 쓰므로 python:slim 위에 소스만 올리면 끝난다.
 # 빌드 도구·컴파일러가 필요 없어 이미지가 작고 CVE 표면도 좁다.
 
+# ── 1단계: C++ 데이터 평면 빌드 ────────────────────────────────────────────
+# 배포 게이트웨이·멀티캐스트 발행자는 C++ 다. 컴파일러는 이 단계에만 있고
+# 최종 이미지에는 바이너리만 들어간다 — 이미지 크기도 CVE 표면도 그대로 둔다.
+FROM gcc:13 AS cppbuild
+WORKDIR /build
+COPY cpp/ ./cpp/
+RUN make -C cpp -s all && ./cpp/build/test_protocol && ./cpp/build/test_ringbuffer
+
+# ── 2단계: 실행 이미지 ─────────────────────────────────────────────────────
 FROM python:3.12-slim
 
 # 보안: 루트로 돌리지 않는다
@@ -21,8 +30,11 @@ COPY bench/ ./bench/
 COPY ops/ ./ops/
 COPY docs/ ./docs/
 COPY Makefile pyproject.toml ./
+# C++ 바이너리. MDFEED_GATEWAY_IMPL=cpp 로 배포 게이트웨이를 바꿔 끼울 때 쓴다.
+COPY --from=cppbuild /build/cpp/build/ ./cpp/build/
 
 RUN mkdir -p /var/lib/mdfeed /run/mdfeed /data \
+ && chmod +x ./cpp/build/* \
  && chown -R mdfeed:mdfeed /opt/mdfeed /var/lib/mdfeed /run/mdfeed /data
 
 ENV PYTHONPATH=/opt/mdfeed/src \

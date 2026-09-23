@@ -38,10 +38,15 @@ admin_port() {
     rest-api) echo 9103 ;; writer) echo 9104 ;; strategy) echo 9105 ;; quality) echo 9106 ;;
   esac
 }
+# MDFEED_GATEWAY_IMPL=cpp 면 tcp-gateway 는 파이썬 모듈이 아니라 C++ 바이너리로 뜬다.
+# 명령줄이 달라지므로 PID 조회 패턴도 같이 바뀌어야 한다 — 안 바꾸면 상태판이
+# "떠 있는데 안 보인다" 가 된다(이 프로젝트가 반복해서 겪은 유형).
 module_of() {
   case "$1" in
     feedd) echo mdfeed.services.feedd ;;
-    tcp-gateway) echo mdfeed.services.tcp_gateway ;;
+    tcp-gateway)
+      if [ "${MDFEED_GATEWAY_IMPL:-python}" = "cpp" ]; then echo cpp/build/tcp_gateway
+      else echo mdfeed.services.tcp_gateway; fi ;;
     ws-gateway) echo mdfeed.services.ws_gateway ;;
     rest-api) echo mdfeed.services.rest_api ;;
     writer) echo mdfeed.services.writer ;;

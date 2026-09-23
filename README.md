@@ -3,7 +3,7 @@
 [![CI](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml)
 [![Pages](https://github.com/oyeong011/market-feed-platform/actions/workflows/pages.yml/badge.svg)](https://oyeong011.github.io/market-feed-platform/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![tests](https://img.shields.io/badge/tests-523-brightgreen)
+![tests](https://img.shields.io/badge/tests-530-brightgreen)
 ![cpp](https://img.shields.io/badge/C%2B%2B-data%20plane-blue)
 ![obs](https://img.shields.io/badge/알람-18개%20지표%20검증-blue)
 ![venues](https://img.shields.io/badge/수집경로-5개%20실연결-blue)
@@ -68,7 +68,7 @@ make demo        # replay + disposable synthetic SQLite 로 6개 프로세스 �
 make status      # 서비스 상태 (프로세스 + HTTP 헬스 + 포트)
 make client      # 참조 TCP 구독 클라이언트 (갭 탐지 포함)
 make diag        # 장애 진단 원스톱
-make test        # 523개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
+make test        # 530개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
 ```
 
 데모와 CI는 라이브 어댑터를 상속하지 않습니다. 저장소에 든 녹화 파일을 replay로 읽고, 임시 SQLite DB를 만들어 검증합니다.
@@ -134,7 +134,7 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 |---|---|---|
 | 금융 데이터 FEED 개발·운영 | 수집 경로 5개, 배포 프로토콜 3종 | 무결성 48.5% → **100.0000%** |
 | Linux 서비스·프로세스 점검·안정화 | systemd 6유닛 + 자동 검증 + 장애 주입 | 11항목 · 복구 4종 확인 |
-| 파이프라인·배포·점검 자동화 | Makefile · CI 6잡 · Pages 자동 갱신 | 테스트 **523개** |
+| 파이프라인·배포·점검 자동화 | Makefile · CI 7잡 · Pages 자동 갱신 | 테스트 **530개** |
 | Python | 소스 8,835줄 | 핵심 의존성 **0** |
 | SQL · 관계형 DB | 복합 인덱스 · 사전 집계 · 하이퍼테이블 | 적재 **480,586 rows/s** |
 | Linux 명령·프로세스·로그 | `ops.sh diag` · RUNBOOK 8종 | 1차 진단 한 줄 |
@@ -222,6 +222,18 @@ tests/test_cpp_conformance.py   파이썬이 쓴 바이트를 C++ 가, C++ 가 �
 tests/test_cpp_ringbuffer.py    같은 공유메모리 세그먼트를 파이썬·C++ 가 번갈아 쓰고 읽는 3방향 검증
 tests/test_cpp_gateway.py       파이썬 발행자 → C++ 게이트웨이 → 파이썬 참조 클라이언트 통합 시험
 ```
+
+**바꿔 끼울 수 있습니다.** 배포 게이트웨이는 파이썬 판과 배선 규약이 같아서, 환경변수 하나로 교체하고
+파이썬 참조 클라이언트·부하 도구·`ops/healthcheck.py` 를 그대로 씁니다. CI 가 같은 스모크 시험을 두 판으로
+돌려 이 말을 지킵니다 — 바이너리가 없으면 조용히 파이썬으로 떨어지는 대신 실패합니다.
+
+```bash
+MDFEED_GATEWAY_IMPL=cpp make up        # 7개 서비스 중 배포 게이트웨이만 C++ 로
+curl -s localhost:9111/healthz | grep impl   # "impl": "c++" 이어야 진짜 C++ 가 도는 것
+```
+
+컨테이너는 다단계 빌드로 C++ 바이너리만 담고 컴파일러는 남기지 않습니다. systemd 는
+`ops/systemd/mdfeed-tcp-gateway.service.d/cpp.conf` 드롭인으로 실행 파일만 갈아 끼웁니다.
 
 ```bash
 make cpp-test      # C++ 단위 테스트 + 파이썬↔C++ 교차 검증 + 게이트웨이 통합 시험
@@ -369,7 +381,7 @@ src/mdfeed/
 
 ops/     systemd 유닛 6종 · ops.sh · watchdog.sh · healthcheck.py · logrotate
 quant/   backtest.py · run_backtest.py · integrations.py · factor_screen.py
-tests/   523개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
+tests/   530개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
          복구 경로 · 종료 기한 · 컨플레이션 · 토큰 발급 · 운영 기록 환산 ·
          PostgreSQL 마이그레이션/백업/복구 27개는 실서버 연결 시에만)
 bench/   계층별 성능 측정 → docs/data/bench.json · 게이트웨이 비교 → gateway_compare.json
