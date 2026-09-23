@@ -156,6 +156,9 @@ struct Subscriber {
     std::vector<uint8_t> wbuf; size_t woff = 0;                // 부분 전송 중인 버퍼
     uint64_t wframes = 0;                                       // wbuf 에 모인 프레임 수 (sent 집계용)
     bool armed_write = false;                                   // 이벤트 루프에 쓰기 관심을 등록해 뒀는가
+    // [계측] 배치 시작(버스에서 묶음을 다 받은 시각) → 이 구독자에게 send() 가 끝난 시각.
+    // 구독자별 지연 격차가 게이트웨이 **안**에 있는지 보려고 잰다.
+    double send_delay_sum = 0; uint64_t send_delay_n = 0;
     uint64_t dropped = 0, sent = 0, out_seq = 0, conflated = 0;
     bool wants(const std::string& key) const { return !symbols || symbols->count(key) > 0; }
     size_t backlog() const { return conflate ? key_queue.size() : queue.size(); }
@@ -237,12 +240,33 @@ private:
     std::map<int, AdminConn> admin_conns_;
     std::vector<uint64_t> to_close_;
     EventLoop loop_; bool listen_armed_ = false;
+    uint64_t rotate_cursor_ = 0;   // 팬아웃 시작 구독자. 배치마다 한 칸씩 민다 (for_each_sub_rotated)
     std::unordered_map<std::string, Cached> last_;
     uint64_t next_id_ = 0, frames_in_ = 0, connections_ = 0, dropped_total_ = 0, sent_total_ = 0, conflated_total_ = 0;
     uint64_t send_calls_ = 0, send_bytes_ = 0, send_eagain_ = 0, bus_reads_ = 0;   // 시스템 콜 비용을 보이게
     double started_ = 0, last_frame_at_ = 0; bool upstream_ok_ = false;
     double accept_backoff_until_ = 0, accept_log_after_ = 0;
     std::vector<uint8_t> scratch_;
+
+    // 구독자를 매번 **다른 지점부터** 훑는다.
+    //
+    // 순차 팬아웃은 늘 같은 순서로 돌면 접속이 이른 구독자가 구조적으로 유리하다. 게이트웨이
+    // 안에서 재보니 기울기가 완벽한 직선이었다(2026-09-23, 구독자 100명·상류 3,900 msg/s):
+    // 배치 시작 → send() 완료가 첫 구독자 5.4µs, 마지막 357µs, id 와의 상관 +1.000.
+    // 같은 값을 파는 피드에서 접속 순서가 지연 우선순위를 정하면 안 된다. 배치마다 시작점을 민다.
+    template <class F>
+    void for_each_sub_rotated(F&& fn) {
+        if (subs_.empty()) return;
+        auto it = subs_.lower_bound(rotate_cursor_);
+        if (it == subs_.end()) it = subs_.begin();
+        const auto start = it;
+        do {
+            fn(it->second);
+            if (++it == subs_.end()) it = subs_.begin();
+        } while (it != start);
+        auto nxt = subs_.upper_bound(rotate_cursor_);
+        rotate_cursor_ = (nxt == subs_.end()) ? subs_.begin()->first : nxt->first;
+    }
 
     static uint64_t tag(Kind k, uint64_t id) { return (uint64_t(k) << 56) | (id & ((uint64_t(1) << 56) - 1)); }
     static Owner untag(uint64_t t) { return Owner{Kind(t >> 56), t & ((uint64_t(1) << 56) - 1)}; }
@@ -320,7 +344,15 @@ private:
         // 구독자 100명·상류 3,900 msg/s 에서 3회씩 재니 첫/끝 구독자 p99 격차가
         // 고정 순서 1.40배, 회전 1.48배로 차이가 없었다(docs/data/fanout_fairness.json).
         // 효과가 없는 복잡도는 넣지 않는다. 격차의 원인은 아직 모른다 — README 결함 36.
-        for (auto& [id, sub] : subs_) { if (sub.backlog() || sub.woff < sub.wbuf.size()) flush(sub); arm_sub(sub); }
+        const double batch_t0 = mono();
+        for_each_sub_rotated([&](Subscriber& sub) {
+            if (sub.backlog() || sub.woff < sub.wbuf.size()) {
+                flush(sub);
+                sub.send_delay_sum += (mono() - batch_t0) * 1e6;   // µs
+                ++sub.send_delay_n;
+            }
+            arm_sub(sub);
+        });
     }
     static std::optional<std::string> key_of(const FrameView& f) {
         if (f.msg_type == MSG_TRADE && f.length >= Trade::SIZE) return unfix(f.payload + 16, 8) + ":" + unfix(f.payload, 16);
@@ -541,14 +573,28 @@ private:
         out += ", \"sources\": [" + srcs + "], \"degraded_sources\": [" + degraded + "], \"tasks\": {}}";
         return out;
     }
+    // 팬아웃 공평성 지표: 구독자별 "배치 시작 → send() 완료" 평균의 최대/최소 비.
+    // 1 에 가까워야 한다. 순차 팬아웃을 늘 같은 순서로 돌면 이 값이 수십 배가 된다
+    // (실측: 구독자 100명에서 62배). 접속 순서가 지연 우선순위가 되지 않는지 보는 값이다.
+    std::pair<double, double> fanout_delay_spread() const {
+        double lo = 0, hi = 0; bool first = true;
+        for (auto& [id, s] : subs_) {
+            if (!s.send_delay_n) continue;
+            const double m = s.send_delay_sum / double(s.send_delay_n);
+            if (first) { lo = hi = m; first = false; } else { lo = std::min(lo, m); hi = std::max(hi, m); }
+        }
+        return {hi, (lo > 0) ? hi / lo : (first ? 0.0 : 1.0)};
+    }
     std::string metrics_text() const {   // Prometheus text v0.0.4 — 파이썬 Registry.prometheus() 와 같은 이름
         size_t max_backlog = 0, max_wire = 0;
         for (auto& [id, s] : subs_) { max_backlog = std::max(max_backlog, s.backlog()); max_wire = std::max(max_wire, wire_bytes(s.fd)); }
+        const auto [fan_max_us, fan_spread] = fanout_delay_spread();
         auto line = [](const char* name, double v) { char b[160]; std::snprintf(b, sizeof b, "mdfeed_%s{service=\"tcp-gateway\"} %g\n", name, v); return std::string(b); };
         return line("uptime_seconds", mono() - started_) + line("conflated_total", double(conflated_total_)) + line("connections_total", double(connections_)) +
             line("dropped_total", double(dropped_total_)) + line("frames_in_total", double(frames_in_)) + line("sent_total", double(sent_total_)) +
             line("max_backlog", double(max_backlog)) + line("max_wire_bytes", double(max_wire)) + line("subscribers", double(subs_.size())) +
-            line("send_calls_total", double(send_calls_)) + line("send_bytes_total", double(send_bytes_)) + line("send_eagain_total", double(send_eagain_)) + line("bus_reads_total", double(bus_reads_));
+            line("send_calls_total", double(send_calls_)) + line("send_bytes_total", double(send_bytes_)) + line("send_eagain_total", double(send_eagain_)) + line("bus_reads_total", double(bus_reads_)) +
+            line("fanout_delay_max_us", fan_max_us) + line("fanout_delay_spread", fan_spread);
     }
     std::string subscribers_json() const {
         std::string items;
@@ -558,6 +604,7 @@ private:
             items += (items.empty() ? "" : ", ") + std::string("{\"id\": ") + std::to_string(id) + ", \"peer\": \"" + json_escape(s.peer) + "\", \"symbols\": " + syms +
                 ", \"sent\": " + std::to_string(s.sent) + ", \"dropped\": " + std::to_string(s.dropped) + ", \"mode\": \"" + (s.conflate ? "conflate" : "stream") +
                 "\", \"out_seq\": " + std::to_string(s.out_seq) + ", \"backlog\": " + std::to_string(s.backlog()) + ", \"conflated\": " + std::to_string(s.conflated) +
+                ", \"mean_send_delay_us\": " + std::to_string(s.send_delay_n ? s.send_delay_sum / double(s.send_delay_n) : 0.0) +
                 ", \"wire_bytes\": " + std::to_string(wire_bytes(s.fd)) + ", \"uptime_s\": " + std::to_string(mono() - s.connected_at) + "}";
         }
         return "{\"count\": " + std::to_string(subs_.size()) + ", \"items\": [" + items + "]}";

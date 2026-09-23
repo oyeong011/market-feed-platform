@@ -45,6 +45,8 @@ PREFLIGHT_METRICS = {
 CONDITIONAL = {
     "mdfeed_send_eagain_total":
         "C++ 배포 게이트웨이에서만 생성된다 (파이썬 판은 asyncio 가 쓰기를 대신해 EAGAIN 을 셀 자리가 없다)",
+    "mdfeed_fanout_delay_spread":
+        "C++ 배포 게이트웨이에서만 생성된다 (구독자별 전송 지연을 재는 계측이 거기에만 있다)",
     "mdfeed_ingest_latency_microseconds":
         "지연을 측정하는 어댑터(measures_latency=True)가 있어야 생성된다",
     "mdfeed_clock_offset_us":
@@ -60,6 +62,8 @@ DECLARED_OFFLINE = {
     "mdfeed_mcast_injected_reorders_total",
     "mdfeed_mcast_injected_duplicates_total",
     "mdfeed_send_eagain_total",
+    "mdfeed_fanout_delay_spread",
+    "mdfeed_fanout_delay_max_us",
     "mdfeed_adapter_task_deaths_total",
     "mdfeed_archive_enabled",
     "mdfeed_archive_failed_segments",
@@ -105,7 +109,7 @@ GATEWAY_PORT = 9111
 # C++ 배포 게이트웨이만 내는 지표. 파이썬 판은 asyncio 가 쓰기를 대신하므로 EAGAIN 을 셀 자리가
 # 아예 없다 — 같은 값을 억지로 만들면 "0 이니까 괜찮다" 는 거짓말이 된다. 구현이 다르면 낼 수
 # 있는 것도 다르고, 그 사실을 분류로 적는다.
-CPP_GATEWAY_METRICS = {"mdfeed_send_eagain_total"}
+CPP_GATEWAY_METRICS = {"mdfeed_send_eagain_total", "mdfeed_fanout_delay_spread", "mdfeed_fanout_delay_max_us"}
 MCAST_METRICS = {
     "mdfeed_mcast_send_errors_total",
     "mdfeed_mcast_retrans_unavailable_total",
@@ -135,6 +139,7 @@ NO_ALERT_BY_DESIGN = {
     "mdfeed_mcast_recovery_clients",
     "mdfeed_mcast_seq",
     "mdfeed_mcast_retrans_frames_total",   # 요청 수(McastRetransStorm)로 본다
+    "mdfeed_fanout_delay_max_us",          # 절대값은 부하에 따라 변한다. 판정은 비(spread)로 한다
     "mdfeed_process_rss_bytes",            # 증가율 지표로 알람을 건다
     "mdfeed_process_fd_open",
     "mdfeed_data_gaps_recovered_total",  # 복구는 좋은 일이다. 알람 대상은 열린 공백 쪽

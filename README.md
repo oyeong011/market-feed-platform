@@ -3,7 +3,7 @@
 [![CI](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml)
 [![Pages](https://github.com/oyeong011/market-feed-platform/actions/workflows/pages.yml/badge.svg)](https://oyeong011.github.io/market-feed-platform/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![tests](https://img.shields.io/badge/tests-542-brightgreen)
+![tests](https://img.shields.io/badge/tests-543-brightgreen)
 ![cpp](https://img.shields.io/badge/C%2B%2B-data%20plane-blue)
 ![obs](https://img.shields.io/badge/알람-18개%20지표%20검증-blue)
 ![venues](https://img.shields.io/badge/수집경로-5개%20실연결-blue)
@@ -68,7 +68,7 @@ make demo        # replay + disposable synthetic SQLite 로 6개 프로세스 �
 make status      # 서비스 상태 (프로세스 + HTTP 헬스 + 포트)
 make client      # 참조 TCP 구독 클라이언트 (갭 탐지 포함)
 make diag        # 장애 진단 원스톱
-make test        # 542개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
+make test        # 543개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
 ```
 
 데모와 CI는 라이브 어댑터를 상속하지 않습니다. 저장소에 든 녹화 파일을 replay로 읽고, 임시 SQLite DB를 만들어 검증합니다.
@@ -122,7 +122,7 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 | 33 | **순서가 잠깐 뒤바뀔 때마다 재전송을 요청** | UDP 는 유실만 정상인 게 아니다. 경로가 갈리면 뒤 것이 먼저 온다. 수신자가 그걸 즉시 갭으로 보고 재전송을 불렀는데, 잠시 뒤 원래 것이 도착해 요청이 통째로 헛일이었다. 발행자에 재배열을 주입해 재보니 3,000프레임에 167건이 헛요청 | 갭필 지연(기본 20ms) — 갭을 보고 바로 부르지 않고 기다린다. 같은 주입에서 요청 **167건 → 0건**, 배달은 그대로 전부·순서대로. 상용 피드의 gap-fill timer 와 같은 장치다. 지연을 0 으로 두면 헛요청이 돌아오는 것까지 시험으로 고정 |
 | 34 | **공백 알람 셋이 요청이 없으면 영원히 안 울림** | 공백 지표가 `/healthz` 와 `/api/v1/gaps` 요청의 부수 효과로만 만들어졌다. **Prometheus 는 `/metrics` 만 긁는다.** 시험이 이걸 못 잡은 이유는 픽스처가 준비 확인으로 `/healthz` 를 불렀기 때문이다 — 그 호출이 지표를 만들고 있었다 | 30초 주기 갱신 루프로 값을 책임진다. 시험은 준비 확인조차 TCP 접속으로만 하고 HTTP 요청을 안 한다 |
 | 35 | **알람 검사기가 여러 줄 식의 둘째 줄을 안 읽음** | `expr:` 로 시작하는 줄만 파싱했다. 이어지는 줄에만 있는 지표는 없어져도 "모든 알람이 실재한다"가 나온다 — 검사기가 눈을 감는다 | 이어쓰기 파싱. 고친 뒤 참조 지표 36종 → 41종. 그동안 5종을 못 보고 있었다. 둘째 줄에 가짜 지표를 넣으면 잡히는지를 시험으로 고정 |
-| 36 | **구독자별 지연 격차 1.4배 — 원인 가설이 틀렸다** | 배포 게이트웨이가 구독자를 늘 같은 순서(접속 순서)로 쓴다. 먼저 접속한 쪽이 유리할 것이라 보고 시작점을 배치마다 돌렸다. 3회씩 재니 고정 1.40배 · 회전 1.48배로 **차이가 없었다** | 효과 없는 복잡도라 되돌렸다. 대신 부하 클라이언트가 구독자별 p99 를 내도록 만들고(자기 읽기 순서 편향도 제거), 격차가 3회 모두 같은 방향으로 재현되는 것까지 기록했다. **원인은 아직 모른다** — 모르는 것을 안다고 적지 않는다 |
+| 36 | **구독자별 지연 격차 — 원인을 찾았고, 그 전에 내린 "효과 없음"이 틀렸다** | 순차 팬아웃을 늘 같은 순서로 돌면 먼저 접속한 구독자가 구조적으로 유리하다. 처음엔 시작점을 돌려 보고 **클라이언트가 잰 p99 로** 판정해 "효과 없다"고 결론내고 되돌렸다. 그 p99 의 회차 간 잡음(±0.1)이 380µs 효과보다 컸다 | 격차가 구독자 번호를 따라간다는 것부터 확정하고(접속 순서 상관 +0.981, 클라이언트 fd 순서 +0.137), 게이트웨이 **안에** 「배치 시작 → send() 완료」 계측을 넣었다. 기울기가 직선으로 드러났다(첫 6.3µs · 끝 389.7µs · 62배 · 상관 +1.000). 시작점 회전을 다시 넣으니 **1.02배**. 지표 `mdfeed_fanout_delay_spread` 와 알람 FanoutUnfair 로 고정하고, 회전 없는 판에서 7.6배로 실패하는 회귀 시험을 붙였다 |
 | 17 | Postgres 조회 시각이 UTC | 국내 장 시간 09:00~15:30 이 00:00~06:30 으로 보인다. 장 시작 전인지 마감 후인지 눈으로 판단 불가 | 스키마에서 DB 기본 시간대를 `Asia/Seoul` 로 설정 (저장 값은 그대로, 표시만) |
 
 ---
@@ -138,7 +138,7 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 |---|---|---|
 | 금융 데이터 FEED 개발·운영 | 수집 경로 5개, 배포 프로토콜 3종 | 무결성 48.5% → **100.0000%** |
 | Linux 서비스·프로세스 점검·안정화 | systemd 6유닛 + 자동 검증 + 장애 주입 | 11항목 · 복구 4종 확인 |
-| 파이프라인·배포·점검 자동화 | Makefile · CI 7잡 · Pages 자동 갱신 | 테스트 **542개** |
+| 파이프라인·배포·점검 자동화 | Makefile · CI 7잡 · Pages 자동 갱신 | 테스트 **543개** |
 | Python | 소스 8,835줄 | 핵심 의존성 **0** |
 | SQL · 관계형 DB | 복합 인덱스 · 사전 집계 · 하이퍼테이블 | 적재 **480,586 rows/s** |
 | Linux 명령·프로세스·로그 | `ops.sh diag` · RUNBOOK 8종 | 1차 진단 한 줄 |
@@ -279,11 +279,22 @@ make cpp-compare   # 같은 수집기 아래 두 게이트웨이 부하 비교 �
 > 두 판 모두 포화합니다. fd 감시 방식은 이 워크로드의 변수가 아니었습니다. `docs/data/event_loop_compare.json`.
 > 그래서 TCP 게이트웨이의 한계는 여기고, 그 위는 아래의 멀티캐스트입니다.
 >
-**구독자 사이는 공평한가** — 같은 값을 파는 피드에서 접속 순서가 지연을 정하면 안 됩니다.
-부하 클라이언트가 구독자별로 p99 를 따로 냅니다. 구독자 100명에서 첫 구독자 2.7ms, 마지막 3.7ms 로
-**1.4배 격차가 3회 모두 같은 방향으로 재현**됩니다. 게이트웨이 쓰기 순서를 의심해 시작점을 돌려 봤지만
-격차는 그대로였습니다(결함 36). 원인은 아직 못 찾았고, 찾은 것처럼 적지 않습니다.
-`docs/data/fanout_fairness.json` · `bash bench/fanout_cost.sh` 와 같은 방식으로 재현합니다.
+**구독자 사이는 공평한가** — 같은 값을 파는 피드에서 접속 순서가 지연 우선순위를 정하면 안 됩니다.
+게이트웨이가 구독자를 순서대로 훑으며 `send()` 를 부르니, 늘 같은 순서로 돌면 먼저 접속한 쪽이 구조적으로
+유리합니다. 게이트웨이 안에서 「배치 시작 → 그 구독자에게 `send()` 완료」를 재어 확인했습니다.
+
+| 순회 방식 | 첫 구독자 | 마지막 구독자 | 최대/최소 | 구독자 번호와의 상관 |
+|---|---:|---:|---:|---:|
+| 고정 순서 | 6.3 µs | 389.7 µs | 62배 | +1.000 |
+| **시작점 회전** | 183.7 µs | 183.2 µs | **1.02배** | 없음 |
+
+`mdfeed_fanout_delay_spread` 지표와 FanoutUnfair 알람으로 고정했고, 회전 없는 판에서 7.6배로 실패하는
+회귀 시험이 있습니다. `docs/data/fanout_fairness.json`.
+
+> **이걸 한 번 놓쳤습니다** (결함 36). 처음엔 같은 회전을 넣고 **클라이언트가 잰 p99** 로 판정해
+> "효과 없다"고 결론내고 되돌렸습니다. 그 p99 의 회차 간 잡음이 380µs 효과보다 컸습니다.
+> 음성 결과를 내기 전에 **그 효과를 볼 수 있는 해상도인지**를 먼저 물어야 했습니다.
+> 잴 수 없는 자리에서 재고 "효과 없음"이라고 적으면 그건 측정이 아니라 추측입니다.
 
 **리눅스(epoll) 실측** — `.github/workflows/gateway-bench.yml` 이 매주 GitHub 러너에서 같은 비교를 돌립니다.
 러너는 4코어라 맥(10코어)보다 약하고, 그래서 차이가 더 일찍 벌어집니다.
@@ -404,7 +415,7 @@ src/mdfeed/
 
 ops/     systemd 유닛 6종 · ops.sh · watchdog.sh · healthcheck.py · logrotate
 quant/   backtest.py · run_backtest.py · integrations.py · factor_screen.py
-tests/   542개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
+tests/   543개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
          복구 경로 · 종료 기한 · 컨플레이션 · 토큰 발급 · 운영 기록 환산 ·
          PostgreSQL 마이그레이션/백업/복구 27개는 실서버 연결 시에만)
 bench/   계층별 성능 측정 → docs/data/bench.json · 게이트웨이 비교 → gateway_compare.json

@@ -20,6 +20,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <random>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -61,6 +63,8 @@ double json_num(const std::string& j, const std::string& key, double dflt = -1) 
 
 struct Sub {
     int fd = -1; FrameParser parser; SequenceTracker track;
+    // 접속 순서(= 게이트웨이가 부여하는 구독자 id 순서). 배열 순서와 일부러 어긋나게 할 수 있다.
+    size_t connect_rank = 0;
     uint64_t messages = 0, bytes = 0, gaps = 0, lost = 0; bool connect_failed = false; std::string err;
     // 구독자별 지연. 팬아웃이 공평한지 보려면 전체 분포가 아니라 **구독자마다** 재야 한다.
     // 게이트웨이가 늘 같은 순서로 쓰면 뒤쪽 구독자가 계속 손해를 보는데, 전부 한 통에 넣고
@@ -81,22 +85,43 @@ struct Round {
     double p50 = 0, p95 = 0, p99 = 0, p999 = 0, lmax = 0, per_sub_avg = 0;
     // 공평성: 구독자별 p99 의 퍼짐. first/last 는 접속 순서(게이트웨이의 쓰기 순서)와 같다.
     double fair_p99_min = 0, fair_p99_med = 0, fair_p99_max = 0, fair_p99_first = 0, fair_p99_last = 0, fair_spread = 0;
+    // 격차가 무엇을 따라가는가: 배열(읽기) 순서인가, 접속(= 게이트웨이 쓰기) 순서인가.
+    double corr_array = 0, corr_connect = 0; bool shuffled = false;
     double g_dropped = -1, g_subs = -1, up_frames_before = -1, up_frames_after = -1, up_symbols = -1;
     double peak_backlog = 0, peak_wire = 0; int samples = 0;
 };
 
-Round run_round(const std::string& host, int port, int admin, int n, double seconds, const std::string& subscribe_json) {
+Round run_round(const std::string& host, int port, int admin, int n, double seconds, const std::string& subscribe_json,
+                bool shuffle_connect = false, double warmup_s = 0.0) {
     Round r; r.subscribers = n;
     std::vector<Sub> subs{}; subs.resize(size_t(n));
-    for (auto& s : subs) {
-        int fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    // **접속 순서를 배열 순서와 어긋나게 한다(--shuffle-connect).**
+    // 지금까지 둘이 같아서 "첫 구독자가 빠르다"가 게이트웨이 탓인지(접속 순서 = 쓰기 순서)
+    // 이 도구 탓인지(배열 순서 = 읽기 순서) 가릴 수 없었다. 섞어서 어느 쪽을 따라가는지 본다.
+    std::vector<size_t> order(subs.size());
+    for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+    if (shuffle_connect) {
+        std::mt19937 rng(12345);                    // 고정 시드 — 재현 가능해야 한다
+        std::shuffle(order.begin(), order.end(), rng);
+    }
+    // **소켓 생성(= fd 번호)과 접속(= 게이트웨이 구독자 번호)을 분리한다.**
+    // 둘이 같으면 "서버가 낮은 번호를 먼저 쓴다"와 "클라이언트가 낮은 fd 를 먼저 다룬다"를
+    // 구분할 수 없다. fd 는 배열 순서로 먼저 다 만들고, 접속만 섞은 순서로 한다.
+    for (auto& s : subs) { s.fd = socket(AF_INET, SOCK_STREAM, 0); }
+    size_t rank = 0;
+    for (size_t oi : order) {
+        Sub& s = subs[oi];
+        s.connect_rank = rank++;
+        int fd = s.fd;
         sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = htons(uint16_t(port)); inet_pton(AF_INET, host.c_str(), &a.sin_addr);
         timeval tv{10, 0}; setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-        if (connect(fd, reinterpret_cast<sockaddr*>(&a), sizeof a) < 0) { s.connect_failed = true; s.err = std::strerror(errno); close(fd); ++r.connect_failed; if (r.connect_error.empty()) r.connect_error = s.err; continue; }
+        if (fd < 0) { s.connect_failed = true; s.err = "socket()"; ++r.connect_failed; continue; }
+        if (connect(fd, reinterpret_cast<sockaddr*>(&a), sizeof a) < 0) { s.connect_failed = true; s.err = std::strerror(errno); close(fd); s.fd = -1; ++r.connect_failed; if (r.connect_error.empty()) r.connect_error = s.err; continue; }
         int one = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
         int fl = fcntl(fd, F_GETFL, 0); fcntl(fd, F_SETFL, fl | O_NONBLOCK);
         if (!subscribe_json.empty()) { auto f = encode(MSG_SUBSCRIBE, 0, reinterpret_cast<const uint8_t*>(subscribe_json.data()), subscribe_json.size()); send(fd, f.data(), f.size(), 0); }
-        s.fd = fd; ++r.connected;
+        ++r.connected;
     }
     std::string h0 = http_get(host, admin, "/healthz");
     r.up_frames_before = json_num(h0, "frames_in");
@@ -113,7 +138,10 @@ Round run_round(const std::string& host, int port, int admin, int n, double seco
     std::vector<double> lat; lat.reserve(size_t(n) * 8000);
     constexpr size_t PER_SUB_CAP = 20000;   // 구독자 1,000명 × 2만 = 메모리 상한 안
     std::vector<uint8_t> buf(1 << 16);
-    const double t0 = mono(), deadline = t0 + seconds;
+    // 워밍업: 이 시간 동안은 표본을 버린다.
+    // 먼저 접속한 구독자는 나머지가 다 붙기 전의 **한산한 구간**을 표본에 담는다. 구독자별
+    // p99 를 비교할 때 그 차이가 "먼저 접속한 쪽이 빠르다"로 보일 수 있다. 창을 맞춰 확인한다.
+    const double t0 = mono(), measure_from = t0 + warmup_s, deadline = t0 + warmup_s + seconds;
     size_t read_rotor = 0;
     while (mono() < deadline) {
         if (!pfds.empty()) read_rotor = (read_rotor + 1) % pfds.size();
@@ -131,15 +159,18 @@ Round run_round(const std::string& host, int port, int admin, int n, double seco
                 if (got > 0) {
                     s.bytes += uint64_t(got);
                     const uint64_t now = sys_now_ns();
+                    const bool measuring = mono() >= measure_from;
                     s.parser.feed(buf.data(), size_t(got), [&](const FrameView& f) {
                         if (f.flags & FLAG_SNAPSHOT) return;
                         uint64_t l = s.track.observe(f.seq); if (l) { ++s.gaps; s.lost += l; }
                         if (f.msg_type == MSG_TRADE && f.length >= Trade::SIZE) {
                             const uint64_t ts_recv = get_be64(f.payload + 32);           // Trade.ts_recv_ns
                             const double us = double(int64_t(now - ts_recv)) / 1000.0;    // µs. 청크 수신 시각 기준
-                            lat.push_back(us);
-                            if (s.lat.size() < PER_SUB_CAP) s.lat.push_back(us);
-                            ++s.messages;
+                            if (measuring) {
+                                lat.push_back(us);
+                                if (s.lat.size() < PER_SUB_CAP) s.lat.push_back(us);
+                                ++s.messages;
+                            }
                         } else if (f.msg_type == MSG_BOOK) ++s.messages;
                     });
                     if (size_t(got) < buf.size()) break;
@@ -152,7 +183,7 @@ Round run_round(const std::string& host, int port, int admin, int n, double seco
             }
         }
     }
-    r.elapsed = mono() - t0;
+    r.elapsed = mono() - measure_from;
     stop = true; sampler.join();
     std::string h1 = http_get(host, admin, "/healthz");
     r.up_frames_after = json_num(h1, "frames_in"); r.g_dropped = json_num(h1, "total_dropped"); r.g_subs = json_num(h1, "subscribers"); r.up_symbols = json_num(h1, "cached_symbols");
@@ -167,8 +198,25 @@ Round run_round(const std::string& host, int port, int admin, int n, double seco
     // 구독자별 p99 를 모아 퍼짐을 본다. 한 통에 넣고 낸 p99 는 편향을 숨긴다.
     std::vector<double> per99; per99.reserve(subs.size());
     for (auto& s : subs) { if (s.lat.empty()) continue; std::sort(s.lat.begin(), s.lat.end()); per99.push_back(pct(s.lat, 99)); }
+    // 순위-값 상관(피어슨). +1 에 가까우면 그 순서가 뒤일수록 느리다는 뜻이다.
+    auto corr = [](const std::vector<double>& x, const std::vector<double>& y) {
+        const size_t m = x.size(); if (m < 3) return 0.0;
+        double mx = 0, my = 0; for (size_t i = 0; i < m; ++i) { mx += x[i]; my += y[i]; }
+        mx /= double(m); my /= double(m);
+        double sxy = 0, sxx = 0, syy = 0;
+        for (size_t i = 0; i < m; ++i) { const double a = x[i] - mx, b = y[i] - my; sxy += a * b; sxx += a * a; syy += b * b; }
+        return (sxx > 0 && syy > 0) ? sxy / std::sqrt(sxx * syy) : 0.0;
+    };
+    std::vector<double> arr_rank, con_rank, vals;
+    for (size_t i = 0; i < subs.size(); ++i) {
+        if (subs[i].lat.empty()) continue;
+        arr_rank.push_back(double(i)); con_rank.push_back(double(subs[i].connect_rank));
+        vals.push_back(pct(subs[i].lat, 99));
+    }
+    r.corr_array = corr(arr_rank, vals); r.corr_connect = corr(con_rank, vals); r.shuffled = shuffle_connect;
+
     if (!per99.empty()) {
-        r.fair_p99_first = per99.front(); r.fair_p99_last = per99.back();   // 접속(=쓰기) 순서
+        r.fair_p99_first = per99.front(); r.fair_p99_last = per99.back();   // 배열 순서 기준 첫/끝
         std::vector<double> sorted99 = per99; std::sort(sorted99.begin(), sorted99.end());
         r.fair_p99_min = sorted99.front(); r.fair_p99_max = sorted99.back(); r.fair_p99_med = pct(sorted99, 50);
         r.fair_spread = r.fair_p99_min > 0 ? r.fair_p99_max / r.fair_p99_min : 0;
@@ -187,14 +235,16 @@ std::string round_json(const Round& r, double seconds) {
         "\"gateway_dropped\": %.0f, \"gateway_subscribers\": %.0f, \"upstream_frames_in\": %.0f, \"upstream_msg_per_s\": %.1f, \"upstream_symbols\": %.0f, "
         "\"throughput_retained_pct\": %.1f, \"gateway_max_backlog\": %.0f, \"gateway_max_wire_bytes\": %.0f, \"gateway_samples\": %d, "
         "\"fairness\": {\"per_sub_p99_min_us\": %.1f, \"per_sub_p99_median_us\": %.1f, \"per_sub_p99_max_us\": %.1f, "
-        "\"first_connected_p99_us\": %.1f, \"last_connected_p99_us\": %.1f, \"max_over_min\": %.2f}}",
+        "\"first_connected_p99_us\": %.1f, \"last_connected_p99_us\": %.1f, \"max_over_min\": %.2f, "
+        "\"corr_with_array_order\": %.3f, \"corr_with_connect_order\": %.3f, \"connect_shuffled\": %s}}",
         r.subscribers, r.connected, r.connect_failed, r.connect_error.empty() ? "null" : ("\"" + r.connect_error + "\"").c_str(), r.elapsed,
         (unsigned long long)r.total_messages, r.elapsed > 0 ? double(r.total_messages) / r.elapsed : 0.0, r.per_sub_avg / seconds,
         (unsigned long long)r.per_sub_min, (unsigned long long)r.per_sub_max, (unsigned long long)r.bytes_total,
         r.p50, r.p95, r.p99, r.p999, r.lmax, (unsigned long long)r.gaps, (unsigned long long)r.lost, (unsigned long long)r.crc_errors, (unsigned long long)r.resyncs,
         r.g_dropped, r.g_subs, r.up_frames_after, up, r.up_symbols,
         up > 0 ? (r.per_sub_avg / r.elapsed) / up * 100.0 : -1.0, r.peak_backlog, r.peak_wire, r.samples,
-        r.fair_p99_min, r.fair_p99_med, r.fair_p99_max, r.fair_p99_first, r.fair_p99_last, r.fair_spread);
+        r.fair_p99_min, r.fair_p99_med, r.fair_p99_max, r.fair_p99_first, r.fair_p99_last, r.fair_spread,
+        r.corr_array, r.corr_connect, r.shuffled ? "true" : "false");
     return b;
 }
 
@@ -202,20 +252,23 @@ std::string round_json(const Round& r, double seconds) {
 
 int main(int argc, char** argv) {
     std::string host = "127.0.0.1", out, subscribe; int port = 9101, admin = 9111, gap_s = 3; double seconds = 12; std::vector<int> subs;
+    bool shuffle_connect = false; double warmup_s = 0.0;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
         if (a == "--host") host = next(); else if (a == "--port") port = std::atoi(next().c_str()); else if (a == "--admin") admin = std::atoi(next().c_str());
-        else if (a == "--seconds") seconds = std::atof(next().c_str()); else if (a == "--gap") gap_s = std::atoi(next().c_str()); else if (a == "--out") out = next(); else if (a == "--subscribe") subscribe = next();
+        else if (a == "--seconds") seconds = std::atof(next().c_str()); else if (a == "--gap") gap_s = std::atoi(next().c_str());
+        else if (a == "--shuffle-connect") shuffle_connect = true;
+        else if (a == "--warmup") warmup_s = std::atof(next().c_str()); else if (a == "--out") out = next(); else if (a == "--subscribe") subscribe = next();
         else if (a == "--subscribers") { while (i + 1 < argc && argv[i + 1][0] != '-') subs.push_back(std::atoi(argv[++i])); }
-        else { std::fprintf(stderr, "usage: %s [--host H] [--port P] [--admin A] [--subscribers N...] [--seconds S] [--gap SECONDS_BETWEEN_ROUNDS] [--subscribe JSON] [--out FILE]\n", argv[0]); return 2; }
+        else { std::fprintf(stderr, "usage: %s [--host H] [--port P] [--admin A] [--subscribers N...] [--seconds S] [--gap N] [--shuffle-connect] [--warmup S] [--subscribe JSON] [--out FILE]\n", argv[0]); return 2; }
     }
     if (subs.empty()) subs = {1, 10, 50, 100, 200};
     std::fprintf(stderr, "대상 %s:%d · 회차당 %.0f초 · 클라이언트 C++ 단일 스레드 poll\n\n", host.c_str(), port, seconds);
     std::fprintf(stderr, "%6s %6s %9s %9s %10s %10s %6s %6s %9s %9s %7s\n", "구독자", "접속", "msg/s/sub", "상류/s", "p50", "p99", "유실", "드롭", "첫p99", "끝p99", "퍼짐");
     std::string rounds;
     for (size_t i = 0; i < subs.size(); ++i) {
-        Round r = run_round(host, port, admin, subs[i], seconds, subscribe);
+        Round r = run_round(host, port, admin, subs[i], seconds, subscribe, shuffle_connect, warmup_s);
         const double up = (r.up_frames_after - r.up_frames_before) / (r.elapsed > 0 ? r.elapsed : 1);
         std::fprintf(stderr, "%6d %6d %9.1f %9.1f %9.0fµ %9.0fµ %6llu %6.0f %8.0fµ %8.0fµ %6.1fx\n", r.subscribers, r.connected, r.per_sub_avg / seconds,
             up, r.p50, r.p99, (unsigned long long)r.lost, r.g_dropped, r.fair_p99_first, r.fair_p99_last, r.fair_spread);

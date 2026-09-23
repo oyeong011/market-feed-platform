@@ -368,6 +368,17 @@ groups:
           summary: "결함 주입이 켜진 채 돌고 있다 — 일부러 데이터를 버리는 중"
           action: "MDFEED_MCAST_DROP_EVERY / REORDER_EVERY / DUPLICATE_EVERY 를 끄고 재기동한다"
 
+      - alert: FanoutUnfair
+        # 순차 팬아웃을 늘 같은 순서로 돌면 접속이 이른 구독자가 구조적으로 유리해진다.
+        # 실측(구독자 100명): 고정 순서 62배, 시작점 회전 1.0배. 같은 값을 파는 피드에서
+        # 접속 순서가 지연 우선순위를 정하면 안 된다. 회귀하면 이 값이 먼저 올라간다.
+        expr: mdfeed_fanout_delay_spread > 5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "구독자 사이 팬아웃 지연이 기울었다 — 접속 순서가 유불리를 만들고 있다"
+          action: "/subscribers 의 mean_send_delay_us 를 id 순으로 보고, 팬아웃 순회가 회전하는지 확인한다"
+
       - alert: GatewaySendBackpressure
         # send() 가 EAGAIN 으로 돌아오면 커널 송신 버퍼가 찼다는 뜻이다. 구독자가 못 따라오고 있고,
         # 이 상태가 길어지면 우리 큐가 차서 드롭으로 넘어간다. 드롭보다 먼저 보이는 신호다.

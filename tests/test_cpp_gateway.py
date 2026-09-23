@@ -375,3 +375,58 @@ def test_localhost_binds_loopback(gateway_bin):
         assert gw.get("/readyz")[0] == 200
     finally:
         gw.proc.kill()
+
+
+def test_fanout_is_fair_across_subscribers(gateway_bin):
+    """접속 순서가 지연 우선순위를 정하면 안 된다.
+
+    순차 팬아웃을 늘 같은 순서로 돌면 먼저 접속한 구독자가 구조적으로 유리하다. 게이트웨이
+    안에서 재보니 기울기가 완벽한 직선이었다(2026-09-23, 구독자 100명): 배치 시작 → send() 완료가
+    첫 구독자 6µs, 마지막 390µs, 최대/최소 62배. 시작점을 배치마다 밀면 1.0배가 된다.
+
+    이 시험은 **게이트웨이 자신의 지표**로 본다. 클라이언트가 잰 p99 는 잡음이 커서 380µs 효과를
+    가렸고, 그래서 한 번은 "회전은 효과가 없다"는 틀린 결론을 냈다. 잴 수 있는 자리에서 잰다.
+    """
+    run = bus_dir()
+    bus_path = os.path.join(run, "bus.sock")
+    n_subs = 24
+
+    async def main():
+        pub = UDSPublisher(bus_path, queue_size=65536)
+        await pub.start()
+        gw = Gateway(gateway_bin, bus_path)
+        cols = []
+        try:
+            await _wait(lambda: pub.subscriber_count == 1, 5, "gateway on bus")
+            for _ in range(n_subs):
+                cols.append(Collector(gw.port))
+            await _wait(lambda: gw.health()["subscribers"] == n_subs, 5, "all subscribers")
+
+            seq = 0
+            for batch in range(60):          # 배치를 여러 번 만들어야 회전이 한 바퀴 돈다
+                for _ in range(20):
+                    pub.publish(encode(MSG_TRADE, seq, trade("AAA", seq))); seq += 1
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.5)
+            for c in cols:                   # 소켓을 비워 둬야 전송이 막히지 않는다
+                await asyncio.to_thread(c.collect, 0.2)
+            _, subs = gw.get("/subscribers")
+            _, metrics = gw.get("/metrics")
+            return json.loads(subs)["items"], metrics
+        finally:
+            for c in cols:
+                c.close()
+            gw.proc.kill()
+            await pub.close()
+
+    items, metrics = asyncio.run(main())
+    delays = [(i["id"], i["mean_send_delay_us"]) for i in items if i["mean_send_delay_us"] > 0]
+    assert len(delays) >= n_subs // 2, items
+    lo = min(d for _, d in delays)
+    hi = max(d for _, d in delays)
+    spread = hi / lo if lo > 0 else float("inf")
+    assert spread < 3.0, f"팬아웃이 기울었다 — 최대/최소 {spread:.1f}배: {sorted(delays)[:5]} … {sorted(delays)[-3:]}"
+    # 지표로도 같은 값이 나와야 한다 (알람 FanoutUnfair 가 이걸 본다)
+    line = [l for l in metrics.splitlines() if l.startswith("mdfeed_fanout_delay_spread")]
+    assert line, metrics
+    assert float(line[0].split()[-1]) < 3.0, line
