@@ -16,6 +16,18 @@
 // 처음엔 poll() 이었다 — 구독자 1,000명이면 이벤트 하나에 fd 1,000개를 커널이 훑는다. 관심 집합을 등록해
 // 두고 일어난 것만 받는 쪽으로 바꿨다. 구독자별 '쓸 게 있는가' 는 바뀔 때만 mod 한다.
 //
+// 무중단 교체(SO_REUSEPORT + 드레인)
+// -----------------------------------
+// 예전엔 재시작 = 포트가 닫히는 구간이었고, 그 사이 새 접속은 그냥 실패했다. 지금은:
+//   1. 새 프로세스가 **같은 포트에 SO_REUSEPORT 로 함께 바인드**한다. 커널이 새 접속을 나눠 준다.
+//   2. 옛 프로세스에 SIGTERM → **리스너만 즉시 닫는다.** 이후 새 접속은 전부 새 프로세스로 간다.
+//   3. 옛 프로세스는 이미 붙어 있는 구독자에게 MDFEED_DRAIN_SECONDS 동안 계속 배포하다 끝낸다.
+// 그래서 교체 중에도 connect() 가 실패하지 않는다. 기존 구독자는 드레인이 끝나면 끊기고,
+// 재접속해서 스냅샷으로 다시 맞춘다 — 조용히 빠지는 게 아니라 규약대로 재동기화한다.
+//
+// 대가: 겹치는 동안 관리 포트도 둘이 함께 듣는다. /healthz 스크레이프가 두 프로세스 중 하나에
+// 닿으므로 그 구간의 지표는 섞인다. draining=true 와 /readyz 503 으로 구분할 수 있게 해 둔다.
+//
 // 설정은 파이썬과 같은 환경변수를 읽는다 (MDFEED_BUS_PATH, MDFEED_TCP_PORT, ...).
 // 포트 0 을 주면 OS 가 고른 포트를 기동 로그 첫 줄(JSON)에 찍는다 — 테스트용.
 #include <arpa/inet.h>
@@ -74,6 +86,8 @@ struct Cfg {
     size_t client_queue;
     uint64_t drop_limit;
     int tcp_sndbuf;   // 구독자 소켓 SO_SNDBUF (0 = 커널 기본). 리눅스는 자동조정으로 수 MB 까지 키운다
+    double drain_s;   // SIGTERM 후 기존 구독자에게 계속 배포할 시간. 0 이면 즉시 종료(옛 동작)
+    bool reuseport;   // 같은 포트를 새 프로세스와 함께 듣는다 (무중단 교체)
     Cfg() {
         bus_paths = split_csv(env_str("MDFEED_BUS_PATHS", ""));
         if (bus_paths.empty()) bus_paths.push_back(env_str("MDFEED_BUS_PATH", "/tmp/mdfeed/bus.sock"));
@@ -84,6 +98,8 @@ struct Cfg {
         client_queue = size_t(env_int("MDFEED_CLIENT_QUEUE", 2048));
         drop_limit = uint64_t(env_int("MDFEED_DROP_LIMIT", 5000));
         tcp_sndbuf = int(env_int("MDFEED_TCP_SNDBUF", 0));
+        drain_s = double(env_int("MDFEED_DRAIN_SECONDS", 5));
+        reuseport = env_int("MDFEED_REUSEPORT", 1) != 0;
     }
 };
 
@@ -176,8 +192,8 @@ public:
 
     int run() {
         for (auto& p : cfg_.bus_paths) { BusSource s; s.path = p; sources_.push_back(std::move(s)); }
-        listen_fd_ = listen_tcp(cfg_.tcp_host, cfg_.tcp_port, tcp_port_);
-        admin_fd_ = listen_tcp(cfg_.http_host, cfg_.admin_port, admin_port_);
+        listen_fd_ = listen_tcp(cfg_.tcp_host, cfg_.tcp_port, tcp_port_, cfg_.reuseport);
+        admin_fd_ = listen_tcp(cfg_.http_host, cfg_.admin_port, admin_port_, cfg_.reuseport);
         if (listen_fd_ < 0 || admin_fd_ < 0) return 1;
         // 첫 줄은 기계가 읽는다 (테스트가 포트 0 으로 띄우고 실제 포트를 알아낸다)
         std::printf("{\"event\":\"listening\",\"service\":\"tcp-gateway\",\"impl\":\"c++\",\"event_loop\":\"%s\",\"tcp_port\":%d,\"admin_port\":%d}\n", EventLoop::backend(), tcp_port_, admin_port_);
@@ -187,12 +203,25 @@ public:
 
         loop_.add(listen_fd_, true, false, tag(Kind::Listen, 0)); listen_armed_ = true;
         loop_.add(admin_fd_, true, false, tag(Kind::Admin, 0));
-        while (!g_stop) {
+        while (!g_stop || draining_) {
             const double now = mono();
+            // SIGTERM 을 처음 본 순간: 리스너만 닫고 드레인으로 들어간다.
+            // 새 접속은 이제 전부 새 프로세스가 받는다(같은 포트를 함께 듣고 있으므로).
+            if (g_stop && !draining_) {
+                draining_ = true; drain_until_ = now + cfg_.drain_s;
+                if (listen_fd_ >= 0) { loop_.del(listen_fd_); close(listen_fd_); listen_fd_ = -1; listen_armed_ = false; }
+                if (admin_fd_ >= 0) { loop_.del(admin_fd_); close(admin_fd_); admin_fd_ = -1; }
+                logf("INFO", "SIGTERM — 리스너를 닫고 %.0f초 드레인. 구독자 %zu명에게 계속 배포한다", cfg_.drain_s, subs_.size());
+                if (cfg_.drain_s <= 0) break;
+            }
+            if (draining_ && (now >= drain_until_ || subs_.empty())) {
+                logf("INFO", "드레인 종료 (남은 구독자 %zu명)", subs_.size());
+                break;
+            }
             for (auto& s : sources_) if (!s.connected && s.fd < 0 && now >= s.next_try) connect_bus(s);
             // fd 고갈 백오프: 리스너를 관심 집합에서 잠시 뺀다
-            const bool want_listen = now >= accept_backoff_until_;
-            if (want_listen != listen_armed_) { loop_.mod(listen_fd_, want_listen, false); listen_armed_ = want_listen; }
+            const bool want_listen = listen_fd_ >= 0 && now >= accept_backoff_until_;
+            if (listen_fd_ >= 0 && want_listen != listen_armed_) { loop_.mod(listen_fd_, want_listen, false); listen_armed_ = want_listen; }
 
             int n = loop_.wait(500, [&](const Event& e) {
                 const Owner o = untag(e.tag);
@@ -246,6 +275,7 @@ private:
     uint64_t send_calls_ = 0, send_bytes_ = 0, send_eagain_ = 0, bus_reads_ = 0;   // 시스템 콜 비용을 보이게
     double started_ = 0, last_frame_at_ = 0; bool upstream_ok_ = false;
     double accept_backoff_until_ = 0, accept_log_after_ = 0;
+    bool draining_ = false; double drain_until_ = 0;
     std::vector<uint8_t> scratch_;
 
     // 구독자를 매번 **다른 지점부터** 훑는다.
@@ -276,9 +306,16 @@ private:
         if (wr != s.armed_write) { loop_.mod(s.fd, true, wr); s.armed_write = wr; }
     }
 
-    static int listen_tcp(const std::string& host, int port, int& bound_port) {
+    static int listen_tcp(const std::string& host, int port, int& bound_port, bool reuseport = false) {
         int fd = socket(AF_INET, SOCK_STREAM, 0); if (fd < 0) { logf("ERROR", "socket: %s", std::strerror(errno)); return -1; }
         int one = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+#ifdef SO_REUSEPORT
+        // 무중단 교체용. 이게 없으면 새 프로세스가 옛 프로세스의 포트에 바인드하지 못해
+        // 교체 구간이 곧 접속 실패 구간이 된다.
+        if (reuseport) setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof one);
+#else
+        (void)reuseport;
+#endif
         sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = htons(uint16_t(port));
         if (host.empty()) a.sin_addr.s_addr = htonl(INADDR_ANY);
         else if (host == "localhost") a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -539,7 +576,7 @@ private:
         if (method.empty() || target.empty() || target[0] != '/') { status = 400; body = "bad request"; ctype = "text/plain; charset=utf-8"; }
         else if (method != "GET" && method != "HEAD") { status = 405; body = "method not allowed"; ctype = "text/plain; charset=utf-8"; }
         else if (target == "/healthz") { body = health_json(); status = upstream_healthy() ? 200 : 503; }
-        else if (target == "/readyz") { body = "{\"ready\": true}"; }
+        else if (target == "/readyz") { body = std::string("{\"ready\": ") + (draining_ ? "false" : "true") + "}"; status = draining_ ? 503 : 200; }
         else if (target == "/metrics") { body = metrics_text(); ctype = "text/plain; version=0.0.4; charset=utf-8"; }
         else if (target == "/subscribers") { body = subscribers_json(); }
         else { status = 404; body = "not found"; ctype = "text/plain; charset=utf-8"; }
@@ -566,6 +603,7 @@ private:
         }
         std::string out = "{\"service\": \"tcp-gateway\", \"impl\": \"c++\", \"event_loop\": \"" + std::string(EventLoop::backend()) + "\", \"healthy\": ";
         out += upstream_healthy() ? "true" : "false";
+        out += ", \"draining\": " + std::string(draining_ ? "true" : "false");
         out += ", \"uptime_s\": " + std::to_string(mono() - started_) + ", \"upstream_connected\": " + (upstream_ok_ ? "true" : "false");
         out += ", \"last_frame_age_s\": " + (age < 0 ? std::string("null") : std::to_string(age));
         out += ", \"frames_in\": " + std::to_string(frames_in_) + ", \"subscribers\": " + std::to_string(subs_.size()) + ", \"cached_symbols\": " + std::to_string(last_.size());
@@ -615,7 +653,8 @@ private:
         subs_.clear();
         for (auto& [fd, r] : admin_conns_) close(fd);
         for (auto& s : sources_) if (s.fd >= 0) close(s.fd);
-        close(listen_fd_); close(admin_fd_);
+        if (listen_fd_ >= 0) close(listen_fd_);
+        if (admin_fd_ >= 0) close(admin_fd_);
         logf("INFO", "종료. 수신 %llu 프레임", (unsigned long long)frames_in_);
     }
 };

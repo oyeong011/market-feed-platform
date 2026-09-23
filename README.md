@@ -3,7 +3,7 @@
 [![CI](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml)
 [![Pages](https://github.com/oyeong011/market-feed-platform/actions/workflows/pages.yml/badge.svg)](https://oyeong011.github.io/market-feed-platform/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![tests](https://img.shields.io/badge/tests-543-brightgreen)
+![tests](https://img.shields.io/badge/tests-544-brightgreen)
 ![cpp](https://img.shields.io/badge/C%2B%2B-data%20plane-blue)
 ![obs](https://img.shields.io/badge/알람-18개%20지표%20검증-blue)
 ![venues](https://img.shields.io/badge/수집경로-5개%20실연결-blue)
@@ -68,7 +68,7 @@ make demo        # replay + disposable synthetic SQLite 로 6개 프로세스 �
 make status      # 서비스 상태 (프로세스 + HTTP 헬스 + 포트)
 make client      # 참조 TCP 구독 클라이언트 (갭 탐지 포함)
 make diag        # 장애 진단 원스톱
-make test        # 543개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
+make test        # 544개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
 ```
 
 데모와 CI는 라이브 어댑터를 상속하지 않습니다. 저장소에 든 녹화 파일을 replay로 읽고, 임시 SQLite DB를 만들어 검증합니다.
@@ -138,7 +138,7 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 |---|---|---|
 | 금융 데이터 FEED 개발·운영 | 수집 경로 5개, 배포 프로토콜 3종 | 무결성 48.5% → **100.0000%** |
 | Linux 서비스·프로세스 점검·안정화 | systemd 6유닛 + 자동 검증 + 장애 주입 | 11항목 · 복구 4종 확인 |
-| 파이프라인·배포·점검 자동화 | Makefile · CI 7잡 · Pages 자동 갱신 | 테스트 **543개** |
+| 파이프라인·배포·점검 자동화 | Makefile · CI 7잡 · Pages 자동 갱신 | 테스트 **544개** |
 | Python | 소스 8,835줄 | 핵심 의존성 **0** |
 | SQL · 관계형 DB | 복합 인덱스 · 사전 집계 · 하이퍼테이블 | 적재 **480,586 rows/s** |
 | Linux 명령·프로세스·로그 | `ops.sh diag` · RUNBOOK 8종 | 1차 진단 한 줄 |
@@ -238,6 +238,19 @@ curl -s localhost:9111/healthz | grep impl   # "impl": "c++" 이어야 진짜 C+
 
 컨테이너는 다단계 빌드로 C++ 바이너리만 담고 컴파일러는 남기지 않습니다. systemd 는
 `ops/systemd/mdfeed-tcp-gateway.service.d/cpp.conf` 드롭인으로 실행 파일만 갈아 끼웁니다.
+
+**교체할 때 접속이 끊기지 않습니다.** 새 프로세스가 같은 포트를 `SO_REUSEPORT` 로 함께 듣고,
+옛 프로세스는 `SIGTERM` 에 **리스너만 닫고** 기존 구독자에게 계속 배포하다 끝냅니다. 그래서 교체
+구간에도 새 접속이 실패하지 않고, 기존 구독자는 드레인 동안 데이터를 계속 받습니다.
+
+```bash
+ops/swap_gateway.sh          # 새 프로세스 기동 → 옛 프로세스 드레인. 교체 중 접속을 두드려 실패 수를 센다
+```
+
+이 스크립트는 교체 내내 `connect()` 를 두드리고 **실패가 하나라도 있으면 실패로 끝납니다.**
+"무중단"을 말로만 적지 않기 위해서입니다. 같은 성질을 시험으로도 고정했습니다
+(`test_zero_downtime_replacement`: 접속 실패 0 · 드레인 중 유실 0 · 드레인 중 `/readyz` 503).
+`MDFEED_REUSEPORT=0` 으로 끄면 두 번째 프로세스가 `Address already in use` 로 죽는 것까지 확인했습니다.
 
 ```bash
 make cpp-test      # C++ 단위 테스트 + 파이썬↔C++ 교차 검증 + 게이트웨이 통합 시험
@@ -415,7 +428,7 @@ src/mdfeed/
 
 ops/     systemd 유닛 6종 · ops.sh · watchdog.sh · healthcheck.py · logrotate
 quant/   backtest.py · run_backtest.py · integrations.py · factor_screen.py
-tests/   543개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
+tests/   544개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
          복구 경로 · 종료 기한 · 컨플레이션 · 토큰 발급 · 운영 기록 환산 ·
          PostgreSQL 마이그레이션/백업/복구 27개는 실서버 연결 시에만)
 bench/   계층별 성능 측정 → docs/data/bench.json · 게이트웨이 비교 → gateway_compare.json

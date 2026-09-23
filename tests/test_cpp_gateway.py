@@ -17,6 +17,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import urllib.error
 import tempfile
 import threading
 import time
@@ -88,6 +89,14 @@ class Gateway:
     def stop(self) -> int:
         self.proc.send_signal(signal.SIGTERM)
         return self.proc.wait(timeout=5)
+
+
+def free_tcp_port() -> int:
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
 
 
 def bus_dir() -> str:
@@ -430,3 +439,103 @@ def test_fanout_is_fair_across_subscribers(gateway_bin):
     line = [l for l in metrics.splitlines() if l.startswith("mdfeed_fanout_delay_spread")]
     assert line, metrics
     assert float(line[0].split()[-1]) < 3.0, line
+
+
+def _connect_probe(port: int, stop: threading.Event, result: dict) -> None:
+    """교체 중에도 새 접속이 되는지 계속 두드린다. 실패 횟수가 이 시험의 값이다."""
+    ok = fail = 0
+    errs: list[str] = []
+    while not stop.is_set():
+        try:
+            s = socket.create_connection(("127.0.0.1", port), timeout=1)
+            s.close()
+            ok += 1
+        except OSError as e:
+            fail += 1
+            if len(errs) < 3:
+                errs.append(f"{type(e).__name__}: {e}")
+        time.sleep(0.01)
+    result.update(ok=ok, fail=fail, errors=errs)
+
+
+def test_zero_downtime_replacement(gateway_bin):
+    """게이트웨이를 교체하는 동안 새 접속이 실패하지 않는다.
+
+    예전엔 재시작 = 포트가 닫히는 구간이었다. 지금은 새 프로세스가 같은 포트를 SO_REUSEPORT 로
+    함께 듣고, 옛 프로세스는 SIGTERM 에 **리스너만 닫고** 기존 구독자에게 계속 배포하다 끝낸다.
+
+    확인하는 것:
+      1. 교체 내내 connect() 실패 0
+      2. 옛 프로세스에 붙어 있던 구독자는 드레인 동안 계속 받는다 (유실 0)
+      3. 드레인 중 /readyz 는 503 (로드밸런서가 빼라는 신호)
+    """
+    run = bus_dir()
+    bus_path = os.path.join(run, "bus.sock")
+    port = free_tcp_port()
+
+    async def main():
+        pub = UDSPublisher(bus_path, queue_size=65536)
+        await pub.start()
+        old = Gateway(gateway_bin, bus_path, MDFEED_TCP_PORT=port, MDFEED_DRAIN_SECONDS=3)
+        new = None
+        try:
+            await _wait(lambda: pub.subscriber_count == 1, 5, "old gateway on bus")
+            col = Collector(old.port)
+            await _wait(lambda: old.health()["subscribers"] == 1, 3, "subscriber on old")
+
+            stop = threading.Event()
+            probe: dict = {}
+            th = threading.Thread(target=_connect_probe, args=(old.port, stop, probe), daemon=True)
+            th.start()
+
+            seq = 0
+
+            async def produce(n: int):
+                nonlocal seq
+                for _ in range(n):
+                    pub.publish(encode(MSG_TRADE, seq, trade("AAA", seq))); seq += 1
+                    await asyncio.sleep(0.002)
+
+            await produce(100)
+            # 새 프로세스가 같은 포트에 합류
+            new = Gateway(gateway_bin, bus_path, MDFEED_TCP_PORT=port, MDFEED_DRAIN_SECONDS=3)
+            await _wait(lambda: pub.subscriber_count == 2, 5, "new gateway on bus")
+            await produce(100)
+
+            old.proc.send_signal(signal.SIGTERM)          # 옛 프로세스 드레인 시작
+            await asyncio.sleep(0.3)
+            ready_status = None
+            try:
+                old.get("/readyz")
+                ready_status = 200
+            except urllib.error.HTTPError as e:
+                ready_status = e.code
+            except Exception:                              # noqa: BLE001  — 관리 리스너는 이미 닫혔다
+                ready_status = "closed"
+
+            await produce(300)                             # 드레인 동안에도 계속 발행
+            await asyncio.to_thread(col.collect, 1.0)
+            drained_trades = len(col.trades())
+            rc = old.proc.wait(timeout=15)                 # 드레인 기한 안에 스스로 끝나야 한다
+            stop.set(); th.join(timeout=5)
+
+            # 교체가 끝난 뒤에도 새 프로세스가 받는다
+            after = Collector(new.port)
+            await _wait(lambda: new.health()["subscribers"] >= 1, 5, "subscriber on new")
+            after.close()
+            col.close()
+            return probe, rc, drained_trades, col.track.stats(), ready_status
+        finally:
+            if new:
+                new.proc.kill()
+            old.proc.kill()
+            await pub.close()
+
+    probe, rc, drained_trades, seqstats, ready_status = asyncio.run(main())
+
+    assert probe["fail"] == 0, f"교체 중 접속 실패 {probe['fail']}건: {probe.get('errors')}"
+    assert probe["ok"] > 20, probe                          # 실제로 두드렸는지
+    assert rc == 0                                          # 드레인 뒤 정상 종료
+    assert drained_trades > 100, drained_trades             # 드레인 동안에도 계속 받았다
+    assert seqstats["lost_messages"] == 0, seqstats         # 그 사이 유실 0
+    assert ready_status in (503, "closed"), ready_status     # 드레인 중에는 준비 안 됨
