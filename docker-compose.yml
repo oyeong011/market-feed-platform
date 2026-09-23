@@ -70,6 +70,20 @@ services:
       MDFEED_HEALTH_PORT: "9111"
     ports: ["127.0.0.1:9101:9101", "127.0.0.1:9111:9111"]
 
+  # 멀티캐스트 발행자. 기본 구성에는 없고 프로파일로 켠다 — 망 설정(그룹·인터페이스·IGMP)이
+  # 맞아야 돌기 때문이다. `docker compose --profile mcast up` 으로 함께 띄운다.
+  # 컨테이너 네트워크에서 멀티캐스트를 쓰려면 브리지가 이를 전달해야 한다.
+  mcast-publisher:
+    <<: *common
+    profiles: ["mcast"]
+    command: ["/opt/mdfeed/cpp/build/mcast_publisher"]
+    environment:
+      <<: *env
+      MDFEED_HEALTH_PORT: "9132"
+      MDFEED_MCAST_GROUP: "${MDFEED_MCAST_GROUP:-239.192.0.1}"
+      MDFEED_MCAST_PORT: "9130"
+    ports: ["127.0.0.1:9131:9131", "127.0.0.1:9132:9132"]
+
   ws-gateway:
     <<: *common
     command: ["python3", "-m", "mdfeed.services.ws_gateway"]

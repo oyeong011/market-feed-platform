@@ -140,6 +140,7 @@ jobs:
         run: |
           mkdir -p data/replay
           MDFEED_GATEWAY_IMPL=cpp \
+          MDFEED_MCAST_ENABLED=1 MDFEED_MCAST_IF=127.0.0.1 \
           MDFEED_ADAPTERS=replay MDFEED_REPLAY_LOOP=1 \
           MDFEED_RUN_DIR=/tmp/mdfeed \
           MDFEED_STORAGE_BACKEND=sqlite MDFEED_STORAGE_PROFILE=test \
@@ -154,14 +155,30 @@ jobs:
           echo "gateway impl = $impl"
           [ "$impl" = "c++" ] || { echo "::error::C++ 게이트웨이가 아니다 ($impl)"; tail -30 /tmp/stack.log; exit 1; }
 
-      - name: 헬스체크 (CRIT 이면 실패)
+      - name: 멀티캐스트 발행자도 같이 떴는지 · 전송 실패가 없는지
+        # sendto 가 실패하면 프로세스는 살아 있는데 아무도 못 받는다. 가장 조용한 장애다.
+        run: |
+          h=$(curl -s --max-time 5 localhost:9132/healthz)
+          echo "$h" | python -c "import sys,json; d=json.load(sys.stdin); print('mcast', d['service'], d['impl'], 'healthy=', d['healthy'], 'frames_in=', d['frames_in'], 'send_errors=', d['send_errors'])"
+          echo "$h" | python -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          assert d['service'] == 'mcast-publisher' and d['healthy'], d
+          assert d['frames_in'] > 0, '버스에서 프레임을 못 받았다'
+          assert d['send_errors'] == 0, f'멀티캐스트 전송 실패 {d["send_errors"]}건 — 아무도 못 받는 상태'
+          "
+
+      - name: 헬스체크 (CRIT 이면 실패, 멀티캐스트 포함 8개 서비스)
         run: |
           set +e
-          PYTHONPATH=src python ops/healthcheck.py
+          MDFEED_MCAST_ENABLED=1 PYTHONPATH=src python ops/healthcheck.py
           rc=$?
           set -e
           [ "$rc" -ge 2 ] && { tail -30 /tmp/stack.log; exit 1; }
           exit 0
+
+      - name: 알람이 양방향으로 맞는지 (실재하지 않는 지표 · 아무도 안 보는 지표)
+        run: PYTHONPATH=src python scripts/verify_alerts.py
 
       - name: 파이썬 참조 클라이언트로 구독 검증
         run: |

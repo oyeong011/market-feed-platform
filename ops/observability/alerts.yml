@@ -324,6 +324,60 @@ groups:
           summary: "writer 미확정 버퍼 크기를 확인할 수 없다"
           action: "writer /metrics 수집과 preflight-monitor 상태를 확인한다"
 
+      # ── 배포단: C++ 게이트웨이 · 멀티캐스트 ───────────────────────────────
+      # 이 서비스들이 내는 지표를 보는 알람이 한동안 하나도 없었다. 새 서비스를 붙이면서
+      # 알람을 안 붙이면 "지표는 있는데 아무도 안 본다"가 된다 — 이 저장소가 반대 방향
+      # (알람은 있는데 지표가 없다)으로 겪은 것과 같은 사각이다.
+
+      - alert: McastSendErrors
+        # sendto 가 실패하면 프로세스는 멀쩡히 살아 있는데 아무도 데이터를 못 받는다.
+        # 망 설정(송신 인터페이스·IGMP·방화벽)이 안 맞을 때 나는 가장 조용한 장애다.
+        expr: increase(mdfeed_mcast_send_errors_total[5m]) > 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "멀티캐스트 전송이 실패하고 있다 — 발행 중인데 아무도 못 받는 상태"
+          action: "MDFEED_MCAST_IF 로 송신 인터페이스를 지정했는지, 그룹·방화벽·IGMP 를 확인한다"
+
+      - alert: McastRetransUnavailable
+        # 재전송 버퍼 밖으로 밀린 구간. 구독자가 영구히 못 받는 데이터다.
+        expr: increase(mdfeed_mcast_retrans_unavailable_total[10m]) > 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "재전송 버퍼 밖 구간 요청 — 구독자가 복구할 수 없는 공백이 생겼다"
+          action: "MDFEED_MCAST_RETRANS_BUFFER 를 늘리거나 구독자 지연 원인을 찾는다. 구독자는 스냅샷 재동기화가 필요하다"
+
+      - alert: McastRetransStorm
+        # 유실이 늘면 재전송 요청도 는다. 복구 채널이 TCP 이므로 폭증하면 그쪽이 병목이 된다.
+        expr: increase(mdfeed_mcast_retrans_requests_total[5m]) > 500
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "재전송 요청이 폭증한다 — 망 유실이 심하거나 갭필 지연이 안 먹는다"
+          action: "스위치 큐·IGMP 스누핑과 구독자의 gap_fill_delay 설정을 본다"
+
+      - alert: McastFaultInjectionEnabled
+        # 시험용 주입이 운영에 켜져 있으면 일부러 데이터를 버리고 있는 것이다.
+        expr: increase(mdfeed_mcast_injected_drops_total[5m]) > 0
+            or increase(mdfeed_mcast_injected_reorders_total[5m]) > 0
+            or increase(mdfeed_mcast_injected_duplicates_total[5m]) > 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "결함 주입이 켜진 채 돌고 있다 — 일부러 데이터를 버리는 중"
+          action: "MDFEED_MCAST_DROP_EVERY / REORDER_EVERY / DUPLICATE_EVERY 를 끄고 재기동한다"
+
+      - alert: GatewaySendBackpressure
+        # send() 가 EAGAIN 으로 돌아오면 커널 송신 버퍼가 찼다는 뜻이다. 구독자가 못 따라오고 있고,
+        # 이 상태가 길어지면 우리 큐가 차서 드롭으로 넘어간다. 드롭보다 먼저 보이는 신호다.
+        expr: increase(mdfeed_send_eagain_total[5m]) > 1000
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "배포 게이트웨이 송신이 커널 버퍼에서 막히고 있다"
+          action: "/subscribers 의 wire_bytes 로 느린 구독자를 지목하고, 필요하면 conflate 모드를 권한다"
+
       - alert: VerifiedBackupStale
         expr: mdfeed_backup_last_verified_age_seconds > 93600
         for: 15m

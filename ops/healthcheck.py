@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import sys
 import urllib.error
@@ -32,6 +33,11 @@ SERVICES = [
     ("strategy", 9105, False),
     ("quality", 9106, False),
 ]
+
+# 멀티캐스트 발행자는 선택 서비스다. 켜져 있을 때만 행으로 센다.
+# 안 켠 구성에서 "응답 없음"으로 WARN 을 내면 사람이 알람을 무시하게 된다.
+if os.getenv("MDFEED_MCAST_ENABLED", "").lower() in ("1", "true", "yes", "on"):
+    SERVICES.append(("mcast-publisher", 9132, True))
 
 # 피드 품질 임계치
 MAX_TICK_AGE_S = 120.0          # 이보다 오래 틱이 없으면 CRIT (하트비트는 별개)

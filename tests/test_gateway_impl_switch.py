@@ -6,13 +6,14 @@
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from mdfeed.cli import CPP_IMPLS, service_command
+from mdfeed.cli import CPP_IMPLS, SERVICES, active_services, service_command
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -64,3 +65,34 @@ def test_ops_script_finds_the_cpp_process_pattern():
     for impl, want in (("cpp", "cpp/build/tcp_gateway"), ("python", "mdfeed.services.tcp_gateway")):
         r = subprocess.run(["bash", "-c", f"{fn}\nMDFEED_GATEWAY_IMPL={impl} module_of tcp-gateway"], capture_output=True, text=True)
         assert r.stdout.strip() == want, (impl, r.stdout, r.stderr, out.stdout)
+
+
+def test_mcast_publisher_is_opt_in(monkeypatch):
+    """멀티캐스트는 망 설정이 맞아야 돈다. 안 맞으면 조용히 아무도 못 받으므로 켜는 건 명시적 결정이어야 한다."""
+    monkeypatch.delenv("MDFEED_MCAST_ENABLED", raising=False)
+    assert [s[0] for s in active_services()] == [s[0] for s in SERVICES]
+    monkeypatch.setenv("MDFEED_MCAST_ENABLED", "1")
+    assert "mcast-publisher" in [s[0] for s in active_services()]
+
+
+def test_mcast_publisher_always_uses_the_binary(monkeypatch):
+    """구현이 C++ 하나뿐이다. MDFEED_GATEWAY_IMPL 과 무관하게 바이너리로 뜬다."""
+    binary = ROOT / CPP_IMPLS["mcast-publisher"]
+    if not binary.exists():
+        pytest.skip("C++ 바이너리가 없다 (make cpp)")
+    for impl in ("python", "cpp"):
+        monkeypatch.setenv("MDFEED_GATEWAY_IMPL", impl)
+        assert service_command("mcast-publisher", None) == [str(binary)]
+
+
+def test_healthcheck_counts_mcast_only_when_enabled():
+    """안 켠 구성에서 '응답 없음' WARN 을 내면 사람이 알람을 무시하게 된다."""
+    import subprocess
+    code = ("import os,sys; sys.path.insert(0,'src'); "
+            "import importlib.util as u; "
+            "spec=u.spec_from_file_location('hc','ops/healthcheck.py'); m=u.module_from_spec(spec); spec.loader.exec_module(m); "
+            "print([s[0] for s in m.SERVICES])")
+    for env_val, expect in (("", False), ("1", True)):
+        e = {**os.environ, "MDFEED_MCAST_ENABLED": env_val}
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=ROOT, env=e).stdout
+        assert ("mcast-publisher" in out) is expect, (env_val, out)

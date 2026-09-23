@@ -39,3 +39,7 @@ scrape_configs:
         labels: { service: quality }
       - targets: ["host.docker.internal:9120"]
         labels: { service: preflight-monitor }
+      # 멀티캐스트 발행자는 선택 서비스다. 안 켠 구성에서는 이 타깃이 down 으로 남는데,
+      # up{} 알람이 그걸 잡지 않도록 아래 알람들은 지표 존재를 전제로만 판정한다.
+      - targets: ["host.docker.internal:9132"]
+        labels: { service: mcast-publisher }

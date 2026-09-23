@@ -1,0 +1,45 @@
+[Unit]
+Description=MDFeed — UDP 멀티캐스트 증분 피드 발행자 + TCP 복구 채널
+Documentation=https://github.com/oyeong011/market-feed-platform
+After=mdfeed-feedd.service
+# tcp-gateway 와 같은 이유로 Requires= 가 아니라 Wants= 다. feedd 재시작이 소비자까지
+# 끌고 내려가면 버스 구독자의 지수 백오프 재접속이 무력화된다.
+Wants=mdfeed-feedd.service
+PartOf=mdfeed.target
+
+[Service]
+Type=simple
+User=mdfeed
+Group=mdfeed
+WorkingDirectory=/opt/mdfeed
+EnvironmentFile=-/etc/mdfeed/mdfeed.env
+# 구현은 C++ 하나뿐이다. 인터프리터가 없으므로 PYTHONPATH 류는 쓰지 않는다.
+ExecStart=/opt/mdfeed/cpp/build/mcast_publisher
+
+# 멀티캐스트는 망 설정(그룹·송신 인터페이스·IGMP)이 맞아야 돈다. 안 맞으면 sendto 가
+# 실패하는데 프로세스는 멀쩡히 살아 있다 — "발행 중인데 아무도 못 받는" 상태다.
+# 그래서 /healthz 의 send_errors 를 알람으로 보고(ops/observability/alerts.yml),
+# 배포 시 MDFEED_MCAST_IF 를 명시하는 것을 권한다.
+Restart=on-failure
+RestartSec=3
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# ── 격리 ──────────────────────────────────────────────────────────────────
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/mdfeed /run/mdfeed
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+# 멀티캐스트 송신과 TCP 복구 채널을 위해 IPv4 만 연다.
+RestrictAddressFamilies=AF_INET AF_UNIX
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mdfeed-mcast-publisher
+
+[Install]
+WantedBy=mdfeed.target

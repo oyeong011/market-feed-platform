@@ -39,7 +39,22 @@ SERVICES = [
 # C++ 데이터 평면으로 바꿔 끼울 수 있는 서비스. 값은 빌드 산출물 경로다.
 # 같은 배선 규약(스냅샷→증분·구독 필터·구독자별 재번호·백프레셔·/healthz /metrics)을
 # 지키므로 파이썬 참조 클라이언트·부하 도구·운영 점검이 그대로 붙는다.
-CPP_IMPLS = {"tcp-gateway": "cpp/build/tcp_gateway"}
+CPP_IMPLS = {"tcp-gateway": "cpp/build/tcp_gateway",
+             "mcast-publisher": "cpp/build/mcast_publisher"}
+
+# 멀티캐스트 발행자는 **선택 서비스**다. 기본 구성은 TCP 배포만 쓴다.
+# MDFEED_MCAST_ENABLED=1 이면 감독기가 함께 띄우고 상태판·헬스체크가 행으로 센다.
+# 기본으로 켜지 않는 이유: 멀티캐스트는 망 설정(그룹·인터페이스·IGMP)이 맞아야 도는데,
+# 안 맞으면 조용히 아무도 못 받는 상태가 된다. 켜는 것은 명시적 결정이어야 한다.
+MCAST_SERVICE = ("mcast-publisher", None, 9132)
+
+
+def mcast_enabled() -> bool:
+    return os.getenv("MDFEED_MCAST_ENABLED", "").lower() in ("1", "true", "yes", "on")
+
+
+def active_services() -> list[tuple]:
+    return SERVICES + ([MCAST_SERVICE] if mcast_enabled() else [])
 
 
 def service_command(name: str, module: str) -> list[str]:
@@ -50,11 +65,15 @@ def service_command(name: str, module: str) -> list[str]:
     이 프로젝트에서 반복해서 겪은 유형(선언과 실제가 다른 것)이라 여기서는 막는다.
     """
     impl = os.getenv("MDFEED_GATEWAY_IMPL", "python").lower()
-    if impl == "cpp" and name in CPP_IMPLS:
-        binary = Path(__file__).resolve().parents[2] / CPP_IMPLS[name]
+    # 멀티캐스트 발행자는 C++ 구현만 있다 — 설정과 무관하게 바이너리로 띄운다.
+    if module is None or (impl == "cpp" and name in CPP_IMPLS):
+        rel = CPP_IMPLS.get(name)
+        if rel is None:
+            raise SystemExit(f"{name} 에는 실행 파일이 없습니다")
+        binary = Path(__file__).resolve().parents[2] / rel
         if not binary.exists():
             raise SystemExit(
-                f"MDFEED_GATEWAY_IMPL=cpp 인데 {binary} 가 없습니다. "
+                f"{name} 를 C++ 로 띄우려는데 {binary} 가 없습니다. "
                 f"`make cpp` 로 빌드하세요 (컴파일러만 있으면 됩니다).")
         return [str(binary)]
     if impl not in ("python", "cpp"):
@@ -151,12 +170,12 @@ def cmd_up(args) -> int:
                   f"어댑터={adapters} 포트={9100 + offset}", flush=True)
         env["MDFEED_BUS_PATHS"] = ",".join(bus_paths)
         time.sleep(2.0)
-        selected = [s for s in SERVICES if s[0] != "feedd"
+        selected = [s for s in active_services() if s[0] != "feedd"
                     and (not args.only or s[0] in args.only)]
         for name, module, _port in selected:
             spawn(name, module)
     else:
-        selected = [s for s in SERVICES if not args.only or s[0] in args.only]
+        selected = [s for s in active_services() if not args.only or s[0] in args.only]
         for i, (name, module, _port) in enumerate(selected):
             spawn(name, module)
             if i == 0:
@@ -196,7 +215,7 @@ def cmd_status(_args) -> int:
     print(f"{'SERVICE':<14} {'HTTP':<6} {'HEALTHY':<8} 요약")
     print("-" * 78)
     bad = 0
-    for name, _mod, port in SERVICES:
+    for name, _mod, port in active_services():
         st, body = _get(f"http://127.0.0.1:{port}/healthz")
         if st is None:
             print(f"{name:<14} {'-':<6} {'DOWN':<8} {body.get('error','')[:45]}")
@@ -233,7 +252,7 @@ def _storage_preflight() -> str | None:
 
 
 def cmd_health(args) -> int:
-    for name, _mod, port in SERVICES:
+    for name, _mod, port in active_services():
         if args.service and name != args.service:
             continue
         st, body = _get(f"http://127.0.0.1:{port}/healthz")

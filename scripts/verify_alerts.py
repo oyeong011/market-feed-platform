@@ -17,7 +17,7 @@ import json
 import re
 import urllib.request
 
-PORTS = [9100, 9200, 9111, 9102, 9103, 9104, 9105, 9106, PREFLIGHT_PORT := 9120]
+PORTS = [9100, 9200, 9111, 9102, 9103, 9104, 9105, 9106, PREFLIGHT_PORT := 9120, 9132]
 
 # 배포 게이트 지표는 서비스가 아니라 **별도 익스포터**(ops/preflight_monitor.py, 9120) 가 낸다.
 # 개발 스택(make up)에는 그 익스포터가 없다. 그때 이 7종이 없는 건 결함이 아니라 미기동이다.
@@ -49,6 +49,13 @@ CONDITIONAL = {
         "같은 조건. 시계 오프셋은 거래소 체결시각이 있어야 추정할 수 있다",
 }
 DECLARED_OFFLINE = {
+    "mdfeed_mcast_send_errors_total",
+    "mdfeed_mcast_retrans_unavailable_total",
+    "mdfeed_mcast_retrans_requests_total",
+    "mdfeed_mcast_injected_drops_total",
+    "mdfeed_mcast_injected_reorders_total",
+    "mdfeed_mcast_injected_duplicates_total",
+    "mdfeed_send_eagain_total",
     "mdfeed_adapter_task_deaths_total",
     "mdfeed_archive_enabled",
     "mdfeed_archive_failed_segments",
@@ -86,6 +93,46 @@ DECLARED_OFFLINE = {
     "mdfeed_writer_pending_rows",
     "up",
 }
+# 멀티캐스트 발행자는 선택 서비스(MDFEED_MCAST_ENABLED). 안 켠 구성에서 이 지표가 없는 건
+# 정확한 동작이다. 켜져 있는데 없으면 그건 결함이다 — 아래에서 구분한다.
+MCAST_PORT = 9132
+MCAST_METRICS = {
+    "mdfeed_mcast_send_errors_total",
+    "mdfeed_mcast_retrans_unavailable_total",
+    "mdfeed_mcast_retrans_requests_total",
+    "mdfeed_mcast_injected_drops_total",
+    "mdfeed_mcast_injected_reorders_total",
+    "mdfeed_mcast_injected_duplicates_total",
+}
+
+# **아무 알람도 안 보는 게 맞는 지표.** 대시보드·진단용이거나 다른 지표의 분모다.
+# 여기 없고 알람도 없으면 실패한다 — 지표를 새로 내면서 "볼지 말지" 결정을 건너뛰지 못하게 한다.
+# 이 저장소는 반대 방향(알람은 있는데 지표가 없다)으로 이미 한 번 당했다(결함 23).
+NO_ALERT_BY_DESIGN = {
+    "mdfeed_uptime_seconds",           # 대시보드 표시용
+    "mdfeed_sent_total",               # 처리량. 이상은 비율 지표로 본다
+    "mdfeed_frames_in_total",
+    "mdfeed_connections_total",
+    "mdfeed_conflated_total",
+    "mdfeed_subscribers",
+    "mdfeed_bus_reads_total",          # send_calls 와 함께 보는 진단용 분모
+    "mdfeed_send_calls_total",
+    "mdfeed_send_bytes_total",
+    "mdfeed_mcast_datagrams_total",
+    "mdfeed_mcast_bytes_total",
+    "mdfeed_mcast_snapshots_total",
+    "mdfeed_mcast_own_heartbeats_total",
+    "mdfeed_mcast_recovery_clients",
+    "mdfeed_mcast_seq",
+    "mdfeed_mcast_retrans_frames_total",   # 요청 수(McastRetransStorm)로 본다
+    "mdfeed_process_rss_bytes",            # 증가율 지표로 알람을 건다
+    "mdfeed_process_fd_open",
+    "mdfeed_market_open",              # 다른 알람의 조건(장 시간)으로만 쓴다
+    "mdfeed_data_gaps_recovered_total",  # 복구는 좋은 일이다. 알람 대상은 열린 공백 쪽
+    "mdfeed_rows_archived_total",      # 보존 정책 진행 표시. 이상은 retention_prune_incomplete 로 본다
+    "mdfeed_rows_pruned_total",
+}
+
 METRIC_RE = re.compile(r"\b(mdfeed_[a-z0-9_]+)")
 EXPR_RE = re.compile(r"^\s*expr:\s*(.+)$")
 
@@ -143,14 +190,27 @@ def main() -> int:
 
     referenced: dict[str, list[str]] = {}
     alert = None
+    in_expr = False
     with open(args.rules, encoding="utf-8") as rules_file:
         for line in rules_file:
             a = re.match(r"^\s*- alert:\s*(\S+)", line)
             if a:
-                alert = a.group(1)
+                alert, in_expr = a.group(1), False
             e = EXPR_RE.match(line)
             if e and alert:
+                in_expr = True
                 for m in METRIC_RE.findall(e.group(1)):
+                    referenced.setdefault(m, []).append(alert)
+                continue
+            # **여러 줄로 쓴 식의 이어지는 줄.** 예전엔 `expr:` 로 시작하는 줄만 읽어서,
+            # 둘째 줄에만 있는 지표는 참조로 세지 않았다. 그러면 그 지표가 없어져도
+            # "모든 알람이 실재하는 지표를 참조한다"가 나온다 — 검사기가 눈을 감는다.
+            # 다음 키(labels:/for:/annotations: …)나 새 규칙이 나오기 전까지가 식이다.
+            if in_expr and alert:
+                if re.match(r"^\s*(-\s|[a-z_]+:)", line):
+                    in_expr = False
+                    continue
+                for m in METRIC_RE.findall(line):
                     referenced.setdefault(m, []).append(alert)
 
     measures = any_adapter_measures_latency()
@@ -163,6 +223,10 @@ def main() -> int:
         elif m in CONDITIONAL and measures is False:
             # 지연을 재는 어댑터가 없으므로 없는 것이 정확한 동작이다
             conditional[m] = alerts
+        elif m in MCAST_METRICS and live_ports and MCAST_PORT not in live_ports:
+            # 멀티캐스트 발행자를 안 켠 구성. 없는 것이 정확한 동작이다.
+            conditional[m] = alerts
+            notes[m] = f"멀티캐스트 발행자(:{MCAST_PORT}) 가 떠 있어야 생성된다 (MDFEED_MCAST_ENABLED)"
         elif m in PREFLIGHT_METRICS and live_ports and not preflight_live:
             # 익스포터가 안 떠 있다. 떠 있는데 없으면 아래 missing 으로 간다
             conditional[m] = alerts
@@ -185,10 +249,26 @@ def main() -> int:
     if conditional:
         print("조건부는 현재 구성(지연 측정 어댑터 없음 · 배포 게이트 익스포터 미기동)에서 없는 것이 정확한 동작입니다.\n"
               "해당 구성요소를 붙이면 생성되며, 그때도 없으면 결함으로 잡힙니다.")
+    # ── 반대 방향: 지표는 내는데 아무 알람도 안 보는 것 ──────────────────
+    # 여기까지는 "알람이 없는 지표를 참조하는가"만 봤다. 새 서비스를 붙이면서 지표만 내고
+    # 알람을 안 붙이면 "값은 있는데 아무도 안 본다"가 된다. 같은 종류의 사각이다.
+    unwatched = sorted(m for m in exposed
+                       if m not in referenced and m not in NO_ALERT_BY_DESIGN
+                       and not m.startswith("mdfeed_") is False)
+    unwatched = [m for m in unwatched if m.startswith("mdfeed_")]
+    if unwatched:
+        print()
+        for m in unwatched:
+            print(f"{m:<46} {'무관심':<10} 이 지표를 보는 알람이 없다")
+        print("\n알람을 붙이거나, 볼 필요가 없으면 scripts/verify_alerts.py 의 "
+              "NO_ALERT_BY_DESIGN 에 이유와 함께 넣으세요.")
+        return 1
+
     if missing:
         print("\n누락된 지표를 노출하거나 규칙을 고치세요.")
         return 1
-    print("모든 알람이 실재하거나, 없는 이유가 설명되는 지표를 참조합니다.")
+    print(f"모든 알람이 실재하는 지표를 참조하고, 노출 지표 {len(exposed)}종에 "
+          f"감시 사각이 없습니다.")
     return 0
 
 

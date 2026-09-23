@@ -3,7 +3,7 @@
 [![CI](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml)
 [![Pages](https://github.com/oyeong011/market-feed-platform/actions/workflows/pages.yml/badge.svg)](https://oyeong011.github.io/market-feed-platform/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![tests](https://img.shields.io/badge/tests-534-brightgreen)
+![tests](https://img.shields.io/badge/tests-541-brightgreen)
 ![cpp](https://img.shields.io/badge/C%2B%2B-data%20plane-blue)
 ![obs](https://img.shields.io/badge/알람-18개%20지표%20검증-blue)
 ![venues](https://img.shields.io/badge/수집경로-5개%20실연결-blue)
@@ -68,7 +68,7 @@ make demo        # replay + disposable synthetic SQLite 로 6개 프로세스 �
 make status      # 서비스 상태 (프로세스 + HTTP 헬스 + 포트)
 make client      # 참조 TCP 구독 클라이언트 (갭 탐지 포함)
 make diag        # 장애 진단 원스톱
-make test        # 534개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
+make test        # 541개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
 ```
 
 데모와 CI는 라이브 어댑터를 상속하지 않습니다. 저장소에 든 녹화 파일을 replay로 읽고, 임시 SQLite DB를 만들어 검증합니다.
@@ -135,7 +135,7 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 |---|---|---|
 | 금융 데이터 FEED 개발·운영 | 수집 경로 5개, 배포 프로토콜 3종 | 무결성 48.5% → **100.0000%** |
 | Linux 서비스·프로세스 점검·안정화 | systemd 6유닛 + 자동 검증 + 장애 주입 | 11항목 · 복구 4종 확인 |
-| 파이프라인·배포·점검 자동화 | Makefile · CI 7잡 · Pages 자동 갱신 | 테스트 **534개** |
+| 파이프라인·배포·점검 자동화 | Makefile · CI 7잡 · Pages 자동 갱신 | 테스트 **541개** |
 | Python | 소스 8,835줄 | 핵심 의존성 **0** |
 | SQL · 관계형 DB | 복합 인덱스 · 사전 집계 · 하이퍼테이블 | 적재 **480,586 rows/s** |
 | Linux 명령·프로세스·로그 | `ops.sh diag` · RUNBOOK 8종 | 1차 진단 한 줄 |
@@ -317,6 +317,15 @@ TCP 복구 채널: MSG_SUBSCRIBE → 스냅샷 + MSG_SNAPSHOT{next_seq}
 참조 구독자:   src/mdfeed/mcast_client.py — 그룹에 먼저 가입 → 스냅샷 → 갭이면 재전송 요청, 순서가 맞을 때까지 보관
 ```
 
+운영에서는 선택 서비스입니다. 망 설정(그룹·송신 인터페이스·IGMP)이 맞아야 돌고, 안 맞으면 조용히
+아무도 못 받는 상태가 되므로 켜는 것은 명시적 결정이어야 합니다. 켜면 감독기·상태판·헬스체크가
+8번째 서비스로 셉니다.
+
+```bash
+MDFEED_MCAST_ENABLED=1 MDFEED_MCAST_IF=<송신 IP> make up
+curl -s localhost:9132/healthz | python3 -m json.tool   # send_errors 가 0 이어야 실제로 나가는 것
+```
+
 ```bash
 make mcast-pub                         # 발행자 (MDFEED_MCAST_GROUP=239.192.0.1 MDFEED_MCAST_PORT=9130)
 make mcast-client                      # 참조 구독자 10초 → 갭·재전송·복구 불가 통계 JSON
@@ -386,7 +395,7 @@ src/mdfeed/
 
 ops/     systemd 유닛 6종 · ops.sh · watchdog.sh · healthcheck.py · logrotate
 quant/   backtest.py · run_backtest.py · integrations.py · factor_screen.py
-tests/   534개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
+tests/   541개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
          복구 경로 · 종료 기한 · 컨플레이션 · 토큰 발급 · 운영 기록 환산 ·
          PostgreSQL 마이그레이션/백업/복구 27개는 실서버 연결 시에만)
 bench/   계층별 성능 측정 → docs/data/bench.json · 게이트웨이 비교 → gateway_compare.json
