@@ -3,7 +3,7 @@
 [![CI](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml)
 [![Pages](https://github.com/oyeong011/market-feed-platform/actions/workflows/pages.yml/badge.svg)](https://oyeong011.github.io/market-feed-platform/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![tests](https://img.shields.io/badge/tests-530-brightgreen)
+![tests](https://img.shields.io/badge/tests-534-brightgreen)
 ![cpp](https://img.shields.io/badge/C%2B%2B-data%20plane-blue)
 ![obs](https://img.shields.io/badge/알람-18개%20지표%20검증-blue)
 ![venues](https://img.shields.io/badge/수집경로-5개%20실연결-blue)
@@ -68,7 +68,7 @@ make demo        # replay + disposable synthetic SQLite 로 6개 프로세스 �
 make status      # 서비스 상태 (프로세스 + HTTP 헬스 + 포트)
 make client      # 참조 TCP 구독 클라이언트 (갭 탐지 포함)
 make diag        # 장애 진단 원스톱
-make test        # 530개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
+make test        # 534개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
 ```
 
 데모와 CI는 라이브 어댑터를 상속하지 않습니다. 저장소에 든 녹화 파일을 replay로 읽고, 임시 SQLite DB를 만들어 검증합니다.
@@ -119,6 +119,7 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 | 30 | 멀티캐스트 시험에서 **첫 체결 하나가 늘 사라짐** | 발행자 프로세스는 "버스 연결됨"인데 파이썬 버스 서버가 그 연결을 등록하기 전 창이 있고, 그 사이 발행은 아무에게도 안 간다. 버스의 정상 의미(등록된 구독자에게만 큐잉)다 | 시험이 발행자 헬스가 아니라 버스의 구독자 등록을 기다린다. 운영에서는 스냅샷+순번이 이 창을 덮는다 |
 | 31 | macOS 에서 멀티캐스트 전송이 조용히 실패 (send_errors 만 증가) | 송신 인터페이스가 없으면 ENETUNREACH. 세기만 하면 "발행은 되는데 아무도 못 받는" 상태를 아무도 모른다 | 첫 실패와 1,000회마다 원인·조치(MDFEED_MCAST_IF=127.0.0.1) 로그. 시험은 루프백 명시 → 기본 인터페이스 순으로 탐색 |
 | 32 | **kqueue 로 바꿨는데 안 빨라짐** (1,000명 p99 poll 78ms · kqueue 308ms, 2,000명은 둘 다 포화) | 병목이 fd 감시가 아니었다. 상류 4,000 msg/s × 1,000명 = 초당 프레임 400만 건, `send()` 15만 회, 365MB/s. 시스템 콜 하나하나의 TCP 세그먼트 생성 비용이 CPU 를 다 쓴다. 구독자별 재인코딩은 초당 0.2초 CPU 로 무관(측정) | 지표에 `send_calls_total` `send_bytes_total` `send_eagain_total` `bus_reads_total` 을 노출해 비용이 어디 있는지 보이게 함. 결론을 문서에 그대로 적음: 이 규모는 TCP 팬아웃의 한계이고 멀티캐스트가 답이다. EventLoop 추상은 리눅스 epoll 이식용으로 유지 |
+| 33 | **순서가 잠깐 뒤바뀔 때마다 재전송을 요청** | UDP 는 유실만 정상인 게 아니다. 경로가 갈리면 뒤 것이 먼저 온다. 수신자가 그걸 즉시 갭으로 보고 재전송을 불렀는데, 잠시 뒤 원래 것이 도착해 요청이 통째로 헛일이었다. 발행자에 재배열을 주입해 재보니 3,000프레임에 167건이 헛요청 | 갭필 지연(기본 20ms) — 갭을 보고 바로 부르지 않고 기다린다. 같은 주입에서 요청 **167건 → 0건**, 배달은 그대로 전부·순서대로. 상용 피드의 gap-fill timer 와 같은 장치다. 지연을 0 으로 두면 헛요청이 돌아오는 것까지 시험으로 고정 |
 | 17 | Postgres 조회 시각이 UTC | 국내 장 시간 09:00~15:30 이 00:00~06:30 으로 보인다. 장 시작 전인지 마감 후인지 눈으로 판단 불가 | 스키마에서 DB 기본 시간대를 `Asia/Seoul` 로 설정 (저장 값은 그대로, 표시만) |
 
 ---
@@ -134,7 +135,7 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 |---|---|---|
 | 금융 데이터 FEED 개발·운영 | 수집 경로 5개, 배포 프로토콜 3종 | 무결성 48.5% → **100.0000%** |
 | Linux 서비스·프로세스 점검·안정화 | systemd 6유닛 + 자동 검증 + 장애 주입 | 11항목 · 복구 4종 확인 |
-| 파이프라인·배포·점검 자동화 | Makefile · CI 7잡 · Pages 자동 갱신 | 테스트 **530개** |
+| 파이프라인·배포·점검 자동화 | Makefile · CI 7잡 · Pages 자동 갱신 | 테스트 **534개** |
 | Python | 소스 8,835줄 | 핵심 의존성 **0** |
 | SQL · 관계형 DB | 복합 인덱스 · 사전 집계 · 하이퍼테이블 | 적재 **480,586 rows/s** |
 | Linux 명령·프로세스·로그 | `ops.sh diag` · RUNBOOK 8종 | 1차 진단 한 줄 |
@@ -328,9 +329,13 @@ MDFEED_MCAST_DROP_EVERY=20 make mcast-pub   # 20번째 데이터그램마다 버
 |---:|---:|---:|---:|---:|---:|---:|
 | 6,218 | 119 | 119 / 309 | **0** | **0** | 394 µs | 4.6 ms |
 
-발행자가 135개 데이터그램을 일부러 버렸고, 구독자는 그 전부를 순서대로 되맞췄습니다. `tests/test_mcast.py` 가
-유니캐스트 경로(어디서나), 실제 멀티캐스트 그룹(호스트가 지원할 때), 그리고 **재전송 버퍼 밖으로 밀린 구간을
-숨기지 않고 세는지**를 고정합니다.
+발행자가 135개 데이터그램을 일부러 버렸고, 구독자는 그 전부를 순서대로 되맞췄습니다. `tests/test_mcast.py` 7건이 고정합니다. 유니캐스트 경로(어디서나), 실제 멀티캐스트 그룹(호스트가 지원할 때),
+재전송 버퍼 밖으로 밀린 구간을 숨기지 않고 세는지, 그리고 **유실·순서 뒤바뀜·중복을 따로 그리고 함께** 넣었을 때
+순서대로·한 번씩·전부 배달되는지입니다. 발행자에 세 가지 주입이 다 있습니다.
+
+```bash
+MDFEED_MCAST_DROP_EVERY=20 MDFEED_MCAST_REORDER_EVERY=5 MDFEED_MCAST_DUPLICATE_EVERY=11 make mcast-pub
+```
 
 **팬아웃 비용이 정말 평탄한가** — 같은 수집기(상류 약 4,300 msg/s) 아래에서 두 발행자를 번갈아 재고
 같은 구독자 수를 붙였습니다. `bash bench/fanout_cost.sh` 로 재현합니다.
@@ -381,7 +386,7 @@ src/mdfeed/
 
 ops/     systemd 유닛 6종 · ops.sh · watchdog.sh · healthcheck.py · logrotate
 quant/   backtest.py · run_backtest.py · integrations.py · factor_screen.py
-tests/   530개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
+tests/   534개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
          복구 경로 · 종료 기한 · 컨플레이션 · 토큰 발급 · 운영 기록 환산 ·
          PostgreSQL 마이그레이션/백업/복구 27개는 실서버 연결 시에만)
 bench/   계층별 성능 측정 → docs/data/bench.json · 게이트웨이 비교 → gateway_compare.json

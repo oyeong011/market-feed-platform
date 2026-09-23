@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import select
 import socket
 import struct
@@ -27,6 +28,17 @@ from .protocol import FLAG_SNAPSHOT, Frame, FrameParser, encode
 
 RETRANS_TIMEOUT_S = 1.0
 MAX_PENDING = 200_000
+
+# 갭을 보자마자 재전송을 부르지 않고 이만큼 기다린다.
+#
+# UDP 는 유실뿐 아니라 **순서 뒤바뀜**도 정상이다. 경로가 갈리면 뒤 것이 먼저 온다.
+# 그걸 즉시 갭으로 보고 재전송을 부르면, 잠시 뒤 원래 것이 도착해 요청이 통째로 헛일이 된다.
+# 발행자에 재배열을 주입해 재보니 실제로 그랬다(2026-09-23): 요청 대부분이 이미 오고 있는
+# 프레임을 다시 달라는 것이었다. 상용 피드가 gap-fill timer 를 두는 이유가 이것이다.
+#
+# 기다리는 값은 "경로 차이로 생길 수 있는 지연"보다 크고 "복구가 늦어 아픈 시간"보다 작아야 한다.
+# 같은 랜 안이면 수 ms 면 충분하다. 환경변수로 바꿀 수 있게 열어 둔다.
+GAP_FILL_DELAY_S = float(os.getenv("MDFEED_GAP_FILL_DELAY_S", "0.02"))
 
 
 @dataclass
@@ -58,13 +70,17 @@ class Stats:
 
 class McastSubscriber:
     def __init__(self, group: str, port: int, recovery_host: str, recovery_port: int,
-                 iface: str = "", on_frame=None):
+                 iface: str = "", on_frame=None, gap_fill_delay_s: float | None = None):
         self.group, self.port = group, port
         self.on_frame = on_frame
+        # 인자로 받는 이유: 시험이 이 값을 0 으로 두고 "지연이 없으면 헛요청이 쏟아진다"를
+        # 재현할 수 있어야 한다. 환경변수만 두면 테스트 환경이 MDFEED_* 를 지워 못 건드린다.
+        self.gap_fill_delay_s = GAP_FILL_DELAY_S if gap_fill_delay_s is None else gap_fill_delay_s
         self.stats = Stats()
         self.expected: int | None = None          # 다음에 배달해야 할 seq. 스냅샷 전엔 None
         self.pending: dict[int, Frame] = {}       # seq → 순서를 기다리는 프레임
         self.outstanding: dict[tuple[int, int], float] = {}   # 재전송 요청 (from,to) → 요청 시각
+        self.gap_seen_at: dict[int, float] = {}               # 갭 시작 seq → 처음 본 시각 (갭필 지연용)
         self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         self.udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
@@ -102,6 +118,7 @@ class McastSubscriber:
 
     def _drain_pending(self) -> None:
         while self.expected in self.pending:
+            self.gap_seen_at.pop(self.expected, None)
             self._deliver(self.pending.pop(self.expected))
             self.expected += 1
 
@@ -120,15 +137,19 @@ class McastSubscriber:
             self._drain_pending()
             return
         # 갭: expected .. f.seq-1 가 비었다
-        if f.seq not in self.pending:
+        if f.seq in self.pending:
+            self.stats.duplicates += 1          # 아직 못 내보낸 것의 중복도 중복이다
+        else:
             self.pending[f.seq] = f
             self.stats.max_pending = max(self.stats.max_pending, len(self.pending))
             if not via_retrans:
                 self.stats.reordered += 1
+            self.gap_seen_at.setdefault(self.expected, time.time())
         self._request_missing(f.seq)
 
     def _request_missing(self, upto_exclusive: int) -> None:
         lo = self.expected
+        now = time.time()
         while lo < upto_exclusive:
             if lo in self.pending:
                 lo += 1
@@ -137,7 +158,12 @@ class McastSubscriber:
             while hi + 1 < upto_exclusive and (hi + 1) not in self.pending:
                 hi += 1
             key = (lo, hi)
-            now = time.time()
+            # 갭필 지연: 처음 본 뒤 GAP_FILL_DELAY_S 는 기다린다. 순서가 뒤바뀐 것뿐이면
+            # 그 사이에 도착하고, 이 요청은 아예 나가지 않는다.
+            first_seen = self.gap_seen_at.setdefault(lo, now)
+            if key not in self.outstanding and now - first_seen < self.gap_fill_delay_s:
+                lo = hi + 1
+                continue
             if now - self.outstanding.get(key, 0) >= RETRANS_TIMEOUT_S:
                 if key not in self.outstanding:
                     self.stats.gaps_detected += 1
@@ -174,6 +200,8 @@ class McastSubscriber:
                     if unavailable and self.expected is not None and self.expected < ack["oldest_available"]:
                         # 복구 불가 구간: 사실을 세고 기대값을 건너뛴다
                         self.stats.unrecoverable += ack["oldest_available"] - self.expected
+                        for seq in [g for g in self.gap_seen_at if g < ack["oldest_available"]]:
+                            self.gap_seen_at.pop(seq, None)
                         self.expected = ack["oldest_available"]
                         self._drain_pending()
                 continue
@@ -228,8 +256,11 @@ def main() -> int:
     ap.add_argument("--recovery", type=int, default=9131)
     ap.add_argument("--iface", default="")
     ap.add_argument("--duration", type=float, default=10.0)
+    ap.add_argument("--gap-fill-delay", type=float, default=GAP_FILL_DELAY_S,
+                    help="갭을 보고 재전송을 부르기 전 기다리는 초. 순서 뒤바뀜을 흡수한다")
     args = ap.parse_args()
-    sub = McastSubscriber(args.group, args.port, args.recovery_host, args.recovery, args.iface)
+    sub = McastSubscriber(args.group, args.port, args.recovery_host, args.recovery, args.iface,
+                          gap_fill_delay_s=args.gap_fill_delay)
     try:
         st = sub.run(args.duration)
     finally:

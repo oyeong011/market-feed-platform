@@ -16,6 +16,9 @@
 //   MDFEED_MCAST_RETRANS_BUFFER(65536 프레임) MDFEED_MCAST_MAX_DATAGRAM(1400B) MDFEED_MCAST_DROP_EVERY(0)
 //   MDFEED_MCAST_HEARTBEAT_MS(250): 유휴 시 자체 하트비트. 마지막 데이터그램이 유실되면 뒤에 오는 게 없어
 //   수신자가 갭을 알 길이 없다 — 꼬리 유실은 하트비트가 있어야 드러난다 (MoldUDP64 도 같은 이유로 하트비트를 쏜다).
+//   MDFEED_MCAST_REORDER_EVERY(0) / MDFEED_MCAST_DUPLICATE_EVERY(0): 순서 뒤바뀜·중복 주입.
+//   UDP 는 유실만 정상인 게 아니다. 경로가 갈리면 순서가 바뀌고, 재전송·멀티캐스트 경로가 겹치면 같은
+//   데이터그램이 두 번 온다. 수신자에 그 처리 코드가 있어도 시험이 없으면 도는지 알 수 없다.
 // 그룹이 멀티캐스트 주소가 아니면(예: 127.0.0.1) 유니캐스트 UDP 로 보낸다 — 같은 코드 경로를 어디서나 시험할 수 있다.
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -63,13 +66,15 @@ std::string json_escape(const std::string& s) { std::string o; for (char c : s) 
 
 struct Cfg {
     std::vector<std::string> bus_paths; std::string group, iface, bind_host; int udp_port, recovery_port, admin_port, ttl, loop;
-    size_t retrans_buffer, max_datagram; uint64_t drop_every; int heartbeat_ms;
+    size_t retrans_buffer, max_datagram; uint64_t drop_every, reorder_every, duplicate_every; int heartbeat_ms;
     Cfg() {
         bus_paths = split_csv(env_str("MDFEED_BUS_PATHS", "")); if (bus_paths.empty()) bus_paths.push_back(env_str("MDFEED_BUS_PATH", "/tmp/mdfeed/bus.sock"));
         group = env_str("MDFEED_MCAST_GROUP", "239.192.0.1"); udp_port = int(env_int("MDFEED_MCAST_PORT", 9130)); iface = env_str("MDFEED_MCAST_IF", "");
         ttl = int(env_int("MDFEED_MCAST_TTL", 1)); loop = int(env_int("MDFEED_MCAST_LOOP", 1));
         recovery_port = int(env_int("MDFEED_MCAST_RECOVERY_PORT", 9131)); admin_port = int(env_int("MDFEED_MCAST_ADMIN_PORT", 9132)); bind_host = env_str("MDFEED_HTTP_HOST", "0.0.0.0");
         retrans_buffer = size_t(env_int("MDFEED_MCAST_RETRANS_BUFFER", 65536)); max_datagram = size_t(env_int("MDFEED_MCAST_MAX_DATAGRAM", 1400)); drop_every = uint64_t(env_int("MDFEED_MCAST_DROP_EVERY", 0));
+        reorder_every = uint64_t(env_int("MDFEED_MCAST_REORDER_EVERY", 0));
+        duplicate_every = uint64_t(env_int("MDFEED_MCAST_DUPLICATE_EVERY", 0));
         heartbeat_ms = int(env_int("MDFEED_MCAST_HEARTBEAT_MS", 250));
     }
 };
@@ -139,7 +144,8 @@ private:
     std::vector<pollfd> pfds_; std::vector<Owner> owners_;
     int udp_fd_ = -1, rec_fd_ = -1, adm_fd_ = -1, rec_port_ = 0, adm_port_ = 0; bool multicast_ = false; sockaddr_in dst_{};
     uint64_t seq_ = 0, frames_in_ = 0, datagrams_ = 0, bytes_sent_ = 0, injected_drops_ = 0, retrans_requests_ = 0, retrans_frames_ = 0, retrans_unavailable_ = 0, snapshots_ = 0, send_errors_ = 0;
-    std::vector<uint8_t> dgram_; size_t dgram_frames_ = 0;
+    std::vector<uint8_t> dgram_, held_; size_t dgram_frames_ = 0;
+    uint64_t injected_reorders_ = 0, injected_duplicates_ = 0;
     double started_ = 0, last_frame_at_ = 0, last_send_at_ = 0; uint64_t own_heartbeats_ = 0;
 
     void add(int fd, short ev, Owner o) { pfds_.push_back(pollfd{fd, ev, 0}); owners_.push_back(o); }
@@ -189,7 +195,12 @@ private:
         ++datagrams_;
         last_send_at_ = mono();
         if (cfg_.drop_every && datagrams_ % cfg_.drop_every == 0) { ++injected_drops_; }   // 결정적 유실 주입 — 복구 경로 시험용
-        else {
+        else if (cfg_.reorder_every && datagrams_ % cfg_.reorder_every == 0 && held_.empty()) {
+            // 재배열 주입: 이 데이터그램을 붙들었다가 **다음 것 뒤에** 보낸다. 실제 경로가
+            // 갈렸을 때 일어나는 일이다. 수신자는 갭으로 보고 재전송을 부르지 말아야 한다 —
+            // 잠깐 기다리면 오는 것이므로.
+            held_ = dgram_; ++injected_reorders_;
+        } else {
             ssize_t n = ::sendto(udp_fd_, dgram_.data(), dgram_.size(), 0, reinterpret_cast<sockaddr*>(&dst_), sizeof dst_);
             if (n < 0) {
                 ++send_errors_;
@@ -200,6 +211,14 @@ private:
                          (unsigned long long)send_errors_, std::strerror(errno));
                 }
             } else bytes_sent_ += uint64_t(n);
+            if (cfg_.duplicate_every && datagrams_ % cfg_.duplicate_every == 0) {
+                // 중복 주입: 같은 데이터그램을 한 번 더. 수신자는 두 번째를 중복으로 세고 버려야 한다.
+                if (::sendto(udp_fd_, dgram_.data(), dgram_.size(), 0, reinterpret_cast<sockaddr*>(&dst_), sizeof dst_) > 0) ++injected_duplicates_;
+            }
+            if (!held_.empty()) {   // 붙들어 둔 것을 지금 내보낸다 → 수신자에게는 순서가 뒤바뀌어 보인다
+                if (::sendto(udp_fd_, held_.data(), held_.size(), 0, reinterpret_cast<sockaddr*>(&dst_), sizeof dst_) > 0) bytes_sent_ += uint64_t(held_.size());
+                held_.clear();
+            }
         }
         dgram_.clear(); dgram_frames_ = 0;
     }
@@ -292,6 +311,7 @@ private:
         o += ", \"last_frame_age_s\": " + (age < 0 ? std::string("null") : std::to_string(age)) + ", \"frames_in\": " + std::to_string(frames_in_) + ", \"seq\": " + std::to_string(seq_);
         o += ", \"datagrams_sent\": " + std::to_string(datagrams_ - injected_drops_) + ", \"bytes_sent\": " + std::to_string(bytes_sent_) + ", \"injected_drops\": " + std::to_string(injected_drops_) + ", \"send_errors\": " + std::to_string(send_errors_);
         o += ", \"retrans_requests\": " + std::to_string(retrans_requests_) + ", \"retrans_frames_sent\": " + std::to_string(retrans_frames_) + ", \"retrans_unavailable\": " + std::to_string(retrans_unavailable_) + ", \"snapshots_served\": " + std::to_string(snapshots_);
+        o += ", \"injected_reorders\": " + std::to_string(injected_reorders_) + ", \"injected_duplicates\": " + std::to_string(injected_duplicates_);
         o += ", \"own_heartbeats\": " + std::to_string(own_heartbeats_) + ", \"retrans_buffer\": " + std::to_string(ring_.size()) + ", \"recovery_clients\": " + std::to_string(rec) + ", \"cached_symbols\": " + std::to_string(last_.size()) + ", \"sources\": [" + srcs + "], \"tasks\": {}}";
         return o;
     }
@@ -299,7 +319,7 @@ private:
         auto line = [](const char* k, double v) { char b[160]; std::snprintf(b, sizeof b, "mdfeed_%s{service=\"mcast-publisher\"} %g\n", k, v); return std::string(b); };
         size_t rec = 0; for (auto& [fd, c] : conns_) if (!c.admin) ++rec;
         return line("uptime_seconds", mono() - started_) + line("frames_in_total", double(frames_in_)) + line("mcast_datagrams_total", double(datagrams_ - injected_drops_)) + line("mcast_bytes_total", double(bytes_sent_)) +
-               line("mcast_injected_drops_total", double(injected_drops_)) + line("mcast_send_errors_total", double(send_errors_)) + line("mcast_retrans_requests_total", double(retrans_requests_)) +
+               line("mcast_injected_drops_total", double(injected_drops_)) + line("mcast_injected_reorders_total", double(injected_reorders_)) + line("mcast_injected_duplicates_total", double(injected_duplicates_)) + line("mcast_send_errors_total", double(send_errors_)) + line("mcast_retrans_requests_total", double(retrans_requests_)) +
                line("mcast_retrans_frames_total", double(retrans_frames_)) + line("mcast_retrans_unavailable_total", double(retrans_unavailable_)) + line("mcast_snapshots_total", double(snapshots_)) + line("mcast_own_heartbeats_total", double(own_heartbeats_)) + line("mcast_recovery_clients", double(rec)) + line("mcast_seq", double(seq_));
     }
 };
