@@ -1,0 +1,85 @@
+{
+ "generated_at": "2026-09-23T10:47:14+09:00",
+ "method": "같은 리플레이 수집기 아래에서 TCP 게이트웨이와 UDP 멀티캐스트 발행자를 번갈아 기동. 같은 구독자 수, 같은 회차 길이. 발행 측 비용은 각 프로세스의 관리 포트에서 읽는다.",
+ "caveat": "한 호스트에서 구독자 N 명이면 멀티캐스트도 커널이 N 번 복제한다. 실제 배포에서는 스위치가 복제한다. 여기서 보는 건 발행 호스트의 비용이며, N 이 커지면 수신 측이 기계를 포화시켜 측정이 무너진다 — 설계가 아니라 측정의 한계다.",
+ "publisher_cpu_mean_pct": {
+  "tcp_gateway": 15.0,
+  "mcast_publisher": 5.0
+ },
+ "rounds": [
+  {
+   "subscribers": 1,
+   "upstream_msg_per_s": 4066.6,
+   "tcp": {
+    "frames_out_per_s": 4035,
+    "p50_ms": 0.14,
+    "p99_ms": 1.58,
+    "lost": 0
+   },
+   "mcast": {
+    "publish_datagrams_per_s": 1670,
+    "publish_mb_per_s": 0.36,
+    "p50_ms": 0.16,
+    "p99_ms": 0.89,
+    "lost": 0
+   }
+  },
+  {
+   "subscribers": 10,
+   "upstream_msg_per_s": 4124.3,
+   "tcp": {
+    "frames_out_per_s": 40894,
+    "p50_ms": 0.2,
+    "p99_ms": 1.33,
+    "lost": 0
+   },
+   "mcast": {
+    "publish_datagrams_per_s": 2004,
+    "publish_mb_per_s": 0.42,
+    "p50_ms": 0.18,
+    "p99_ms": 0.8,
+    "lost": 0
+   }
+  },
+  {
+   "subscribers": 50,
+   "upstream_msg_per_s": 4641.8,
+   "tcp": {
+    "frames_out_per_s": 228909,
+    "p50_ms": 0.54,
+    "p99_ms": 1.77,
+    "lost": 0
+   },
+   "mcast": {
+    "publish_datagrams_per_s": 1651,
+    "publish_mb_per_s": 0.38,
+    "p50_ms": 0.53,
+    "p99_ms": 3.94,
+    "lost": 0
+   }
+  },
+  {
+   "subscribers": 100,
+   "upstream_msg_per_s": 4352.9,
+   "tcp": {
+    "frames_out_per_s": 430549,
+    "p50_ms": 0.93,
+    "p99_ms": 3.7,
+    "lost": 0
+   },
+   "mcast": {
+    "publish_datagrams_per_s": 1734,
+    "publish_mb_per_s": 0.38,
+    "p50_ms": 1.09,
+    "p99_ms": 8.86,
+    "lost": 0
+   }
+  }
+ ],
+ "tcp_totals_at_end": {
+  "send_calls_total": 982473.0,
+  "send_bytes_total": 405104000.0,
+  "sent_total": 4462600.0,
+  "bus_reads_total": 53734.0
+ }
+}

@@ -14,6 +14,7 @@
 | `bench/bench_protocol.cpp` | `bench/latency_bench.py::bench_protocol` 과 같은 방법 | |
 | `src/mcast_publisher.cpp` | UDP 멀티캐스트 증분 피드 + TCP 복구 채널(스냅샷·재전송). 결정적 유실 주입 옵션 | `tests/test_mcast.py` |
 | `include/mdfp/bus_subscriber.hpp` | UDS 버스 구독자(논블로킹·자동 재접속) | |
+| `bench/mcast_load_client.cpp` | 멀티캐스트 부하 클라이언트. 그룹에 소켓 N 개를 가입시켜 **발행 측 비용의 평탄함**을 잰다 | `bench/fanout_cost.sh` |
 | `bench/load_client.cpp` | 부하 클라이언트. `bench/load_test.py` 와 같은 측정 정의·출력 키, 단일 스레드 poll 로 소켓 수백 개 | `tests/test_cpp_load_client.py` |
 
 ```bash
