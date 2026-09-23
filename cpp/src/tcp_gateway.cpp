@@ -315,6 +315,11 @@ private:
         // 버스트 때 send() 가 프레임 수 × 구독자 수만큼 나간다 (200명·30프레임 = 6,000회).
         // 파이썬 게이트웨이는 배치가 공평성을 해쳐 되돌렸지만(_send_loop 주석), 그건
         // 이벤트 루프 양보 문제였고 여기서는 구독자 순회 한 바퀴가 곧 공평한 분배다.
+        // 구독자 순회 순서는 std::map 그대로(= 접속 순서)다. 한때 "늘 같은 순서로 쓰면 먼저
+        // 접속한 구독자가 유리하다"고 보고 시작점을 배치마다 돌려 봤다. **아니었다.**
+        // 구독자 100명·상류 3,900 msg/s 에서 3회씩 재니 첫/끝 구독자 p99 격차가
+        // 고정 순서 1.40배, 회전 1.48배로 차이가 없었다(docs/data/fanout_fairness.json).
+        // 효과가 없는 복잡도는 넣지 않는다. 격차의 원인은 아직 모른다 — README 결함 36.
         for (auto& [id, sub] : subs_) { if (sub.backlog() || sub.woff < sub.wbuf.size()) flush(sub); arm_sub(sub); }
     }
     static std::optional<std::string> key_of(const FrameView& f) {

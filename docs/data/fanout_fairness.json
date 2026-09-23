@@ -1,0 +1,64 @@
+{
+ "generated_at": "2026-09-23",
+ "question": "배포 게이트웨이가 구독자를 늘 같은 순서(std::map = 접속 순서)로 쓰는 것이 지연 격차를 만드는가",
+ "method": "같은 리플레이 수집기(300배속, 상류 약 3,900 msg/s), 구독자 100명, 회차 8초, 3회 반복. C++ 부하 클라이언트가 구독자별 p99 를 따로 낸다. 클라이언트 자신의 읽기 순서도 매 폴에서 회전시켜 도구 편향을 뺐다.",
+ "finding": "가설은 틀렸다. 시작점을 배치마다 돌려도 첫/끝 구독자 격차가 그대로다(1.40배 → 1.48배). 게이트웨이 쓰기 순서는 원인이 아니다. 효과가 없으므로 회전 코드는 되돌렸다. 격차 자체는 3회 모두 같은 방향으로 재현되지만 원인은 아직 모른다.",
+ "results": {
+  "fixed_order": {
+   "runs": [
+    {
+     "first_p99_ms": 2.02,
+     "last_p99_ms": 2.83,
+     "max_over_min": 1.43,
+     "overall_p99_ms": 2.52,
+     "upstream_msg_per_s": 4231.0
+    },
+    {
+     "first_p99_ms": 2.86,
+     "last_p99_ms": 3.99,
+     "max_over_min": 1.42,
+     "overall_p99_ms": 3.43,
+     "upstream_msg_per_s": 4018.2
+    },
+    {
+     "first_p99_ms": 3.25,
+     "last_p99_ms": 4.36,
+     "max_over_min": 1.34,
+     "overall_p99_ms": 3.89,
+     "upstream_msg_per_s": 4015.7
+    }
+   ],
+   "mean_first_p99_ms": 2.71,
+   "mean_last_p99_ms": 3.73,
+   "mean_max_over_min": 1.4
+  },
+  "rotated_start": {
+   "runs": [
+    {
+     "first_p99_ms": 2.56,
+     "last_p99_ms": 3.53,
+     "max_over_min": 1.38,
+     "overall_p99_ms": 3.09,
+     "upstream_msg_per_s": 4119.3
+    },
+    {
+     "first_p99_ms": 1.94,
+     "last_p99_ms": 3.0,
+     "max_over_min": 1.55,
+     "overall_p99_ms": 2.51,
+     "upstream_msg_per_s": 4218.1
+    },
+    {
+     "first_p99_ms": 2.49,
+     "last_p99_ms": 3.75,
+     "max_over_min": 1.51,
+     "overall_p99_ms": 3.17,
+     "upstream_msg_per_s": 4196.9
+    }
+   ],
+   "mean_first_p99_ms": 2.33,
+   "mean_last_p99_ms": 3.43,
+   "mean_max_over_min": 1.48
+  }
+ }
+}

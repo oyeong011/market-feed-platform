@@ -62,6 +62,10 @@ double json_num(const std::string& j, const std::string& key, double dflt = -1) 
 struct Sub {
     int fd = -1; FrameParser parser; SequenceTracker track;
     uint64_t messages = 0, bytes = 0, gaps = 0, lost = 0; bool connect_failed = false; std::string err;
+    // 구독자별 지연. 팬아웃이 공평한지 보려면 전체 분포가 아니라 **구독자마다** 재야 한다.
+    // 게이트웨이가 늘 같은 순서로 쓰면 뒤쪽 구독자가 계속 손해를 보는데, 전부 한 통에 넣고
+    // p99 를 내면 그 편향이 평균에 묻힌다.
+    std::vector<double> lat;
 };
 
 double pct(std::vector<double>& xs, double q) {   // xs 는 정렬돼 있어야 한다
@@ -75,6 +79,8 @@ struct Round {
     double elapsed = 0; uint64_t total_messages = 0, bytes_total = 0, gaps = 0, lost = 0, crc_errors = 0, resyncs = 0;
     uint64_t per_sub_min = 0, per_sub_max = 0;
     double p50 = 0, p95 = 0, p99 = 0, p999 = 0, lmax = 0, per_sub_avg = 0;
+    // 공평성: 구독자별 p99 의 퍼짐. first/last 는 접속 순서(게이트웨이의 쓰기 순서)와 같다.
+    double fair_p99_min = 0, fair_p99_med = 0, fair_p99_max = 0, fair_p99_first = 0, fair_p99_last = 0, fair_spread = 0;
     double g_dropped = -1, g_subs = -1, up_frames_before = -1, up_frames_after = -1, up_symbols = -1;
     double peak_backlog = 0, peak_wire = 0; int samples = 0;
 };
@@ -105,12 +111,19 @@ Round run_round(const std::string& host, int port, int admin, int n, double seco
     std::vector<pollfd> pfds; std::vector<size_t> idx;
     for (size_t i = 0; i < subs.size(); ++i) if (subs[i].fd >= 0) { pfds.push_back(pollfd{subs[i].fd, POLLIN, 0}); idx.push_back(i); }
     std::vector<double> lat; lat.reserve(size_t(n) * 8000);
+    constexpr size_t PER_SUB_CAP = 20000;   // 구독자 1,000명 × 2만 = 메모리 상한 안
     std::vector<uint8_t> buf(1 << 16);
     const double t0 = mono(), deadline = t0 + seconds;
+    size_t read_rotor = 0;
     while (mono() < deadline) {
+        if (!pfds.empty()) read_rotor = (read_rotor + 1) % pfds.size();
         int k = poll(pfds.data(), pfds.size(), 100);
         if (k <= 0) continue;
-        for (size_t p = 0; p < pfds.size(); ++p) {
+        // **읽는 순서를 매번 돌린다.** 늘 0번부터 읽으면 뒤쪽 소켓은 앞쪽을 다 처리한 뒤에야
+        // 시각이 찍힌다 — 그 차이가 "뒤 구독자가 느리다"로 보인다. 서버가 아니라 이 도구가
+        // 만든 편향이다. 공평성을 재는 도구가 편향을 갖고 있으면 잴 수가 없다.
+        for (size_t off = 0; off < pfds.size(); ++off) {
+            const size_t p = (off + read_rotor) % pfds.size();
             if (!(pfds[p].revents & (POLLIN | POLLHUP | POLLERR))) continue;
             Sub& s = subs[idx[p]];
             for (;;) {
@@ -123,7 +136,9 @@ Round run_round(const std::string& host, int port, int admin, int n, double seco
                         uint64_t l = s.track.observe(f.seq); if (l) { ++s.gaps; s.lost += l; }
                         if (f.msg_type == MSG_TRADE && f.length >= Trade::SIZE) {
                             const uint64_t ts_recv = get_be64(f.payload + 32);           // Trade.ts_recv_ns
-                            lat.push_back(double(int64_t(now - ts_recv)) / 1000.0);       // µs. 청크 수신 시각 기준
+                            const double us = double(int64_t(now - ts_recv)) / 1000.0;    // µs. 청크 수신 시각 기준
+                            lat.push_back(us);
+                            if (s.lat.size() < PER_SUB_CAP) s.lat.push_back(us);
                             ++s.messages;
                         } else if (f.msg_type == MSG_BOOK) ++s.messages;
                     });
@@ -148,6 +163,16 @@ Round run_round(const std::string& host, int port, int admin, int n, double seco
     if (r.connected) r.per_sub_avg = double(r.total_messages) / r.connected;
     std::sort(lat.begin(), lat.end());
     r.p50 = pct(lat, 50); r.p95 = pct(lat, 95); r.p99 = pct(lat, 99); r.p999 = pct(lat, 99.9); r.lmax = lat.empty() ? 0 : lat.back();
+
+    // 구독자별 p99 를 모아 퍼짐을 본다. 한 통에 넣고 낸 p99 는 편향을 숨긴다.
+    std::vector<double> per99; per99.reserve(subs.size());
+    for (auto& s : subs) { if (s.lat.empty()) continue; std::sort(s.lat.begin(), s.lat.end()); per99.push_back(pct(s.lat, 99)); }
+    if (!per99.empty()) {
+        r.fair_p99_first = per99.front(); r.fair_p99_last = per99.back();   // 접속(=쓰기) 순서
+        std::vector<double> sorted99 = per99; std::sort(sorted99.begin(), sorted99.end());
+        r.fair_p99_min = sorted99.front(); r.fair_p99_max = sorted99.back(); r.fair_p99_med = pct(sorted99, 50);
+        r.fair_spread = r.fair_p99_min > 0 ? r.fair_p99_max / r.fair_p99_min : 0;
+    }
     return r;
 }
 
@@ -160,13 +185,16 @@ std::string round_json(const Round& r, double seconds) {
         "\"latency_p50_us\": %.1f, \"latency_p95_us\": %.1f, \"latency_p99_us\": %.1f, \"latency_p999_us\": %.1f, \"latency_max_us\": %.1f, "
         "\"gaps\": %llu, \"lost_messages\": %llu, \"crc_errors\": %llu, \"resyncs\": %llu, "
         "\"gateway_dropped\": %.0f, \"gateway_subscribers\": %.0f, \"upstream_frames_in\": %.0f, \"upstream_msg_per_s\": %.1f, \"upstream_symbols\": %.0f, "
-        "\"throughput_retained_pct\": %.1f, \"gateway_max_backlog\": %.0f, \"gateway_max_wire_bytes\": %.0f, \"gateway_samples\": %d}",
+        "\"throughput_retained_pct\": %.1f, \"gateway_max_backlog\": %.0f, \"gateway_max_wire_bytes\": %.0f, \"gateway_samples\": %d, "
+        "\"fairness\": {\"per_sub_p99_min_us\": %.1f, \"per_sub_p99_median_us\": %.1f, \"per_sub_p99_max_us\": %.1f, "
+        "\"first_connected_p99_us\": %.1f, \"last_connected_p99_us\": %.1f, \"max_over_min\": %.2f}}",
         r.subscribers, r.connected, r.connect_failed, r.connect_error.empty() ? "null" : ("\"" + r.connect_error + "\"").c_str(), r.elapsed,
         (unsigned long long)r.total_messages, r.elapsed > 0 ? double(r.total_messages) / r.elapsed : 0.0, r.per_sub_avg / seconds,
         (unsigned long long)r.per_sub_min, (unsigned long long)r.per_sub_max, (unsigned long long)r.bytes_total,
         r.p50, r.p95, r.p99, r.p999, r.lmax, (unsigned long long)r.gaps, (unsigned long long)r.lost, (unsigned long long)r.crc_errors, (unsigned long long)r.resyncs,
         r.g_dropped, r.g_subs, r.up_frames_after, up, r.up_symbols,
-        up > 0 ? (r.per_sub_avg / r.elapsed) / up * 100.0 : -1.0, r.peak_backlog, r.peak_wire, r.samples);
+        up > 0 ? (r.per_sub_avg / r.elapsed) / up * 100.0 : -1.0, r.peak_backlog, r.peak_wire, r.samples,
+        r.fair_p99_min, r.fair_p99_med, r.fair_p99_max, r.fair_p99_first, r.fair_p99_last, r.fair_spread);
     return b;
 }
 
@@ -184,13 +212,13 @@ int main(int argc, char** argv) {
     }
     if (subs.empty()) subs = {1, 10, 50, 100, 200};
     std::fprintf(stderr, "대상 %s:%d · 회차당 %.0f초 · 클라이언트 C++ 단일 스레드 poll\n\n", host.c_str(), port, seconds);
-    std::fprintf(stderr, "%6s %6s %9s %9s %9s %10s %10s %10s %6s %6s\n", "구독자", "접속", "msg/s/sub", "총msg", "상류/s", "p50", "p99", "max", "유실", "드롭");
+    std::fprintf(stderr, "%6s %6s %9s %9s %10s %10s %6s %6s %9s %9s %7s\n", "구독자", "접속", "msg/s/sub", "상류/s", "p50", "p99", "유실", "드롭", "첫p99", "끝p99", "퍼짐");
     std::string rounds;
     for (size_t i = 0; i < subs.size(); ++i) {
         Round r = run_round(host, port, admin, subs[i], seconds, subscribe);
         const double up = (r.up_frames_after - r.up_frames_before) / (r.elapsed > 0 ? r.elapsed : 1);
-        std::fprintf(stderr, "%6d %6d %9.1f %9llu %9.1f %9.0fµ %9.0fµ %9.0fµ %6llu %6.0f\n", r.subscribers, r.connected, r.per_sub_avg / seconds,
-            (unsigned long long)r.total_messages, up, r.p50, r.p99, r.lmax, (unsigned long long)r.lost, r.g_dropped);
+        std::fprintf(stderr, "%6d %6d %9.1f %9.1f %9.0fµ %9.0fµ %6llu %6.0f %8.0fµ %8.0fµ %6.1fx\n", r.subscribers, r.connected, r.per_sub_avg / seconds,
+            up, r.p50, r.p99, (unsigned long long)r.lost, r.g_dropped, r.fair_p99_first, r.fair_p99_last, r.fair_spread);
         rounds += (i ? ",\n  " : "  ") + round_json(r, seconds);
         // 회차 사이 대기: 직전 회차의 소켓이 TIME_WAIT 로 남아 있으면 다음 회차의 접속이 커널 자원에 막힌다.
         // 실측(2026-09-22): 500명 회차 1초 뒤 1,000명을 붙이자 클라이언트가 조용히 죽었다. 단독으로는 정상.
