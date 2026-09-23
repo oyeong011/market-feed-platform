@@ -47,6 +47,8 @@ CONDITIONAL = {
         "지연을 측정하는 어댑터(measures_latency=True)가 있어야 생성된다",
     "mdfeed_clock_offset_us":
         "같은 조건. 시계 오프셋은 거래소 체결시각이 있어야 추정할 수 있다",
+    "mdfeed_market_open":
+        "국내 장 시간을 아는 어댑터(KRX/KIS)가 있어야 생성된다. 리플레이 전용 구성에는 없다",
 }
 DECLARED_OFFLINE = {
     "mdfeed_mcast_send_errors_total",
@@ -127,7 +129,6 @@ NO_ALERT_BY_DESIGN = {
     "mdfeed_mcast_retrans_frames_total",   # 요청 수(McastRetransStorm)로 본다
     "mdfeed_process_rss_bytes",            # 증가율 지표로 알람을 건다
     "mdfeed_process_fd_open",
-    "mdfeed_market_open",              # 다른 알람의 조건(장 시간)으로만 쓴다
     "mdfeed_data_gaps_recovered_total",  # 복구는 좋은 일이다. 알람 대상은 열린 공백 쪽
     "mdfeed_rows_archived_total",      # 보존 정책 진행 표시. 이상은 retention_prune_incomplete 로 본다
     "mdfeed_rows_pruned_total",
@@ -250,19 +251,32 @@ def main() -> int:
         print("조건부는 현재 구성(지연 측정 어댑터 없음 · 배포 게이트 익스포터 미기동)에서 없는 것이 정확한 동작입니다.\n"
               "해당 구성요소를 붙이면 생성되며, 그때도 없으면 결함으로 잡힙니다.")
     # ── 반대 방향: 지표는 내는데 아무 알람도 안 보는 것 ──────────────────
-    # 여기까지는 "알람이 없는 지표를 참조하는가"만 봤다. 새 서비스를 붙이면서 지표만 내고
-    # 알람을 안 붙이면 "값은 있는데 아무도 안 본다"가 된다. 같은 종류의 사각이다.
-    unwatched = sorted(m for m in exposed
-                       if m not in referenced and m not in NO_ALERT_BY_DESIGN
-                       and not m.startswith("mdfeed_") is False)
-    unwatched = [m for m in unwatched if m.startswith("mdfeed_")]
-    if unwatched:
+    # 여기까지는 "알람이 없는 지표를 참조하는가"만 봤다(결함 23). 그 반대인 "지표만 내고
+    # 아무도 안 본다"도 같은 사각이다.
+    #
+    # **판정은 실서비스 스크레이프가 아니라 선언 목록(DECLARED_OFFLINE)으로 한다.**
+    # 살아 있는 지표 집합은 어떤 서비스가 떠 있고 어떤 어댑터가 붙었느냐에 따라 달라진다.
+    # 그걸로 판정하면 같은 코드가 구성에 따라 통과하기도 실패하기도 한다 — 그런 검사는
+    # 검사가 아니다. 선언 목록은 "우리가 내겠다고 한 것"이고 결정을 내릴 자리다.
+    declared_unwatched = sorted(m for m in DECLARED_OFFLINE
+                                if m.startswith("mdfeed_")
+                                and m not in referenced and m not in NO_ALERT_BY_DESIGN)
+    if declared_unwatched:
         print()
-        for m in unwatched:
+        for m in declared_unwatched:
             print(f"{m:<46} {'무관심':<10} 이 지표를 보는 알람이 없다")
         print("\n알람을 붙이거나, 볼 필요가 없으면 scripts/verify_alerts.py 의 "
               "NO_ALERT_BY_DESIGN 에 이유와 함께 넣으세요.")
         return 1
+
+    # 살아 있는데 선언에 없는 지표는 **알려만 준다.** 실패로 두면 어댑터 하나를 켜고 끄는 것만으로
+    # 빌드가 빨개진다. 다만 선언 목록이 낡았다는 신호이므로 보이게는 한다.
+    if live_ports:
+        undeclared = sorted(m for m in exposed if m.startswith("mdfeed_") and m not in DECLARED_OFFLINE)
+        if undeclared:
+            print(f"\n참고: 살아 있지만 선언 목록에 없는 지표 {len(undeclared)}종 "
+                  f"(DECLARED_OFFLINE 갱신 대상)")
+            print("  " + ", ".join(undeclared[:12]) + (" …" if len(undeclared) > 12 else ""))
 
     if missing:
         print("\n누락된 지표를 노출하거나 규칙을 고치세요.")
