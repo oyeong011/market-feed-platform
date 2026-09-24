@@ -4,15 +4,17 @@
 # 적어 두고 하네스만 갖고 있었다. 돌릴 수 있는 것과 돌아가는 것은 다르다. 매주 자동으로 돌리고
 # 결과를 산출물로 남긴다.
 #
-# 관측 시간이 짧으면 하네스가 시간당 기울기로 판정하지 않는다(20분 미만). 기본 45분을 쓴다.
+# 관측 시간은 **판정이 성립하는 길이**여야 한다. RSS 임계 5MB/h 짜리 누수가 절대 하한 10MB 를
+# 넘으려면 최소 2시간 + 워밍업 5분이 필요하다. 그보다 짧으면 통과가 "누수 없음" 이 아니라
+# "이 길이로는 모름" 이고, 하네스가 결과에 그렇게 적는다. 기본 150분을 쓴다.
 name: Soak (Linux)
 
 on:
   workflow_dispatch:
     inputs:
       minutes:
-        description: "관측 시간(분). 20분 미만이면 기울기 판정을 하지 않는다"
-        default: "45"
+        description: "관측 시간(분). RSS 누수 판정이 성립하려면 최소 125분 (근거는 bench/soak.py)"
+        default: "150"
       gateway_impl:
         description: "배포 게이트웨이 구현 (python | cpp)"
         default: "cpp"
@@ -22,7 +24,7 @@ on:
 jobs:
   soak:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 200
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -71,7 +73,7 @@ jobs:
       - name: 장시간 감시
         run: |
           PYTHONPATH=src python bench/soak.py \
-            --minutes "${{ github.event.inputs.minutes || '45' }}" --interval 30 \
+            --minutes "${{ github.event.inputs.minutes || '150' }}" --interval 30 \
             --out soak-linux.json | tee soak-linux.txt
 
       - name: 종료

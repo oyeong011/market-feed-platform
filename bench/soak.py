@@ -37,9 +37,20 @@ REST 어댑터가 매 호출마다 연결을 열고 닫으므로 fd 가 순간�
 2. fd 는 기울기와 **절대 증가량**을 함께 본다. 시작보다 실제로 늘어 있어야 한다.
 3. RSS 도 같다. 기울기와 **절대 증가량**(`RSS_ABSOLUTE_MIN_MB`)을 함께 본다.
    fd 에는 이 보호를 넣어 뒀으면서 RSS 에는 안 넣어 둔 탓에 첫 자동 실행이 거짓 양성으로 실패했다.
+
+   **그런데 이 보호는 관측 창이 짧으면 판정 자체를 불가능하게 만든다.** 임계 5MB/h 짜리 누수가
+   절대 하한 10MB 를 넘으려면 최소 2시간이 필요하다. 25분 관측에서 기울기가 +8.6MB/h 로 나와도
+   실제 증가는 3.4MB 라 하한에 안 걸리고 통과한다 — 그건 "누수가 없다"가 아니라 **"이 길이로는
+   모른다"** 이다. 그래서 창이 임계에 도달할 수 없으면 결과에 그렇게 적는다(`floor_reachable`).
 4. 워밍업 구간(기본 앞 5분)은 기울기 계산에서 뺀다.
 
 측정 도구가 거짓 양성을 내면 사람이 결과를 안 믿게 된다. 검사기의 오탐과 같은 문제다.
+
+**아무것도 관측 못 했으면 실패다.**
+2026-09-25 에 스택이 안 뜬 채로 이 하네스를 돌렸더니 "0개 서비스 전부 임계 이내" 를 찍고
+종료 코드 0 으로 나갔다. 감시가 아무것도 안 봤는데 통과라고 말한 것이다. 이 저장소가
+반복해서 싸운 유형(결함 26: 장애 주입 테스트가 안 돌고 통과)과 같다.
+관측한 서비스가 하나도 없으면 실패로 끝낸다.
 
 임계를 넘으면 종료 코드 1 로 나간다. CI 야간 작업이나 배포 전 검증에 쓴다.
 
@@ -177,6 +188,12 @@ def main() -> int:
 
         results.append({
             "service": name, "samples": len(rows),
+            # **원시 표본을 남긴다.** 예전엔 개수만 적었다. 그러면 판정 기준이 바뀌었을 때
+            # 과거 실행을 다시 볼 수 없고, 보고서를 그냥 믿는 수밖에 없다. 실제로 2026-09-25 에
+            # 워밍업 제외·RSS 절대 하한을 넣고 나서 직전 실행을 재판정할 수 없었다.
+            # (t 는 관측 시작 기준 초, rss 는 MB)
+            "rows": [{"t": round(r[0] - rows[0][0], 1), "rss_mb": round(r[1], 2),
+                      "fd": r[2], "frames": r[3]} for r in rows],
             "rss_start_mb": rows[0][1], "rss_end_mb": rows[-1][1],
             "rss_growth_mb_per_hour": round(rss_slope, 2),
             "fd_start": rows[0][2], "fd_end": rows[-1][2],
@@ -196,6 +213,16 @@ def main() -> int:
     print(f"임계: RSS {RSS_GROWTH_LIMIT_MB_H}MB/h (절대 +{RSS_ABSOLUTE_MIN_MB:.0f}MB 이상 동반) · "
           f"fd {FD_GROWTH_LIMIT_H}/h (절대 +{FD_ABSOLUTE_MIN} 이상 동반) · 처리량 {THROUGHPUT_FLOOR * 100:.0f}%")
     print(f"기울기는 앞 {args.warmup_minutes:.0f}분(시동)을 뺀 구간으로 낸다.")
+    # 이 관측 창에서 임계(기울기)가 절대 하한에 도달할 수 있는가.
+    # 도달할 수 없으면 "통과" 는 "누수 없음" 이 아니라 "이 길이로는 모름" 이다.
+    hours = args.minutes / 60.0
+    floor_reachable = RSS_GROWTH_LIMIT_MB_H * max(hours - args.warmup_minutes / 60.0, 0) >= RSS_ABSOLUTE_MIN_MB
+    if not floor_reachable:
+        need_h = RSS_ABSOLUTE_MIN_MB / RSS_GROWTH_LIMIT_MB_H + args.warmup_minutes / 60.0
+        print(f"\n주의: 관측 {args.minutes:.0f}분으로는 RSS 누수 판정이 성립하지 않는다.\n"
+              f"  임계 {RSS_GROWTH_LIMIT_MB_H:.0f}MB/h 짜리 누수가 절대 하한 {RSS_ABSOLUTE_MIN_MB:.0f}MB 를 넘으려면 "
+              f"최소 {need_h * 60:.0f}분이 필요하다.\n"
+              f"  이 실행이 보증하는 것은 fd 누수 없음·처리량 유지·급격한 메모리 증가 없음까지다.")
     if not slope_valid:
         print(f"관측 {args.minutes:.0f}분 < {args.min_minutes_for_slope:.0f}분 — "
               f"시간당 기울기는 참고용이고 판정에 쓰지 않았다.\n"
@@ -204,6 +231,10 @@ def main() -> int:
         print("\n임계 초과:")
         for name, bad in failed:
             print(f"  {name}: {', '.join(bad)}")
+    elif not results:
+        # 감시가 아무것도 안 봤는데 "통과" 라고 말하면 안 된다.
+        print("\n관측된 서비스가 없다 — 스택이 떠 있는지, 포트가 맞는지 확인한다.\n"
+              "아무것도 안 본 감시는 통과가 아니다.")
     else:
         note = "" if slope_valid else " — 단 관측이 짧아 기울기 판정은 보류"
         print(f"\n{len(results)}개 서비스 전부 임계 이내 "
@@ -223,11 +254,16 @@ def main() -> int:
                     "fd_growth_per_hour": FD_GROWTH_LIMIT_H,
                     "throughput_retained": THROUGHPUT_FLOOR},
                 "min_minutes_for_slope": args.min_minutes_for_slope,
+                # 이 창에서 RSS 누수 판정이 성립하는가. false 면 "통과 = 누수 없음" 이 아니다.
+                "rss_verdict_reachable": floor_reachable,
                 "slope_judged": slope_valid,
                 "services": results,
-                "passed": not failed,
+                "observed_services": len(results),
+                "passed": bool(results) and not failed,
             }, fh, ensure_ascii=False, indent=1)
         print(f"저장: {args.out}")
+    if not results:
+        return 2      # 임계 초과(1)와 구분한다 — 원인이 다르면 종료 코드도 달라야 한다
     return 1 if failed else 0
 
 
