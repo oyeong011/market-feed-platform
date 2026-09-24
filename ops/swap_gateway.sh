@@ -41,10 +41,14 @@ PY
 ) & probe_pid=$!
 
 sleep 1
-MDFEED_DRAIN_SECONDS=$DRAIN "$BIN" & new_pid=$!
+# 새 프로세스의 출력은 파일로 보낸다. 물려받은 stdout 을 그대로 쥐고 있으면 이 스크립트를
+# 파이프로 받는 쪽(`swap_gateway.sh | tee log`)이 **영원히 멈춘다** — 파이프 쓰기 끝이 안 닫힌다.
+# 처음 실행했을 때 실제로 그랬다. 교체 자체는 성공했는데 셸이 안 돌아왔다.
+NEW_LOG=${MDFEED_SWAP_LOG:-/tmp/mdfeed-gateway.log}
+MDFEED_DRAIN_SECONDS=$DRAIN "$BIN" >>"$NEW_LOG" 2>&1 < /dev/null & new_pid=$!
 sleep 1
 kill -0 "$new_pid" 2>/dev/null || { echo "새 프로세스가 뜨지 못했습니다 (SO_REUSEPORT 가 꺼져 있진 않은지 확인)"; kill $probe_pid 2>/dev/null; exit 1; }
-echo "새 프로세스 pid=$new_pid — 같은 포트에 합류"
+echo "새 프로세스 pid=$new_pid — 같은 포트에 합류 (로그: $NEW_LOG)"
 
 kill -TERM "$old_pid"
 echo "옛 프로세스에 SIGTERM — 드레인 시작"
@@ -56,4 +60,4 @@ wait $probe_pid 2>/dev/null
 read -r ok fail < "$probe_out"; rm -f "$probe_out"
 echo "교체 중 접속 시도: 성공 $ok · 실패 $fail"
 [ "${fail:-1}" -eq 0 ] || { echo "::실패:: 교체 중 접속이 끊겼습니다"; exit 1; }
-echo "무중단 교체 확인 — 새 pid=$new_pid"
+echo "무중단 교체 확인 — 새 pid=$new_pid (로그: $NEW_LOG)"
