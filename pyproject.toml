@@ -19,8 +19,6 @@ dependencies = []
 [project.optional-dependencies]
 # 운영에서 PostgreSQL/TimescaleDB 를 쓸 때
 postgres = ["psycopg2-binary>=2.9"]
-# 여러 호스트로 흩어질 때 ZeroMQ 버스
-zmq = ["pyzmq>=25"]
 # 백테스트 교차검증용 (없으면 자체 엔진만 돈다)
 quant = ["pandas>=2.0", "numpy>=1.24", "vectorbt>=0.26", "backtesting>=0.3", "pandas-ta>=0.3"]
 dev = ["pytest>=7.4"]

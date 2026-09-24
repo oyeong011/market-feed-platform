@@ -20,8 +20,11 @@
 UDS를 기본으로 둔 이유
 ----------------------
 같은 호스트 안에서는 TCP 루프백보다 UDS가 빠르고(체크섬/윈도우 계산 없음),
-파일시스템 권한으로 접근제어가 되며, 의존성이 없다. ZeroMQ는 pyzmq가 설치돼
-있고 여러 호스트로 흩어질 때만 MDFEED_BUS_BACKEND=zmq 로 켠다.
+파일시스템 권한으로 접근제어가 되며, 의존성이 없다.
+
+버스 백엔드는 **UDS 하나다.** 한때 설정에 zmq 선택지가 있었지만 구현이 없었고,
+켜면 조용히 UDS 로 폴백하면서 이유를 "pyzmq 없음" 이라고 잘못 적었다 — 패키지를
+설치해도 달라지지 않는다. 지금은 다른 값을 주면 실패한다(_check_backend).
 """
 
 from __future__ import annotations
@@ -311,21 +314,36 @@ class UDSSubscriber:
                 backoff = min(backoff * 2, self.max_reconnect_s)
 
 
+class BusBackendError(RuntimeError):
+    pass
+
+
+def _check_backend(cfg) -> None:
+    """지원하지 않는 버스 백엔드면 **실패한다.** 조용히 다른 걸 쓰지 않는다.
+
+    예전엔 MDFEED_BUS_BACKEND=zmq 를 주면 `from .bus_zmq import ...` 를 시도하고
+    ImportError 를 잡아 "pyzmq 없음 → UDS 폴백" 이라고 경고한 뒤 UDS 로 돌았다.
+    두 가지가 틀렸다.
+
+      1. **bus_zmq 모듈이 이 저장소에 없다.** pyzmq 를 설치해도 폴백한다. 이유를
+         pyzmq 탓으로 적어 놔서, 로그를 본 사람은 패키지를 깔면 될 거라고 믿게 된다.
+      2. 폴백 자체가 문제다. 여러 호스트로 흩어지려고 zmq 를 켠 사람이 실제로는
+         한 호스트 UDS 로 돌고 있는데 경고 한 줄만 남는다. 설정과 실제가 갈린다.
+
+    이 저장소의 버스 백엔드는 UDS 하나다. 다른 값을 주면 그렇게 말한다.
+    """
+    if cfg.bus_backend != "uds":
+        raise BusBackendError(
+            f"지원하지 않는 버스 백엔드입니다: {cfg.bus_backend!r}. "
+            f"이 저장소의 버스는 UDS 하나입니다(MDFEED_BUS_BACKEND=uds). "
+            f"여러 호스트로 흩어지려면 UDS 대신 붙일 전송을 먼저 구현해야 합니다.")
+
+
 def make_publisher(cfg) -> "UDSPublisher":
-    if cfg.bus_backend == "zmq":
-        try:
-            from .bus_zmq import ZMQPublisher      # 선택 의존성
-            return ZMQPublisher(cfg.bus_zmq_endpoint, cfg.bus_queue_size)
-        except ImportError:
-            log.warning("pyzmq 없음 → UDS 백엔드로 폴백")
+    _check_backend(cfg)
     return UDSPublisher(cfg.bus_path, cfg.bus_queue_size)
 
 
 def make_subscriber(cfg) -> "UDSSubscriber":
-    if cfg.bus_backend == "zmq":
-        try:
-            from .bus_zmq import ZMQSubscriber
-            return ZMQSubscriber(cfg.bus_zmq_endpoint)
-        except ImportError:
-            log.warning("pyzmq 없음 → UDS 백엔드로 폴백")
+    _check_backend(cfg)
     return UDSSubscriber(cfg.bus_path)

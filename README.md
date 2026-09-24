@@ -3,7 +3,7 @@
 [![CI](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml)
 [![Pages](https://github.com/oyeong011/market-feed-platform/actions/workflows/pages.yml/badge.svg)](https://oyeong011.github.io/market-feed-platform/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![tests](https://img.shields.io/badge/tests-553-brightgreen)
+![tests](https://img.shields.io/badge/tests-560-brightgreen)
 ![cpp](https://img.shields.io/badge/C%2B%2B-data%20plane-blue)
 ![obs](https://img.shields.io/badge/알람-18개%20지표%20검증-blue)
 ![venues](https://img.shields.io/badge/수집경로-5개%20실연결-blue)
@@ -68,7 +68,7 @@ make demo        # replay + disposable synthetic SQLite 로 6개 프로세스 �
 make status      # 서비스 상태 (프로세스 + HTTP 헬스 + 포트)
 make client      # 참조 TCP 구독 클라이언트 (갭 탐지 포함)
 make diag        # 장애 진단 원스톱
-make test        # 553개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
+make test        # 560개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
 ```
 
 데모와 CI는 라이브 어댑터를 상속하지 않습니다. 저장소에 든 녹화 파일을 replay로 읽고, 임시 SQLite DB를 만들어 검증합니다.
@@ -123,6 +123,7 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 | 34 | **공백 알람 셋이 요청이 없으면 영원히 안 울림** | 공백 지표가 `/healthz` 와 `/api/v1/gaps` 요청의 부수 효과로만 만들어졌다. **Prometheus 는 `/metrics` 만 긁는다.** 시험이 이걸 못 잡은 이유는 픽스처가 준비 확인으로 `/healthz` 를 불렀기 때문이다 — 그 호출이 지표를 만들고 있었다 | 30초 주기 갱신 루프로 값을 책임진다. 시험은 준비 확인조차 TCP 접속으로만 하고 HTTP 요청을 안 한다 |
 | 35 | **알람 검사기가 여러 줄 식의 둘째 줄을 안 읽음** | `expr:` 로 시작하는 줄만 파싱했다. 이어지는 줄에만 있는 지표는 없어져도 "모든 알람이 실재한다"가 나온다 — 검사기가 눈을 감는다 | 이어쓰기 파싱. 고친 뒤 참조 지표 36종 → 41종. 그동안 5종을 못 보고 있었다. 둘째 줄에 가짜 지표를 넣으면 잡히는지를 시험으로 고정 |
 | 36 | **구독자별 지연 격차 — 원인을 찾았고, 그 전에 내린 "효과 없음"이 틀렸다** | 순차 팬아웃을 늘 같은 순서로 돌면 먼저 접속한 구독자가 구조적으로 유리하다. 처음엔 시작점을 돌려 보고 **클라이언트가 잰 p99 로** 판정해 "효과 없다"고 결론내고 되돌렸다. 그 p99 의 회차 간 잡음(±0.1)이 380µs 효과보다 컸다 | 격차가 구독자 번호를 따라간다는 것부터 확정하고(접속 순서 상관 +0.981, 클라이언트 fd 순서 +0.137), 게이트웨이 **안에** 「배치 시작 → send() 완료」 계측을 넣었다. 기울기가 직선으로 드러났다(첫 6.3µs · 끝 389.7µs · 62배 · 상관 +1.000). 시작점 회전을 다시 넣으니 **1.02배**. 지표 `mdfeed_fanout_delay_spread` 와 알람 FanoutUnfair 로 고정하고, 회전 없는 판에서 7.6배로 실패하는 회귀 시험을 붙였다 |
+| 37 | **버스 백엔드 `zmq` 가 조용히 UDS 로 폴백** | 설정에 선택지가 있고 README 에는 "코드만 있고 실행 안 해봤다"고 적혀 있었는데, **`bus_zmq` 모듈 자체가 없었다.** pyzmq 를 설치해도 폴백하는데 경고는 "pyzmq 없음"이라고 이유를 잘못 짚었다. 여러 호스트로 흩어지려고 켠 사람이 한 호스트 UDS 로 도는 걸 경고 한 줄로만 알 수 있었다 | 지원하지 않는 값이면 **기동 실패**. 설정·패키지의 허위 광고(`bus_zmq_endpoint`, `zmq` extra) 제거. 없는 기능을 광고해 두지 않는지까지 시험으로 고정 |
 | 17 | Postgres 조회 시각이 UTC | 국내 장 시간 09:00~15:30 이 00:00~06:30 으로 보인다. 장 시작 전인지 마감 후인지 눈으로 판단 불가 | 스키마에서 DB 기본 시간대를 `Asia/Seoul` 로 설정 (저장 값은 그대로, 표시만) |
 
 ---
@@ -138,7 +139,7 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 |---|---|---|
 | 금융 데이터 FEED 개발·운영 | 수집 경로 5개, 배포 프로토콜 3종 | 무결성 48.5% → **100.0000%** |
 | Linux 서비스·프로세스 점검·안정화 | systemd 6유닛 + 자동 검증 + 장애 주입 | 11항목 · 복구 4종 확인 |
-| 파이프라인·배포·점검 자동화 | Makefile · CI 7잡 · Pages 자동 갱신 | 테스트 **553개** |
+| 파이프라인·배포·점검 자동화 | Makefile · CI 7잡 · Pages 자동 갱신 | 테스트 **560개** |
 | Python | 소스 8,835줄 | 핵심 의존성 **0** |
 | SQL · 관계형 DB | 복합 인덱스 · 사전 집계 · 하이퍼테이블 | 적재 **480,586 rows/s** |
 | Linux 명령·프로세스·로그 | `ops.sh diag` · RUNBOOK 8종 | 1차 진단 한 줄 |
@@ -178,7 +179,7 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 알려면 한 번은 아래까지 내려가 봐야 합니다. 실제로 그 과정에서 **문서가 틀린 곳 2군데,
 측정이 거짓말하던 곳 2군데**를 찾았습니다.
 
-선택 의존성은 있습니다 — PostgreSQL(`psycopg2`), ZeroMQ 버스(`pyzmq`),
+선택 의존성은 있습니다 — PostgreSQL(`psycopg2`),
 백테스트 교차검증(`pandas`·`backtesting`·`vectorbt`). **없으면 각각 SQLite·UDS·자체 엔진으로
 자동 폴백**하며 서비스는 그대로 동작합니다.
 
@@ -451,7 +452,7 @@ src/mdfeed/
 
 ops/     systemd 유닛 6종 · ops.sh · watchdog.sh · healthcheck.py · logrotate
 quant/   backtest.py · run_backtest.py · integrations.py · factor_screen.py
-tests/   553개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
+tests/   560개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
          복구 경로 · 종료 기한 · 컨플레이션 · 토큰 발급 · 운영 기록 환산 ·
          PostgreSQL 마이그레이션/백업/복구 27개는 실서버 연결 시에만)
 bench/   계층별 성능 측정 → docs/data/bench.json · 게이트웨이 비교 → gateway_compare.json
@@ -481,10 +482,15 @@ docs/    GitHub Pages 대시보드 (정적/실시간 겸용)
 - **장기 안정성은 여전히 짧게만 확인했습니다.** 자원 추적과 soak 하네스는 갖췄지만
   실제 관측은 수십 분 단위입니다. 하루·일주일 단위 누수는 `make soak MINUTES=1440` 을
   돌려야 알 수 있습니다.
-- **PINGPONG 응답은 실측 검증하지 못했습니다.** 데이터가 흐르는 동안에는 KIS 가 ping 을
-  보내지 않아 한 번도 받아보지 못했습니다. 코드는 공식 예제와 맞췄을 뿐입니다.
+- **PINGPONG: 우리 쪽 응답은 시험으로 고정했지만, 서버가 인정하는지는 미확인입니다.**
+  이 저장소의 wsproto 로 최소 서버를 띄워 PINGPONG 을 텍스트로 보내고, 돌아오는 것이 텍스트가
+  아니라 opcode 0xA(PONG) 제어 프레임인지 바이트로 확인합니다(`tests/test_kis_pingpong.py`).
+  남은 경계는 **KIS 서버가 그 응답을 하트비트로 인정하는지**입니다. 실계좌 세션에서 실제로
+  ping 을 받아 봐야 알 수 있고, 데이터가 흐르는 동안에는 보내지 않아 아직 못 받았습니다.
 - **장 마감·개장 전환, 동시호가, VI 발동, 휴장일**을 겪어보지 못했습니다.
-- **ZeroMQ 버스 백엔드는 코드만 있고 실행해본 적이 없습니다.**
+- **버스 백엔드는 UDS 하나입니다.** 설정에 `zmq` 선택지가 있었는데 구현이 없었고, 켜면 조용히
+  UDS 로 폴백하면서 이유를 "pyzmq 없음"이라고 **잘못** 적고 있었습니다(패키지를 깔아도 달라지지 않습니다).
+  지금은 다른 값을 주면 기동이 실패합니다. 여러 호스트로 흩어지려면 전송을 먼저 구현해야 합니다.
 - **시계 오프셋 보정은 상대값**입니다. 편도 지연의 절대값을 알려면 PTP 하드웨어
   타임스탬프가 필요합니다. 여기서 얻는 것은 "기준선 대비 얼마나 튀었는가"이고,
   운영 알람에는 그걸로 충분합니다.
@@ -494,8 +500,11 @@ docs/    GitHub Pages 대시보드 (정적/실시간 겸용)
 - **국내 금리는 수집하지만 발행하지 않습니다.** 공급 측 응답이 손상돼 있습니다(위 참조).
   필요하면 장내채권 시세 API 를 별도 경로로 붙이는 것이 맞습니다.
 - **지수·금리는 스냅샷입니다.** 실시간 웹소켓 경로가 없습니다.
-- **배포단의 한계는 구독자 수가 아니라 지연입니다.** 구독자 100명까지 유실·드롭 0이지만
-  p99 가 1.4 ms → 27.9 ms 로 19배 늘어납니다 (아래 부하 곡선 참조).
+- **배포단의 한계는 구독자 수가 아니라 지연입니다.** 어느 판이든 유실·드롭은 0이고, 늘어나는 것은
+  지연입니다. 구독자 100명에서 p99 가 파이썬 82 ms · C++ 2.7 ms,
+  500명에서 파이썬 1459 ms · C++ 24 ms 입니다.
+  그 위로는 TCP 팬아웃 자체가 한계입니다 — 1,000명에서 초당 `send()` 15만 회, 365 MB/s 이고
+  2,000명은 두 구현 모두 포화합니다. 그래서 멀티캐스트가 있습니다(발행량이 구독자 수와 무관).
 - **2026-09-08T05:16:54Z 이후 수집 공백은 열린 상태입니다.** 범위는 UPBIT,
   BINANCE, KIS, KRX와 모든 적용 테이블이며 당시 전체 심볼 범위는 확인 증거가
   없어 `UNKNOWN_HISTORICAL_UNIVERSE` 로 남깁니다. 현재 서비스 health나 현재

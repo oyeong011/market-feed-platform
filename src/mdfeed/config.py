@@ -110,7 +110,9 @@ class Config:
     replay_restamp: bool = field(default_factory=lambda: _bool("REPLAY_RESTAMP", True))
 
     # ── IPC ────────────────────────────────────────────────────────────────
-    bus_backend: str = field(default_factory=lambda: _env("BUS_BACKEND", "uds"))  # uds|zmq
+    # 버스 백엔드는 UDS 하나다. 다른 값을 주면 기동이 실패한다(bus._check_backend).
+    # 예전엔 zmq 선택지가 있었지만 구현이 없어 조용히 UDS 로 폴백하고 있었다.
+    bus_backend: str = field(default_factory=lambda: _env("BUS_BACKEND", "uds"))
     # ── 샤딩 ──────────────────────────────────────────────────────────────
     # feedd 하나가 모든 업스트림을 들면 단일 장애점이 된다. 거래소 하나가
     # 프로토콜을 바꾸거나 어댑터가 죽으면 나머지 전부가 함께 내려간다.
@@ -122,7 +124,6 @@ class Config:
     # 소비자는 MDFEED_BUS_PATHS 로 여러 샤드를 한꺼번에 구독한다.
     shard: str = field(default_factory=lambda: _env("SHARD", ""))
     bus_path: str = field(default_factory=lambda: _env("BUS_PATH", "/tmp/mdfeed/bus.sock"))
-    bus_zmq_endpoint: str = field(default_factory=lambda: _env("BUS_ZMQ", "tcp://127.0.0.1:5599"))
     # 소비자가 구독할 버스 소켓 목록 (샤드 여러 개를 한꺼번에)
     bus_paths: list[str] = field(default_factory=lambda: _list("BUS_PATHS", ""))
     shard_port_offset: int = field(default_factory=lambda: _int("SHARD_PORT_OFFSET", 0))
