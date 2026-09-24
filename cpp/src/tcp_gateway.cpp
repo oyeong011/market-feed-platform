@@ -58,6 +58,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "mdfp/procstat.hpp"
 #include "mdfp/event_loop.hpp"
 #include "mdfp/protocol.hpp"
 
@@ -689,6 +690,7 @@ private:
         out += ", \"entitlements\": {\"enabled\": " + std::string(ent_.enabled ? "true" : "false") +
                ", \"tokens\": " + std::to_string(ent_.by_token.size()) + ", \"denied\": " + std::to_string(entitlement_denied_) + "}";
         out += ", \"total_dropped\": " + std::to_string(total_dropped) + ", \"max_backlog\": " + std::to_string(max_backlog) + ", \"max_wire_bytes\": " + std::to_string(max_wire);
+        out += ", \"resources\": " + proc_stat_json();   // 파이썬 서비스와 같은 자리·같은 이름 (bench/soak.py 가 읽는다)
         out += ", \"sources\": [" + srcs + "], \"degraded_sources\": [" + degraded + "], \"tasks\": {}}";
         return out;
     }
@@ -709,7 +711,9 @@ private:
         for (auto& [id, s] : subs_) { max_backlog = std::max(max_backlog, s.backlog()); max_wire = std::max(max_wire, wire_bytes(s.fd)); }
         const auto [fan_max_us, fan_spread] = fanout_delay_spread();
         auto line = [](const char* name, double v) { char b[160]; std::snprintf(b, sizeof b, "mdfeed_%s{service=\"tcp-gateway\"} %g\n", name, v); return std::string(b); };
-        return line("uptime_seconds", mono() - started_) + line("conflated_total", double(conflated_total_)) + line("connections_total", double(connections_)) +
+        const ProcStat ps = proc_stat();
+        return line("process_rss_bytes", ps.rss_mb * 1e6) + line("process_fd_open", double(ps.fd_open)) +
+            line("uptime_seconds", mono() - started_) + line("conflated_total", double(conflated_total_)) + line("connections_total", double(connections_)) +
             line("dropped_total", double(dropped_total_)) + line("frames_in_total", double(frames_in_)) + line("sent_total", double(sent_total_)) +
             line("max_backlog", double(max_backlog)) + line("max_wire_bytes", double(max_wire)) + line("subscribers", double(subs_.size())) +
             line("send_calls_total", double(send_calls_)) + line("send_bytes_total", double(send_bytes_)) + line("send_eagain_total", double(send_eagain_)) + line("bus_reads_total", double(bus_reads_)) +

@@ -1,0 +1,89 @@
+# 장시간 구동 감시 — 누수는 오래 돌려야만 보인다.
+#
+# README 한계에 "장기 안정성은 여전히 짧게만 확인했습니다. 실제 관측은 수십 분 단위입니다"라고
+# 적어 두고 하네스만 갖고 있었다. 돌릴 수 있는 것과 돌아가는 것은 다르다. 매주 자동으로 돌리고
+# 결과를 산출물로 남긴다.
+#
+# 관측 시간이 짧으면 하네스가 시간당 기울기로 판정하지 않는다(20분 미만). 기본 45분을 쓴다.
+name: Soak (Linux)
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "관측 시간(분). 20분 미만이면 기울기 판정을 하지 않는다"
+        default: "45"
+      gateway_impl:
+        description: "배포 게이트웨이 구현 (python | cpp)"
+        default: "cpp"
+  schedule:
+    - cron: "41 2 * * 2"   # 매주 화요일 02:41 UTC
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install pytest
+      - name: Build the C++ data plane
+        run: make -C cpp -s all
+
+      - name: 리플레이로 전체 스택 기동 (멀티캐스트 발행자 포함)
+        run: |
+          MDFEED_GATEWAY_IMPL="${{ github.event.inputs.gateway_impl || 'cpp' }}" \
+          MDFEED_MCAST_ENABLED=1 MDFEED_MCAST_IF=127.0.0.1 \
+          MDFEED_ADAPTERS=replay MDFEED_REPLAY_LOOP=1 \
+          MDFEED_RUN_DIR=/tmp/mdfeed \
+          MDFEED_STORAGE_BACKEND=sqlite MDFEED_STORAGE_PROFILE=test \
+          MDFEED_SQLITE_PATH=/tmp/mdfeed/soak.db \
+          PYTHONPATH=src python -m mdfeed.cli up > /tmp/stack.log 2>&1 &
+          echo $! > /tmp/sup.pid
+          sleep 20
+          curl -s --max-time 5 localhost:9111/healthz | python -c "import sys,json; d=json.load(sys.stdin); print('gateway impl', d.get('impl','python'), 'resources', d.get('resources'))"
+
+      - name: 감시 대상이 실제로 자원을 보고하는지 먼저 확인
+        # resources 를 안 내는 서비스는 감시 밖이다. "돌렸는데 아무것도 안 봤다"를 막는다.
+        run: |
+          python - <<'PY'
+          import json, sys, urllib.request
+          blind = []
+          for name, port in [("feedd", 9100), ("tcp-gateway", 9111), ("ws-gateway", 9102),
+                             ("rest-api", 9103), ("writer", 9104), ("strategy", 9105),
+                             ("quality", 9106), ("mcast-publisher", 9132)]:
+              try:
+                  with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=5) as r:
+                      d = json.load(r)
+              except Exception as e:
+                  print(f"  {name}: 응답 없음 ({type(e).__name__})"); blind.append(name); continue
+              res = d.get("resources") or {}
+              if not res.get("rss_mb"):
+                  print(f"  {name}: resources 없음 — 감시 밖"); blind.append(name)
+              else:
+                  print(f"  {name}: rss {res['rss_mb']:.1f}MB fd {res.get('fd_open')}")
+          if blind:
+              print(f"::error::자원을 보고하지 않는 서비스: {', '.join(blind)}")
+              sys.exit(1)
+          PY
+
+      - name: 장시간 감시
+        run: |
+          PYTHONPATH=src python bench/soak.py \
+            --minutes "${{ github.event.inputs.minutes || '45' }}" --interval 30 \
+            --out soak-linux.json | tee soak-linux.txt
+
+      - name: 종료
+        if: always()
+        run: kill "$(cat /tmp/sup.pid)" 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soak-linux-${{ github.run_id }}
+          path: |
+            soak-linux.json
+            soak-linux.txt
+            /tmp/stack.log
+          retention-days: 90

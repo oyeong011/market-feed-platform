@@ -47,7 +47,13 @@ SERVICES = [
     ("feedd", 9100), ("feedd-krx", 9200), ("tcp-gateway", 9111),
     ("ws-gateway", 9102), ("rest-api", 9103), ("writer", 9104),
     ("strategy", 9105), ("quality", 9106),
+    # 멀티캐스트 발행자는 선택 서비스다. 안 떠 있으면 아래에서 그냥 건너뛴다.
+    ("mcast-publisher", 9132),
 ]
+
+# 이 목록에 없는 프로세스는 감시 밖이다. C++ 서비스(tcp-gateway 의 C++ 판, mcast-publisher)는
+# 한동안 /healthz 에 resources 를 안 내고 있어서, 목록에 있어도 값이 0 으로만 읽혔다.
+# 누수가 가장 보기 어려운 쪽(GC 가 없는 쪽)이 감시 밖이었던 셈이다. 2026-09-24 에 메웠다.
 
 RSS_GROWTH_LIMIT_MB_H = 5.0
 FD_GROWTH_LIMIT_H = 1.0
@@ -100,6 +106,10 @@ def main() -> int:
             if not d:
                 continue
             r = d.get("resources") or {}
+            if not r:
+                # resources 를 안 내는 서비스는 "0MB/0fd" 로 기록되어 누수가 안 보인다.
+                # 조용히 0 으로 세지 말고 건너뛴다 — 없는 값을 있는 값처럼 다루면 안 된다.
+                continue
             frames = d.get("frames_in") or d.get("seq") or 0
             series.setdefault(name, []).append(
                 (now, r.get("rss_mb", 0.0), r.get("fd_open", 0), frames))

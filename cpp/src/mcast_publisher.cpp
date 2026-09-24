@@ -42,6 +42,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "mdfp/procstat.hpp"
 #include "mdfp/bus_subscriber.hpp"
 #include "mdfp/protocol.hpp"
 
@@ -312,13 +313,17 @@ private:
         o += ", \"datagrams_sent\": " + std::to_string(datagrams_ - injected_drops_) + ", \"bytes_sent\": " + std::to_string(bytes_sent_) + ", \"injected_drops\": " + std::to_string(injected_drops_) + ", \"send_errors\": " + std::to_string(send_errors_);
         o += ", \"retrans_requests\": " + std::to_string(retrans_requests_) + ", \"retrans_frames_sent\": " + std::to_string(retrans_frames_) + ", \"retrans_unavailable\": " + std::to_string(retrans_unavailable_) + ", \"snapshots_served\": " + std::to_string(snapshots_);
         o += ", \"injected_reorders\": " + std::to_string(injected_reorders_) + ", \"injected_duplicates\": " + std::to_string(injected_duplicates_);
-        o += ", \"own_heartbeats\": " + std::to_string(own_heartbeats_) + ", \"retrans_buffer\": " + std::to_string(ring_.size()) + ", \"recovery_clients\": " + std::to_string(rec) + ", \"cached_symbols\": " + std::to_string(last_.size()) + ", \"sources\": [" + srcs + "], \"tasks\": {}}";
+        o += ", \"own_heartbeats\": " + std::to_string(own_heartbeats_) + ", \"retrans_buffer\": " + std::to_string(ring_.size()) + ", \"recovery_clients\": " + std::to_string(rec) + ", \"cached_symbols\": " + std::to_string(last_.size()) +
+             ", \"resources\": " + proc_stat_json() +   // 파이썬 서비스와 같은 자리·같은 이름 (bench/soak.py 가 읽는다)
+             ", \"sources\": [" + srcs + "], \"tasks\": {}}";
         return o;
     }
     std::string metrics_text() const {
         auto line = [](const char* k, double v) { char b[160]; std::snprintf(b, sizeof b, "mdfeed_%s{service=\"mcast-publisher\"} %g\n", k, v); return std::string(b); };
         size_t rec = 0; for (auto& [fd, c] : conns_) if (!c.admin) ++rec;
-        return line("uptime_seconds", mono() - started_) + line("frames_in_total", double(frames_in_)) + line("mcast_datagrams_total", double(datagrams_ - injected_drops_)) + line("mcast_bytes_total", double(bytes_sent_)) +
+        const ProcStat ps = proc_stat();
+        return line("process_rss_bytes", ps.rss_mb * 1e6) + line("process_fd_open", double(ps.fd_open)) +
+            line("uptime_seconds", mono() - started_) + line("frames_in_total", double(frames_in_)) + line("mcast_datagrams_total", double(datagrams_ - injected_drops_)) + line("mcast_bytes_total", double(bytes_sent_)) +
                line("mcast_injected_drops_total", double(injected_drops_)) + line("mcast_injected_reorders_total", double(injected_reorders_)) + line("mcast_injected_duplicates_total", double(injected_duplicates_)) + line("mcast_send_errors_total", double(send_errors_)) + line("mcast_retrans_requests_total", double(retrans_requests_)) +
                line("mcast_retrans_frames_total", double(retrans_frames_)) + line("mcast_retrans_unavailable_total", double(retrans_unavailable_)) + line("mcast_snapshots_total", double(snapshots_)) + line("mcast_own_heartbeats_total", double(own_heartbeats_)) + line("mcast_recovery_clients", double(rec)) + line("mcast_seq", double(seq_));
     }
