@@ -16,6 +16,14 @@
 | fd 증가 | 1 개/h 초과 **그리고** 절대 증가 2개 이상 | 아래 참고 |
 | 처리량 감소 | 시작 대비 50% 미만 | 무언가 쌓여 느려지고 있다 |
 
+**워밍업 구간을 기울기에 넣으면 정상적인 시동을 누수로 읽는다.**
+프로세스는 뜨자마자 캐시·아레나·버퍼를 채우며 RSS 가 한 번 오른 뒤 평평해진다. 그 구간을
+포함해 직선을 맞추면 기울기가 실제보다 가파르다. 첫 리눅스 25분 관측(2026-09-25)에서
+feedd +8.4MB/h · writer +5.7MB/h · mcast-publisher +7.1MB/h 로 임계를 넘었는데, 같은 창의
+**실제 증가는 2.3~3.4MB** 였다. 25분짜리 시동을 한 시간으로 외삽한 값이다.
+그래서 앞쪽 `--warmup-minutes`(기본 5분)를 기울기 계산에서 뺀다. 판정 창의 시작은 시동이
+끝난 뒤여야 한다.
+
 **짧은 관측에서 시간당 기울기를 내면 노이즈가 증폭된다.**
 처음 4분을 돌렸을 때 `feedd-krx` 가 "fd +4.4/h" 로 걸렸다. 그런데 시작도 21개,
 끝도 21개였다. 중간에 한 번 22로 튄 것을 시간 단위로 외삽한 결과였다.
@@ -27,6 +35,9 @@ REST 어댑터가 매 호출마다 연결을 열고 닫으므로 fd 가 순간�
 1. **최소 관측 시간**(기본 20분) 미만이면 기울기로 판정하지 않는다.
    관측이 짧다는 사실을 결과에 남긴다.
 2. fd 는 기울기와 **절대 증가량**을 함께 본다. 시작보다 실제로 늘어 있어야 한다.
+3. RSS 도 같다. 기울기와 **절대 증가량**(`RSS_ABSOLUTE_MIN_MB`)을 함께 본다.
+   fd 에는 이 보호를 넣어 뒀으면서 RSS 에는 안 넣어 둔 탓에 첫 자동 실행이 거짓 양성으로 실패했다.
+4. 워밍업 구간(기본 앞 5분)은 기울기 계산에서 뺀다.
 
 측정 도구가 거짓 양성을 내면 사람이 결과를 안 믿게 된다. 검사기의 오탐과 같은 문제다.
 
@@ -58,8 +69,12 @@ SERVICES = [
 RSS_GROWTH_LIMIT_MB_H = 5.0
 FD_GROWTH_LIMIT_H = 1.0
 FD_ABSOLUTE_MIN = 2          # 기울기만으로 판정하지 않는다 (docstring 참고)
+# RSS 도 마찬가지다. 25분 관측에서 3MB 오른 것을 "시간당 7MB" 로 외삽해 실패시키면
+# 사람이 결과를 안 믿게 된다. 기울기와 절대 증가가 **둘 다** 넘어야 누수로 본다.
+RSS_ABSOLUTE_MIN_MB = 10.0
 THROUGHPUT_FLOOR = 0.5
 MIN_MINUTES_FOR_SLOPE = 20.0  # 이보다 짧으면 시간당 외삽이 노이즈를 증폭한다
+WARMUP_MINUTES = 5.0          # 시동 구간. 기울기 계산에서 뺀다 (docstring 참고)
 
 
 def poll(port: int) -> dict | None:
@@ -86,6 +101,8 @@ def main() -> int:
     ap.add_argument("--interval", type=float, default=30.0)
     ap.add_argument("--out", default="")
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--warmup-minutes", type=float, default=WARMUP_MINUTES,
+                    help="앞쪽 이 시간은 기울기 계산에서 뺀다 (시동 구간)")
     ap.add_argument("--min-minutes-for-slope", type=float, default=MIN_MINUTES_FOR_SLOPE,
                     help="이보다 짧은 관측에서는 기울기로 판정하지 않는다")
     args = ap.parse_args()
@@ -129,8 +146,12 @@ def main() -> int:
             continue
         base = rows[0][0]
         xs = [(r[0] - base) / 3600.0 for r in rows]
-        rss_slope = slope(xs, [r[1] for r in rows])
-        fd_slope = slope(xs, [float(r[2]) for r in rows])
+        # 워밍업 이후 구간으로만 기울기를 낸다. 시동을 누수로 읽지 않기 위해서다.
+        t0 = rows[0][0]
+        judged = [r for r in rows if (r[0] - t0) / 60.0 >= args.warmup_minutes] or rows
+        jxs = [(r[0] - judged[0][0]) / 3600.0 for r in judged]
+        rss_slope = slope(jxs, [r[1] for r in judged])
+        fd_slope = slope(jxs, [float(r[2]) for r in judged])
         # 처리량: 마지막 절반 구간의 초당 프레임 vs 첫 절반
         half = len(rows) // 2
         def rate(seg):
@@ -144,7 +165,7 @@ def main() -> int:
 
         bad = []
         if slope_valid:
-            if rss_slope > RSS_GROWTH_LIMIT_MB_H and rss_delta > 0:
+            if rss_slope > RSS_GROWTH_LIMIT_MB_H and rss_delta >= RSS_ABSOLUTE_MIN_MB:
                 bad.append(f"RSS +{rss_slope:.1f}MB/h (실제 +{rss_delta:.1f}MB)")
             # 기울기만으로 판정하지 않는다 — 짧은 흔들림이 외삽되면 거짓 양성이 난다
             if fd_slope > FD_GROWTH_LIMIT_H and fd_delta >= FD_ABSOLUTE_MIN:
@@ -172,8 +193,9 @@ def main() -> int:
               f"{fd_slope:>+6.2f} {retained * 100:>9.0f}%")
 
     print("-" * 74)
-    print(f"임계: RSS {RSS_GROWTH_LIMIT_MB_H}MB/h · fd {FD_GROWTH_LIMIT_H}/h "
-          f"(절대 +{FD_ABSOLUTE_MIN} 이상 동반) · 처리량 {THROUGHPUT_FLOOR * 100:.0f}%")
+    print(f"임계: RSS {RSS_GROWTH_LIMIT_MB_H}MB/h (절대 +{RSS_ABSOLUTE_MIN_MB:.0f}MB 이상 동반) · "
+          f"fd {FD_GROWTH_LIMIT_H}/h (절대 +{FD_ABSOLUTE_MIN} 이상 동반) · 처리량 {THROUGHPUT_FLOOR * 100:.0f}%")
+    print(f"기울기는 앞 {args.warmup_minutes:.0f}분(시동)을 뺀 구간으로 낸다.")
     if not slope_valid:
         print(f"관측 {args.minutes:.0f}분 < {args.min_minutes_for_slope:.0f}분 — "
               f"시간당 기울기는 참고용이고 판정에 쓰지 않았다.\n"
@@ -196,6 +218,8 @@ def main() -> int:
                 "interval_s": args.interval,
                 "thresholds": {
                     "rss_growth_mb_per_hour": RSS_GROWTH_LIMIT_MB_H,
+                    "rss_absolute_min_mb": RSS_ABSOLUTE_MIN_MB,
+                    "warmup_minutes": args.warmup_minutes,
                     "fd_growth_per_hour": FD_GROWTH_LIMIT_H,
                     "throughput_retained": THROUGHPUT_FLOOR},
                 "min_minutes_for_slope": args.min_minutes_for_slope,
