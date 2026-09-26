@@ -22,6 +22,21 @@ fail() { echo "  ${R}복구 실패${N} $*"; FAILED=1; }
 info() { echo "  ${Y}·${N} $*"; }
 
 health() { curl -s --max-time 3 "http://127.0.0.1:$1/healthz" 2>/dev/null; }
+
+# 서비스의 PID. **구현이 바뀌면 명령줄도 바뀐다.**
+# 배포 게이트웨이는 MDFEED_GATEWAY_IMPL=cpp 면 파이썬 모듈이 아니라 C++ 바이너리로 뜨고,
+# 멀티캐스트 발행자는 구현이 C++ 하나뿐이다. 파이썬 모듈 경로로만 찾으면 "프로세스를 못 찾음"
+# 으로 끝나 **장애 주입이 아예 안 돈다** — 복구 경로를 확인하려고 만든 도구가 정작 그 서비스를
+# 건드리지도 못한다. ops/ops.sh 의 module_of 와 같은 규칙을 쓴다.
+proc_pattern() {
+  case "$1" in
+    tcp_gateway|tcp-gateway)
+      if [ "${MDFEED_GATEWAY_IMPL:-python}" = "cpp" ]; then echo "cpp/build/tcp_gateway"
+      else echo "mdfeed.services.tcp_gateway"; fi ;;
+    mcast_publisher|mcast-publisher) echo "cpp/build/mcast_publisher" ;;
+    *) echo "mdfeed.services.$1" ;;
+  esac
+}
 jqv() { python3 -c "import json,sys
 try:
     d=json.load(sys.stdin)
@@ -215,8 +230,8 @@ chaos_service_kill() {
   local name="$1" port="$2"
   echo "${B}[서비스 재기동] $name (:$port)${N}"
   local pid before
-  pid=$(pgrep -f "mdfeed.services.$name" | head -1)
-  [ -z "$pid" ] && { fail "$name 프로세스를 못 찾음"; return; }
+  pid=$(pgrep -f "$(proc_pattern "$name")" | head -1)
+  [ -z "$pid" ] && { fail "$name 프로세스를 못 찾음 (패턴: $(proc_pattern "$name"))"; return; }
   before=$(health "$port" | jqv uptime_s)
   info "pid $pid 를 SIGKILL 한다 (가동 ${before%.*}초)"
   kill -9 "$pid" 2>/dev/null
@@ -242,6 +257,12 @@ chaos_restart_all() {
               "writer 9104" "strategy 9105" "quality 9106"; do
     chaos_service_kill $pair
   done
+  # 멀티캐스트 발행자는 선택 서비스다. 떠 있을 때만 흔든다 — 안 켠 구성에서 빨간 줄을 내지 않는다.
+  if [ -n "$(health 9132)" ]; then
+    chaos_service_kill mcast_publisher 9132
+  else
+    info "멀티캐스트 발행자가 안 떠 있어 건너뛴다 (MDFEED_MCAST_ENABLED=1 로 켠다)"
+  fi
 }
 
 # ── 감독이 실제로 되살리는가 (프로세스 안) ────────────────────────────────

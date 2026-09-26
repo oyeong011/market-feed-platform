@@ -186,6 +186,11 @@ jobs:
           grep -q "데이터 무결성: 100" /tmp/client.log || {
             echo "::error::C++ 게이트웨이에서 구독자 데이터 무결성 100% 미달"; cat /tmp/client.log; exit 1; }
 
+      - name: 장애 주입 — C++ 서비스도 SIGKILL 후 감독이 되살리는가
+        # 장애 주입이 파이썬 모듈 경로로만 프로세스를 찾던 시절에는 C++ 서비스를 **건드리지도
+        # 못했다.** 복구 경로를 확인하려고 만든 도구가 그 서비스를 못 흔들면 확인한 게 없다.
+        run: MDFEED_GATEWAY_IMPL=cpp MDFEED_MCAST_ENABLED=1 PYTHONPATH=src ops/chaos.sh restart
+
       - name: 종료
         if: always()
         run: kill "$(cat /tmp/sup.pid)" 2>/dev/null || true
