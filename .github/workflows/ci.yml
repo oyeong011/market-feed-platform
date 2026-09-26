@@ -269,8 +269,10 @@ jobs:
           fail=0
           for u in ops/systemd/mdfeed-*.service ops/systemd/mdfeed-*.timer ops/systemd/mdfeed.target; do
             out=$(systemd-analyze verify "$u" 2>&1) || true
-            # 이 저장소에 없는 경로(/opt/mdfeed)나 사용자(mdfeed)에 대한 경고는 러너 사정이라 거른다.
-            filtered=$(echo "$out" | grep -viE "Unit .* not found|command .* is not executable|/opt/mdfeed|mdfeed' .* not found|Failed to resolve (user|group)" || true)
+            # 러너에 없는 것(배포 경로 /opt/mdfeed, mdfeed 사용자·그룹)만 거른다.
+            # **그 밖의 경고는 전부 실패로 본다.** 느슨하게 거르면 첫 실행에서 찾은 것 같은
+            # 진짜 결함(StartLimitIntervalSec 이 [Service] 에 있어 무시되던 것)을 놓친다.
+            filtered=$(echo "$out" | grep -vE "/opt/mdfeed|Failed to (resolve|determine) (user|group)|mdfeed(:mdfeed)?' ?(user|group)? ?(not found|does not exist)" || true)
             if [ -n "$filtered" ]; then echo "::error::$u"; echo "$filtered"; fail=1; fi
           done
           [ "$fail" -eq 0 ] && echo "systemd 유닛 $(ls ops/systemd/mdfeed-* | wc -l | tr -d ' ')개 검증 통과"

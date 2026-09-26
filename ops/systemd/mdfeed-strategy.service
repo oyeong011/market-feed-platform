@@ -16,6 +16,11 @@ After=mdfeed-feedd.service
 Wants=mdfeed-feedd.service
 PartOf=mdfeed.target
 
+# crash loop 방지. **[Unit] 에 있어야 한다** — systemd v230 부터 이 둘은 [Unit] 옵션이고,
+# [Service] 에 두면 "Unknown key name ... ignoring" 으로 조용히 무시된다. 한동안 그 상태였다.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=mdfeed
@@ -31,10 +36,6 @@ ExecStart=/usr/bin/python3 -m mdfeed.services.strategy
 # 수동 정지조차 되살아나 배포 중 혼란을 만든다.
 Restart=on-failure
 RestartSec=3
-# 60초 안에 5번 넘게 죽으면 멈춘다. 설정 오류로 무한 재시작 루프를 도는 대신
-# 실패 상태로 남겨 사람이 보게 한다.
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 # ── 종료 ──────────────────────────────────────────────────────────────────
 KillSignal=SIGTERM
@@ -65,7 +66,6 @@ LockPersonality=true
 # 구독자 수 × 소켓 + 업스트림 세션. 기본 1024는 배포단에서 금방 모자란다.
 LimitNOFILE=65536
 MemoryMax=1G
-
 
 [Install]
 WantedBy=multi-user.target
