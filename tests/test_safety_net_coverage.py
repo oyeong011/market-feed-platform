@@ -2,7 +2,7 @@
 
 이 저장소에는 서비스를 대상으로 하는 안전망이 여럿이다.
 감독기(cli.SERVICES) · 상태판(ops.sh) · 헬스체크(ops/healthcheck.py) · 장시간 감시(bench/soak.py) ·
-지표 수집(prometheus.yml) · 장애 주입(ops/chaos.sh).
+지표 수집(prometheus.yml) · 장애 주입(ops/chaos.sh) · **운영 배포(systemd 유닛·타깃)**.
 
 **각 안전망은 자기 목록에 있는 것만 본다. 목록이 곧 범위다.**
 새 서비스를 붙이면서 목록 하나를 빠뜨리면 그 서비스만 조용히 밖에 남는다. 2026-09-24~26 한 주에
@@ -10,6 +10,7 @@
 
   결함 38  C++ 서비스가 자원 누수 감시 밖 (resources 를 안 내서 0MB/0fd 로 읽힘)
   결함 42  장애 주입이 C++ 서비스를 프로세스로 못 찾아 건드리지도 못함
+  결함 43  quality 서비스에 systemd 유닛이 아예 없었다 — 개발에서는 돌고 운영에서는 안 돌았다
   그리고 알람 쪽도 같은 방향으로 한 번 (새 지표를 보는 알람이 하나도 없었음)
 
 개별로 고치면 네 번째가 온다. 목록이 어긋나면 여기서 실패하게 한다.
@@ -112,3 +113,35 @@ def test_every_cpp_service_reports_resources():
         src = _text(rel)
         assert "proc_stat_json()" in src, f"{rel} 가 resources 를 안 낸다"
         assert "process_rss_bytes" in src and "process_fd_open" in src, f"{rel} 가 자원 지표를 안 낸다"
+
+
+def test_every_service_has_a_systemd_unit():
+    """운영 배포도 안전망이다. 유닛이 없으면 그 서비스는 systemd 에서 **안 돈다**(결함 43).
+
+    quality 가 그랬다. 감독기(`make up`)는 띄우는데 유닛이 없어 systemd 배포에서는 안 떴다.
+    그 서비스가 내는 지표에는 알람이 걸려 있으니, 운영에서 그 알람은 영원히 안 울린다.
+    """
+    units = {p.stem.replace("mdfeed-", "") for p in (ROOT / "ops/systemd").glob("mdfeed-*.service")}
+    for name in EXPECTED:
+        assert name in units, f"{name} 에 systemd 유닛이 없다 — 운영 배포에서 안 돈다"
+    for name in OPTIONAL:
+        assert name in units, f"선택 서비스 {name} 도 유닛은 있어야 한다 (켜는 건 따로)"
+
+
+def test_target_pulls_in_every_required_service():
+    """유닛이 있어도 타깃이 안 당기면 `systemctl start mdfeed.target` 으로는 안 뜬다."""
+    target = _text("ops/systemd/mdfeed.target")
+    for name in EXPECTED:
+        assert f"mdfeed-{name}.service" in target, f"타깃이 {name} 를 안 당긴다"
+    # 선택 서비스는 일부러 뺀다. 그 사실이 주석으로 적혀 있어야 다음 사람이 실수로 넣지 않는다.
+    for name in OPTIONAL:
+        assert f"mdfeed-{name}.service" not in re.sub(r"#.*", "", target), \
+            f"선택 서비스 {name} 가 타깃에 들어 있다 — 안 켠 구성에서 실패한다"
+
+
+def test_install_enables_every_required_service():
+    """유닛과 타깃이 맞아도 enable 목록에서 빠지면 재부팅 후 안 뜬다."""
+    ops = _text("ops/ops.sh")
+    enable = _block(ops, "systemctl enable mdfeed.target", 400)
+    for name in EXPECTED:
+        assert f"mdfeed-{name}" in enable, f"install 이 {name} 를 enable 하지 않는다"

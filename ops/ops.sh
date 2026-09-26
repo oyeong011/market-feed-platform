@@ -286,8 +286,9 @@ cmd_install() {
   systemd-tmpfiles --create /etc/tmpfiles.d/mdfeed.conf
   systemctl daemon-reload
   systemctl enable mdfeed.target mdfeed-feedd mdfeed-tcp-gateway mdfeed-ws-gateway \
-                   mdfeed-rest-api mdfeed-writer mdfeed-strategy \
+                   mdfeed-rest-api mdfeed-writer mdfeed-strategy mdfeed-quality \
                    mdfeed-backup.timer mdfeed-restore-drill.timer mdfeed-preflight-monitor
+  # 멀티캐스트 발행자는 선택이라 여기서 켜지 않는다: systemctl enable --now mdfeed-mcast-publisher
   echo "설치 완료. 기동: systemctl start mdfeed.target"
 }
 

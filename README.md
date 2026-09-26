@@ -3,7 +3,7 @@
 [![CI](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml)
 [![Pages](https://github.com/oyeong011/market-feed-platform/actions/workflows/pages.yml/badge.svg)](https://oyeong011.github.io/market-feed-platform/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![tests](https://img.shields.io/badge/tests-567-brightgreen)
+![tests](https://img.shields.io/badge/tests-570-brightgreen)
 ![cpp](https://img.shields.io/badge/C%2B%2B-data%20plane-blue)
 ![obs](https://img.shields.io/badge/알람-18개%20지표%20검증-blue)
 ![venues](https://img.shields.io/badge/수집경로-5개%20실연결-blue)
@@ -68,7 +68,7 @@ make demo        # replay + disposable synthetic SQLite 로 6개 프로세스 �
 make status      # 서비스 상태 (프로세스 + HTTP 헬스 + 포트)
 make client      # 참조 TCP 구독 클라이언트 (갭 탐지 포함)
 make diag        # 장애 진단 원스톱
-make test        # 567개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
+make test        # 570개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 27개는 스킵)
 ```
 
 데모와 CI는 라이브 어댑터를 상속하지 않습니다. 저장소에 든 녹화 파일을 replay로 읽고, 임시 SQLite DB를 만들어 검증합니다.
@@ -129,6 +129,7 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 | 40 | **관측 0개인데 "전부 임계 이내" 로 통과** | 스택이 안 뜬 채로 감시를 돌렸더니 "0개 서비스 전부 임계 이내"를 찍고 종료 코드 0 으로 나갔다. 감시가 아무것도 안 봤는데 통과라고 말한 것이다 — 결함 26(장애 주입 테스트가 안 돌고 통과)과 같은 유형 | 관측이 0이면 실패(종료 코드 2, 임계 초과 1과 구분). 보고서의 `passed` 도 false. 주간 soak 은 관측 **전에** 모든 서비스가 자원을 보고하는지부터 확인한다 |
 | 41 | **통과가 "누수 없음"이 아니었다** | RSS 절대 하한 10MB 를 넣고 나니, 임계 5MB/h 짜리 누수가 그 하한을 넘으려면 **최소 2시간**이 필요하다. 45분 관측에서 기울기가 +8.6MB/h 로 나와도 실제 증가가 3.4MB 라 통과한다 — 그건 누수가 없다가 아니라 **이 길이로는 모른다**이다 | 창이 임계에 도달할 수 없으면 보고서에 그렇게 적는다(`rss_verdict_reachable: false`)와 함께 "이 실행이 보증하는 것은 여기까지"를 출력한다. 주간 실행을 150분으로 늘려 판정이 성립하게 했다 |
 | 42 | **장애 주입이 C++ 서비스를 건드리지도 못했다** | `ops/chaos.sh` 가 프로세스를 `mdfeed.services.<이름>` 으로만 찾는다. 배포 게이트웨이를 C++ 로 띄우면 명령줄이 달라 "프로세스를 못 찾음"으로 끝나고, 멀티캐스트 발행자는 시나리오에 아예 없었다. **복구 경로를 확인하려고 만든 도구가 그 서비스를 못 흔든다** | 구현별 프로세스 패턴(`proc_pattern`, ops.sh 와 같은 규칙) + 멀티캐스트 발행자를 시나리오에 추가(켜져 있을 때만). CI 가 C++ 스택에 SIGKILL 을 넣어 감독이 되살리는지 매번 확인한다 |
+| 43 | **quality 서비스가 운영 배포에서 안 돌았다** | systemd 유닛이 아예 없었다. 감독기(`make up`)는 띄우니 개발에서는 돌고 운영에서는 안 돈다. 그 서비스가 내는 `mdfeed_quality_events_total` 에는 알람(DataQualityCritical)이 걸려 있으므로 **운영에서 그 알람은 영원히 안 울리는 상태**였다 | 유닛 추가 + 타깃·install 목록에 편입. 안전망 커버리지 시험이 "모든 서비스에 유닛이 있고, 타깃이 당기고, install 이 enable 하는가"를 본다. CI 가 `systemd-analyze verify` 로 유닛 문법과 드롭인(ExecStart 비움)까지 검사한다 |
 | 17 | Postgres 조회 시각이 UTC | 국내 장 시간 09:00~15:30 이 00:00~06:30 으로 보인다. 장 시작 전인지 마감 후인지 눈으로 판단 불가 | 스키마에서 DB 기본 시간대를 `Asia/Seoul` 로 설정 (저장 값은 그대로, 표시만) |
 
 ---
@@ -144,7 +145,7 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 |---|---|---|
 | 금융 데이터 FEED 개발·운영 | 수집 경로 5개, 배포 프로토콜 3종 | 무결성 48.5% → **100.0000%** |
 | Linux 서비스·프로세스 점검·안정화 | systemd 6유닛 + 자동 검증 + 장애 주입 | 11항목 · 복구 4종 확인 |
-| 파이프라인·배포·점검 자동화 | Makefile · CI 7잡 · Pages 자동 갱신 | 테스트 **567개** |
+| 파이프라인·배포·점검 자동화 | Makefile · CI 7잡 · Pages 자동 갱신 | 테스트 **570개** |
 | Python | 소스 8,835줄 | 핵심 의존성 **0** |
 | SQL · 관계형 DB | 복합 인덱스 · 사전 집계 · 하이퍼테이블 | 적재 **480,586 rows/s** |
 | Linux 명령·프로세스·로그 | `ops.sh diag` · RUNBOOK 8종 | 1차 진단 한 줄 |
@@ -461,7 +462,7 @@ src/mdfeed/
 
 ops/     systemd 유닛 6종 · ops.sh · watchdog.sh · healthcheck.py · logrotate
 quant/   backtest.py · run_backtest.py · integrations.py · factor_screen.py
-tests/   567개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
+tests/   570개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
          복구 경로 · 종료 기한 · 컨플레이션 · 토큰 발급 · 운영 기록 환산 ·
          PostgreSQL 마이그레이션/백업/복구 27개는 실서버 연결 시에만)
 bench/   계층별 성능 측정 → docs/data/bench.json · 게이트웨이 비교 → gateway_compare.json
@@ -483,11 +484,11 @@ docs/    GitHub Pages 대시보드 (정적/실시간 겸용)
 
 ## 안전망은 목록이 곧 범위입니다
 
-서비스를 대상으로 하는 안전망이 여섯입니다. 감독기 · 상태판 · 헬스체크 · 장시간 감시 ·
-지표 수집 · 장애 주입. **각각은 자기 목록에 있는 것만 봅니다.** 새 서비스를 붙이면서 목록 하나를
+서비스를 대상으로 하는 안전망이 일곱입니다. 감독기 · 상태판 · 헬스체크 · 장시간 감시 ·
+지표 수집 · 장애 주입 · 운영 배포(systemd 유닛·타깃·enable 목록). **각각은 자기 목록에 있는 것만 봅니다.** 새 서비스를 붙이면서 목록 하나를
 빠뜨리면 그 서비스만 조용히 밖에 남습니다.
 
-한 주에 같은 유형이 세 번 나왔습니다(결함 38 · 42, 그리고 새 지표를 보는 알람이 하나도 없던 건).
+한 주에 같은 유형이 네 번 나왔습니다(결함 38 · 42 · 43, 그리고 새 지표를 보는 알람이 하나도 없던 건).
 개별로 고치면 네 번째가 옵니다. `tests/test_safety_net_coverage.py` 가 여섯 목록이 서로 어긋나면
 실패합니다. 선택 서비스는 모든 안전망에서 같은 방식으로 선택적인지까지 봅니다.
 

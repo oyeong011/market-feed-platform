@@ -257,6 +257,42 @@ jobs:
           PYTHONPATH=src python -m pytest tests/test_cpp_conformance.py tests/test_cpp_gateway.py tests/test_cpp_load_client.py tests/test_mcast.py tests/test_cpp_ringbuffer.py tests/test_entitlement_gateway.py -q -rs | tee pytest-cpp.log
           if grep -q "compiler not found" pytest-cpp.log; then echo "::error::conformance tests skipped"; exit 1; fi
 
+  deploy-artifacts:
+    name: 배포 산출물 검증 (systemd · compose)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: systemd 유닛 문법·지시어 검증
+        # 유닛은 저장소에 있지만 CI 가 한 번도 읽어 본 적이 없었다. 오타 하나면 배포 때
+        # 알게 되고, 그때는 이미 늦다. systemd-analyze 는 PID 1 없이도 유닛을 검사한다.
+        run: |
+          fail=0
+          for u in ops/systemd/mdfeed-*.service ops/systemd/mdfeed-*.timer ops/systemd/mdfeed.target; do
+            out=$(systemd-analyze verify "$u" 2>&1) || true
+            # 이 저장소에 없는 경로(/opt/mdfeed)나 사용자(mdfeed)에 대한 경고는 러너 사정이라 거른다.
+            filtered=$(echo "$out" | grep -viE "Unit .* not found|command .* is not executable|/opt/mdfeed|mdfeed' .* not found|Failed to resolve (user|group)" || true)
+            if [ -n "$filtered" ]; then echo "::error::$u"; echo "$filtered"; fail=1; fi
+          done
+          [ "$fail" -eq 0 ] && echo "systemd 유닛 $(ls ops/systemd/mdfeed-* | wc -l | tr -d ' ')개 검증 통과"
+          exit $fail
+
+      - name: 드롭인도 검증 (C++ 게이트웨이 전환용)
+        run: |
+          test -f ops/systemd/mdfeed-tcp-gateway.service.d/cpp.conf
+          grep -q "^ExecStart=$" ops/systemd/mdfeed-tcp-gateway.service.d/cpp.conf || {
+            echo "::error::드롭인이 ExecStart 를 비우지 않으면 원본과 **둘 다** 실행된다"; exit 1; }
+          grep -q "cpp/build/tcp_gateway" ops/systemd/mdfeed-tcp-gateway.service.d/cpp.conf
+
+      - name: compose 설정 검증 (기본 · mcast 프로파일)
+        run: |
+          docker compose config -q
+          docker compose --profile mcast config -q
+          docker compose --profile mcast config | grep -q "mcast-publisher" || {
+            echo "::error::mcast 프로파일에 발행자가 없다"; exit 1; }
+          docker compose config | grep -q "mcast-publisher" && {
+            echo "::error::기본 구성에 선택 서비스가 들어 있다"; exit 1; } || true
+          echo "compose 설정 검증 통과"
+
   postgres-integration:
     name: PostgreSQL integration
     runs-on: ubuntu-latest

@@ -1,9 +1,18 @@
 [Unit]
 Description=MDFeed 마켓데이터 플랫폼 (전체)
-# 이 타깃 하나로 6개 서비스를 함께 켜고 끈다:
+# 이 타깃 하나로 7개 서비스를 함께 켜고 끈다:
 #   systemctl start mdfeed.target / systemctl stop mdfeed.target
+#
+# quality 가 한동안 여기서 빠져 있었다. 감독기(`make up`)는 띄우는데 systemd 배포에서는
+# 안 떠서, 개발에서는 돌고 운영에서는 안 도는 서비스가 됐다. 그 서비스가 내는
+# mdfeed_quality_events_total 에는 알람(DataQualityCritical)이 걸려 있으므로,
+# 운영에서 그 알람은 영원히 안 울리는 상태였다.
+#
+# 멀티캐스트 발행자는 일부러 뺀다 — 선택 서비스다. 쓰려면 따로 enable 한다:
+#   systemctl enable --now mdfeed-mcast-publisher
 Wants=mdfeed-feedd.service mdfeed-tcp-gateway.service mdfeed-ws-gateway.service
 Wants=mdfeed-rest-api.service mdfeed-writer.service mdfeed-strategy.service
+Wants=mdfeed-quality.service
 After=network-online.target
 
 [Install]
