@@ -1,3 +1,13 @@
+# 서버 배포용 **오버라이드**. 단독으로 쓰지 않는다.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.server.yml up -d
+#
+# 단독으로 `config` 를 돌리면 "postgres 에 image 도 build 도 없다" 로 떨어진다.
+# 이 파일은 기본 구성에 재시작 정책만 덧씌운다 — 개발단에서는 프로세스가 죽으면
+# 보이는 게 낫고, 서버에서는 되살아나는 게 낫다.
+#
+# 쓰는 법이 저장소 어디에도 없었고 CI 도 한 번도 읽지 않았다. 지금은 CI 가
+# 기본 파일과 함께 검증하고, restart 정책이 실제로 덧씌워지는지 확인한다.
 name: mdfeed
 
 services:

@@ -42,9 +42,15 @@ services:
   # 서버 키의 소유자·권한을 보고 기동을 거부한다 — 기계마다 다른 값에 기동 여부가
   # 걸리므로 그 의존을 없앤다. 한 번 만들면 다시 안 만든다(볼륨에 남는다).
   pg-certs:
-    image: alpine:3.20
+    # **postgres 와 같은 이미지**를 쓴다. 서버 키는 postgres 소유여야 하는데 그 uid 는
+    # 이미지마다 다르다(debian 999 · alpine 70) — 같은 이미지 안에서 돌면 `chown
+    # postgres:postgres` 라고 이름으로 쓸 수 있고, 추측이 사라진다.
+    image: timescale/timescaledb:2.17.2-pg16
+    user: root
     entrypoint: ["/bin/sh", "-c"]
-    command: ["apk add --no-cache openssl >/dev/null && exec /gen_certs.sh"]
+    command:
+      - command -v openssl >/dev/null || (apk add --no-cache openssl >/dev/null 2>&1
+        || (apt-get update -qq && apt-get install -y -qq openssl)); exec /gen_certs.sh
     environment:
       CLIENT_UID: "10001"   # Dockerfile 의 mdfeed uid. 서버 쪽은 initdb 가 맞춘다.
     volumes:
@@ -64,14 +70,16 @@ services:
       - -c
       - ssl=on
       - -c
-      # $PGDATA 안의 복사본을 쓴다. 볼륨의 원본을 직접 가리키면 소유자·권한이
-      # 이미지의 postgres uid 와 맞아야 하는데, 그 값은 이미지마다 다르다.
-      # 00-install-certs.sh 가 initdb 때 복사하면서 소유자를 맞춘다.
-      - ssl_cert_file=/var/lib/postgresql/data/server.crt
+      # 볼륨의 파일을 직접 가리킨다. pg-certs 가 postgres 이미지 안에서 돌며
+      # 소유자를 맞췄으므로 여기서 권한 문제가 없다.
+      #
+      # initdb 스크립트로 $PGDATA 에 복사하는 방법은 안 된다 — entrypoint 의 **임시
+      # 서버도 이 인자를 적용**하므로, 스크립트가 돌기 전에 파일이 이미 있어야 한다.
+      - ssl_cert_file=/certs/server.crt
       - -c
-      - ssl_key_file=/var/lib/postgresql/data/server.key
+      - ssl_key_file=/certs/server.key
       - -c
-      - ssl_ca_file=/var/lib/postgresql/data/ca.crt
+      - ssl_ca_file=/certs/ca.crt
     depends_on:
       pg-certs:
         condition: service_completed_successfully
@@ -81,7 +89,6 @@ services:
       - ./ops/secrets/postgres_password:/run/secrets/postgres_password:ro
       # initdb 스크립트. bootstrap_roles.sql 은 저장소에 있었지만 **아무도 실행하지
       # 않았다** — 그래서 DSN 이 존재하지 않는 역할로 접속하려 하고 있었다.
-      - ./ops/pg-init/00-install-certs.sh:/docker-entrypoint-initdb.d/00-install-certs.sh:ro
       - ./ops/pg-init/10-tls-and-roles.sh:/docker-entrypoint-initdb.d/10-tls-and-roles.sh:ro
       - ./ops/bootstrap_roles.sql:/docker-entrypoint-initdb.d/bootstrap_roles.sql:ro
     healthcheck:
