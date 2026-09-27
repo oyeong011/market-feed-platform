@@ -103,7 +103,8 @@ obs-up:  ## Prometheus + Grafana 기동
 obs-down:  ## 관측 스택 종료
 	docker compose -f docker-compose.observability.yml down
 
-verify-alerts:  ## 알람이 실재하는 지표를 참조하는지 검증
+verify-alerts:  ## 알람↔지표↔대시보드 세 방향 검증 (없는 지표를 보는 알람 · 아무도 안 보는 지표 · 볼 그래프 없는 알람)
+	$(PY) scripts/check_dashboard.py
 	$(PY) scripts/verify_alerts.py
 
 preflight:  ## 배포 전 저장소/백업/공백 게이트 검사

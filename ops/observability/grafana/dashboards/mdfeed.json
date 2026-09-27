@@ -393,6 +393,511 @@
      "refId": "A"
     }
    ]
+  },
+  {
+   "id": 50,
+   "title": "서비스 가동 상태",
+   "description": "ServiceDown 이 울렸을 때 어느 프로세스가 빠졌는지 본다. 멀티캐스트 발행자(mcast-publisher)는 선택 서비스라 0 이 정상일 수 있다",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 0,
+    "y": 32
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "green",
+        "value": 1
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "up{job=\"mdfeed\"}",
+     "legendFormat": "{{service}} {{shard}}",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 51,
+   "title": "데이터 공백",
+   "description": "MarketDataGapOpen · MarketDataGapUnrecoveredTooLong 용. 열린 공백 수와 가장 오래 미복구된 공백의 경과 시간. 서비스 health 와 별개다",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 12,
+    "y": 32
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "mdfeed_data_gaps_open",
+     "legendFormat": "열린 공백",
+     "refId": "A"
+    },
+    {
+     "expr": "mdfeed_data_gaps_unrecovered_duration_seconds",
+     "legendFormat": "미복구 경과(초)",
+     "refId": "B"
+    }
+   ]
+  },
+  {
+   "id": 52,
+   "title": "저장 계층 플래그",
+   "description": "StorageBackendMismatch · StorageDatabaseUnavailable 용. 둘 다 0 이 정상. mismatch 는 의도한 백엔드와 실제가 다르다는 뜻이다",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 39
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "mdfeed_storage_backend_mismatch",
+     "legendFormat": "백엔드 불일치",
+     "refId": "A"
+    },
+    {
+     "expr": "mdfeed_storage_db_unavailable",
+     "legendFormat": "DB 접속 불가",
+     "refId": "B"
+    }
+   ]
+  },
+  {
+   "id": 53,
+   "title": "쓰기 대기 행",
+   "description": "WriterPendingRowsOverflow(>90000) 용. 쌓이기만 하면 DB 쓰기가 유입을 못 따라가는 것이고, 프로세스가 죽으면 이 행들이 사라진다",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 39
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "red",
+        "value": 90000
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "mdfeed_writer_pending_rows",
+     "legendFormat": "{{service}}",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 54,
+   "title": "디스크 여유 시간",
+   "description": "DiskFillingSoon(<24시간) 용. 남은 바이트를 시간당 증가량으로 나눈 값이라 증가량이 0 이면 그래프가 비는 게 정상이다",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 39
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "h",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "green",
+        "value": 24
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "mdfeed_disk_free_bytes / mdfeed_db_growth_bytes_per_hour",
+     "legendFormat": "남은 시간",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 55,
+   "title": "어댑터 태스크 사망 (15분)",
+   "description": "AdapterTaskDied 용. 되살리기는 임시 조치다 — 여기 값이 계속 올라가면 예외 자체를 고쳐야 한다",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 0,
+    "y": 46
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "increase(mdfeed_adapter_task_deaths_total[15m])",
+     "legendFormat": "{{venue}}",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 56,
+   "title": "심볼 충돌·절단",
+   "description": "SymbolCollision 용. 충돌은 서로 다른 종목이 같은 심볼로 나간다는 뜻이라 데이터가 섞인다. 절단은 전송 폭을 넘겨 잘린 종류 수다",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 8,
+    "y": 46
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "mdfeed_symbol_collision_kinds",
+     "legendFormat": "충돌",
+     "refId": "A"
+    },
+    {
+     "expr": "mdfeed_symbol_truncated_kinds",
+     "legendFormat": "절단",
+     "refId": "B"
+    }
+   ]
+  },
+  {
+   "id": 57,
+   "title": "배포 공백",
+   "description": "DeploymentGapsOpen 용. 배포 게이트 익스포터(:9120)가 떠 있어야 값이 생긴다 — 개발 스택에서는 비어 있는 게 정상이다",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 8,
+    "x": 16,
+    "y": 46
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "mdfeed_deployment_gaps_open",
+     "legendFormat": "열린 배포 공백",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 58,
+   "title": "멀티캐스트 오류·재전송",
+   "description": "McastSendErrors · McastRetransUnavailable 용. 요청은 와도 되지만 '못 준다'(unavailable)가 나오면 구독자는 그 구간을 영구히 잃는다",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 0,
+    "y": 53
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "increase(mdfeed_mcast_send_errors_total[5m])",
+     "legendFormat": "전송 오류",
+     "refId": "A"
+    },
+    {
+     "expr": "increase(mdfeed_mcast_retrans_requests_total[5m])",
+     "legendFormat": "재전송 요청",
+     "refId": "B"
+    },
+    {
+     "expr": "increase(mdfeed_mcast_retrans_unavailable_total[5m])",
+     "legendFormat": "재전송 불가",
+     "refId": "C"
+    }
+   ]
+  },
+  {
+   "id": 59,
+   "title": "멀티캐스트 결함 주입",
+   "description": "McastFaultInjectionEnabled 용. 0 이 아니면 누군가 MDFEED_MCAST_DROP_EVERY 류를 켜 둔 것이다 — 운영에서는 실수다",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 12,
+    "y": 53
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "increase(mdfeed_mcast_injected_drops_total[5m])",
+     "legendFormat": "유실 주입",
+     "refId": "A"
+    },
+    {
+     "expr": "increase(mdfeed_mcast_injected_reorders_total[5m])",
+     "legendFormat": "순서 뒤바꿈 주입",
+     "refId": "B"
+    },
+    {
+     "expr": "increase(mdfeed_mcast_injected_duplicates_total[5m])",
+     "legendFormat": "중복 주입",
+     "refId": "C"
+    }
+   ]
+  },
+  {
+   "id": 60,
+   "title": "팬아웃 지연 편차",
+   "description": "FanoutDelaySpread 용. 구독자 간 전송 지연의 비. 1 에 가까우면 공평하고, 커지면 특정 구독자가 뒤로 밀린다. C++ 게이트웨이에서만 생성된다",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 0,
+    "y": 60
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "mdfeed_fanout_delay_spread",
+     "legendFormat": "편차(비)",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 61,
+   "title": "권한 거부·슬로우 구독자",
+   "description": "EntitlementDenials · SendEagain 용. 거부가 튀면 토큰 설정이 틀렸거나 누가 없는 권한을 긁는 것이다. EAGAIN 은 구독자가 못 받아가는 신호다",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 12,
+    "y": 60
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "increase(mdfeed_entitlement_denied_total[5m])",
+     "legendFormat": "권한 거부",
+     "refId": "A"
+    },
+    {
+     "expr": "increase(mdfeed_send_eagain_total[5m])",
+     "legendFormat": "EAGAIN",
+     "refId": "B"
+    }
+   ]
+  },
+  {
+   "id": 62,
+   "title": "버려진 데이터",
+   "description": "WriterRowsDropped · RingOversizeDrops · BusSubscriberDrops 용. 여기 올라간 만큼은 되돌릴 수 없다 — 0 이 아니면 공백 기록(gap)을 남길지 판단한다",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 0,
+    "y": 67
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "increase(mdfeed_rows_dropped_total[5m])",
+     "legendFormat": "적재 못 한 행",
+     "refId": "A"
+    },
+    {
+     "expr": "increase(mdfeed_ring_oversize_total[5m])",
+     "legendFormat": "링 초과 프레임",
+     "refId": "B"
+    },
+    {
+     "expr": "increase(mdfeed_bus_drops_total[5m])",
+     "legendFormat": "버스 드롭 {{subscriber}}",
+     "refId": "C"
+    }
+   ]
+  },
+  {
+   "id": 63,
+   "title": "되살리기 빈도",
+   "description": "AdapterErrorRate · SupervisorTaskRestarts · ApiDatabaseErrors 용. 되살리기는 증상 완화다. 여기가 평평하지 않으면 원인이 남아 있다",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 12,
+    "y": 67
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "increase(mdfeed_adapter_errors_total[15m])",
+     "legendFormat": "어댑터 오류 {{venue}}",
+     "refId": "A"
+    },
+    {
+     "expr": "increase(mdfeed_task_restarts_total[15m])",
+     "legendFormat": "태스크 되살리기 {{task}}",
+     "refId": "B"
+    },
+    {
+     "expr": "increase(mdfeed_db_errors_total[10m])",
+     "legendFormat": "DB 오류",
+     "refId": "C"
+    }
+   ]
   }
  ]
 }
