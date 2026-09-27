@@ -396,7 +396,16 @@ jobs:
           set -e
           cat /tmp/plain.log
           [ "$rc" -eq 0 ] && { echo "::error::평문으로 붙었다 — hostssl 강제가 안 된다"; exit 1; }
-          echo "평문 접속 거부됨 (exit=$rc) — 의도한 동작"
+          # **0 이 아니라는 것만으로는 부족하다.** 컨테이너가 안 떠도, 드라이버가 없어도
+          # 0 이 아니다 — 그러면 이 단계는 아무것도 확인하지 않고 통과한다. 이 저장소가
+          # 반복해서 만난 헛통과다(결함 40 · 45). 서버가 **거절했다는 근거**를 본다.
+          grep -q "no pg_hba.conf entry" /tmp/plain.log || {
+            echo "::error::거절 이유가 pg_hba 가 아니다 — 다른 이유로 실패했고 이 검사는 아무것도 확인하지 않았다"
+            exit 1; }
+          grep -q "no encryption" /tmp/plain.log || {
+            echo "::error::거절 사유에 'no encryption' 이 없다 — TLS 강제 때문에 막힌 게 아니다"
+            exit 1; }
+          echo "평문 접속 거부됨 (exit=$rc · 사유=pg_hba/no encryption) — 의도한 동작"
 
       - name: 정리
         if: always()
