@@ -17,14 +17,19 @@ x-common: &common
     MDFEED_SIGNAL_BUS_PATH: /run/mdfeed/signals.sock
     MDFEED_HTTP_HOST: "0.0.0.0"
     MDFEED_LOG_JSON: "1"
-    DATABASE_URL: postgresql://mdfeed_runtime@postgres:5432/mdfeed?sslmode=verify-full&sslrootcert=/run/secrets/postgres_ca.crt
-    PGPASSFILE: /run/secrets/pgpass
+    # 인증서 인증. ops/bootstrap_roles.sql 은 역할을 **비밀번호 없이** 만들고
+    # (그게 의도이고 tests/test_ops_deployment.py 가 그걸 고정한다), 그러면 남는
+    # 인증 수단은 인증서다. 예전에는 여기에 PGPASSFILE 이 있었는데, 그 비밀번호를
+    # 만드는 곳이 저장소 어디에도 없었다 — 즉 이 DSN 은 붙을 수 없었다(결함 48).
+    #
+    # sslmode=verify-full 은 CA 검증 + 호스트명 검증이다. 서버 인증서에 SAN 이
+    # 없으면 verify-ca 는 통과하고 verify-full 만 떨어진다.
+    DATABASE_URL: postgresql://mdfeed_runtime@postgres:5432/mdfeed?sslmode=verify-full&sslrootcert=/run/pgcerts/ca.crt&sslcert=/run/pgcerts/client.crt&sslkey=/run/pgcerts/client.key
   volumes:
     - bus:/run/mdfeed          # UDS 소켓 공유 = 컨테이너 간 IPC
     - data:/var/lib/mdfeed
     - ./data/replay:/opt/mdfeed/data/replay:ro
-    - ./ops/secrets/postgres_ca.crt:/run/secrets/postgres_ca.crt:ro
-    - ./ops/secrets/pgpass:/run/secrets/pgpass:ro
+    - pgcerts:/run/pgcerts:ro   # pg-certs 가 만든 CA·클라이언트 인증서
   depends_on:
     feedd:
       condition: service_healthy
@@ -33,20 +38,59 @@ x-common: &common
     options: { max-size: "10m", max-file: "3" }
 
 services:
+  # 인증서를 **볼륨 안에서** 만든다. 호스트에서 만들어 바인드하면 Postgres 가
+  # 서버 키의 소유자·권한을 보고 기동을 거부한다 — 기계마다 다른 값에 기동 여부가
+  # 걸리므로 그 의존을 없앤다. 한 번 만들면 다시 안 만든다(볼륨에 남는다).
+  pg-certs:
+    image: alpine:3.20
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["apk add --no-cache openssl >/dev/null && exec /gen_certs.sh"]
+    environment:
+      CLIENT_UID: "10001"   # Dockerfile 의 mdfeed uid. 서버 쪽은 initdb 가 맞춘다.
+    volumes:
+      - pgcerts:/certs
+      - ./ops/pg-init/gen_certs.sh:/gen_certs.sh:ro
+    restart: "no"
+
   postgres:
     image: timescale/timescaledb:2.17.2-pg16
     environment:
       POSTGRES_USER: mdfeed_bootstrap
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       POSTGRES_DB: mdfeed
+    # TLS 를 켜고, 클라이언트 인증서를 CA 로 검증한다. ssl_ca_file 이 없으면
+    # pg_hba 의 `cert` 규칙이 검증할 근거가 없어 접속이 전부 떨어진다.
+    command:
+      - -c
+      - ssl=on
+      - -c
+      # $PGDATA 안의 복사본을 쓴다. 볼륨의 원본을 직접 가리키면 소유자·권한이
+      # 이미지의 postgres uid 와 맞아야 하는데, 그 값은 이미지마다 다르다.
+      # 00-install-certs.sh 가 initdb 때 복사하면서 소유자를 맞춘다.
+      - ssl_cert_file=/var/lib/postgresql/data/server.crt
+      - -c
+      - ssl_key_file=/var/lib/postgresql/data/server.key
+      - -c
+      - ssl_ca_file=/var/lib/postgresql/data/ca.crt
+    depends_on:
+      pg-certs:
+        condition: service_completed_successfully
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - pgcerts:/certs:ro
       - ./ops/secrets/postgres_password:/run/secrets/postgres_password:ro
+      # initdb 스크립트. bootstrap_roles.sql 은 저장소에 있었지만 **아무도 실행하지
+      # 않았다** — 그래서 DSN 이 존재하지 않는 역할로 접속하려 하고 있었다.
+      - ./ops/pg-init/00-install-certs.sh:/docker-entrypoint-initdb.d/00-install-certs.sh:ro
+      - ./ops/pg-init/10-tls-and-roles.sh:/docker-entrypoint-initdb.d/10-tls-and-roles.sh:ro
+      - ./ops/bootstrap_roles.sql:/docker-entrypoint-initdb.d/bootstrap_roles.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mdfeed_bootstrap"]
+      # pg_isready 만으로는 "TLS 가 켜졌고 역할이 있다"를 모른다. 거기까지 봐야
+      # 뒤따르는 서비스가 붙을 수 있는 상태인지가 확인된다.
+      test: ["CMD-SHELL", "pg_isready -U mdfeed_bootstrap && psql -U mdfeed_bootstrap -d mdfeed -Atc \"SELECT 1 FROM pg_roles WHERE rolname='mdfeed_runtime'\" | grep -q 1"]
       interval: 5s
-      timeout: 3s
-      retries: 10
+      timeout: 5s
+      retries: 20
 
   feedd:
     <<: *common
@@ -120,3 +164,4 @@ volumes:
   bus:
   data:
   pgdata:
+  pgcerts:

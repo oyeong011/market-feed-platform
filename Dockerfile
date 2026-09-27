@@ -15,7 +15,11 @@ RUN make -C cpp -s all && ./cpp/build/test_protocol && ./cpp/build/test_ringbuff
 FROM python:3.12-slim
 
 # 보안: 루트로 돌리지 않는다
-RUN useradd --system --create-home --home-dir /home/mdfeed --shell /usr/sbin/nologin mdfeed
+# uid 를 고정한다. libpq 는 클라이언트 키가 "현재 uid 소유 + 0600" 이 아니면
+# 거부하므로, 인증서를 만드는 쪽이 이 값을 알아야 한다(ops/pg-init/gen_certs.sh).
+# useradd 가 고르는 값에 맡기면 이미지를 다시 빌드할 때 바뀔 수 있다.
+RUN useradd --system --uid 10001 --create-home --home-dir /home/mdfeed \
+      --shell /usr/sbin/nologin mdfeed
 
 WORKDIR /opt/mdfeed
 

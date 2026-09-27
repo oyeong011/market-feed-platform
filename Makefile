@@ -95,7 +95,10 @@ soak: venv  ## 장시간 감시 (MINUTES=60) → 누수 임계 초과 시 실패
 chaos:  ## 장애 주입 — 복구 경로가 실제로 도는지 확인
 	@bash ops/chaos.sh all
 
-obs-up:  ## Prometheus + Grafana 기동
+secrets:  ## 개발용 비밀 파일 생성 (compose 가 ops/secrets/ 에서 읽는다)
+	bash ops/gen_dev_secrets.sh
+
+obs-up: secrets  ## Prometheus + Grafana 기동
 	docker compose -f docker-compose.observability.yml up -d
 	@echo "  Prometheus http://localhost:9090"
 	@echo "  Grafana    http://localhost:3000 (admin password from secret file)"
@@ -224,7 +227,7 @@ docs: bench backtest quality-snapshot  ## 대시보드용 데이터 갱신
 docker-build:  ## 컨테이너 이미지 빌드
 	docker build -t mdfeed:latest .
 
-docker-up:  ## docker compose 로 전체 스택 + Postgres 기동
+docker-up: secrets  ## docker compose 로 전체 스택 + Postgres 기동 (TLS · 역할 포함)
 	docker compose up -d --build
 	@sleep 6; docker compose ps
 

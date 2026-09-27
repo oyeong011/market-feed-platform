@@ -26,4 +26,8 @@ data/reference/*
 
 # 개발단 실행 설정 — 기계마다 다르다. .example 만 커밋한다.
 ops/mdfeed.local.env
+
+# 비밀 파일. compose 가 여기서 읽고, ops/gen_dev_secrets.sh 가 만든다.
+# 이 줄이 없어서 "만들면 커밋되는" 상태였다 — 자격증명이 저장소에 들어가는 길이었다.
+ops/secrets/
 cpp/build/

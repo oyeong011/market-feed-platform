@@ -7,6 +7,7 @@ import pytest
 import sys
 import time
 import urllib.request
+import re
 from pathlib import Path
 
 
@@ -138,7 +139,19 @@ def test_compose_files_do_not_publish_database_or_default_passwords():
     assert "5432:5432" not in text
     assert "GF_AUTH_ANONYMOUS_ENABLED: \"true\"" not in text
     assert "admin / admin" not in text
-    assert "postgres_ca.crt:/run/secrets/postgres_ca.crt:ro" in text
+    # TLS 는 **붙을 수 있는 형태**여야 한다. 예전에는 이 줄이
+    # "postgres_ca.crt 를 마운트한다고 적혀 있는가"만 봤다. 적혀 있었고, 그 파일은
+    # 저장소에 없었고, 만드는 절차도 없었다 — 즉 마운트 구문만 맞고 붙을 수 없었다(결함 48).
+    # 이제는 CA 경로가 **볼륨**에서 오는지, 서버가 TLS 를 켜는지, 클라이언트 인증서를
+    # 검증할 근거(ssl_ca_file)가 있는지를 본다.
+    assert "sslmode=verify-full" in text
+    assert "sslrootcert=/run/pgcerts/ca.crt" in text
+    assert "ssl=on" in text, "DSN 은 verify-full 인데 서버가 TLS 를 켜지 않는다"
+    assert "ssl_ca_file=" in text, "클라이언트 인증서를 검증할 CA 가 없으면 cert 인증이 전부 떨어진다"
+    # 비밀번호 인증으로 돌아가면 다시 "만드는 곳이 없는 비밀번호"가 된다.
+    # 주석에 이름이 나오는 건 괜찮다 — 실제 환경변수 키만 본다.
+    assert not re.search(r"^\s*PGPASSFILE:", text, re.M), (
+        "역할에 비밀번호가 없으므로(bootstrap_roles.sql) PGPASSFILE 로는 붙을 수 없다")
 
 
 def test_server_profile_has_bootstrap_roles_and_maintenance_timers():

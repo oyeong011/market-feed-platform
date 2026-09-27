@@ -299,15 +299,95 @@ jobs:
         # expr 이 빈 패널은 나타나지만 영원히 빈 그래프이고, 그건 "값이 0" 과 구분되지 않는다.
         run: python3 scripts/check_dashboard.py
 
-      - name: compose 설정 검증 (기본 · mcast 프로파일)
+      - name: compose 설정 검증 (파일 3개 · mcast 프로파일)
+        # 예전에는 docker-compose.yml 만 봤다. 관측 스택과 서버 프로파일 파일은
+        # CI 가 한 번도 읽어 본 적이 없었다 — 저장소에 있다는 것과 읽힌다는 것은 다르다.
         run: |
           docker compose config -q
           docker compose --profile mcast config -q
+          docker compose -f docker-compose.observability.yml config -q
+          docker compose -f docker-compose.server.yml config -q
           docker compose --profile mcast config | grep -q "mcast-publisher" || {
             echo "::error::mcast 프로파일에 발행자가 없다"; exit 1; }
           docker compose config | grep -q "mcast-publisher" && {
             echo "::error::기본 구성에 선택 서비스가 들어 있다"; exit 1; } || true
-          echo "compose 설정 검증 통과"
+          echo "compose 파일 3개 검증 통과"
+
+      - name: Prometheus 수집 설정과 Grafana 프로비저닝도 파서에 통과시킨다
+        # prometheus.yml 과 프로비저닝 3종은 CI 검증 밖에 있었다. 대시보드에 패널을
+        # 14개 넣어도 프로비저닝이 조용히 건너뛰면 아무것도 안 보인다.
+        run: |
+          docker run --rm -v "$PWD/ops/observability:/w" --entrypoint promtool \
+            prom/prometheus:latest check config /w/prometheus.yml
+          python3 scripts/check_observability_wiring.py
+
+  compose-stack:
+    name: compose 스택이 실제로 뜨는가 (TLS · 역할)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 비밀 파일 생성
+        # compose 가 읽는 ops/secrets/* 를 만드는 절차가 저장소에 없었다. 없는 경로를
+        # 바인드하면 도커가 그 자리에 디렉터리를 만들고, 비밀번호 파일을 기대하는
+        # 프로세스는 디렉터리를 읽는다 — 스택이 한 번도 뜬 적이 없었다(결함 48).
+        run: bash ops/gen_dev_secrets.sh
+
+      - name: Postgres 기동 (인증서 생성 → TLS → 역할)
+        run: |
+          docker compose up -d --build postgres
+          for i in $(seq 1 60); do
+            state=$(docker compose ps postgres --format '{{.Health}}' 2>/dev/null || true)
+            echo "postgres health=$state ($i/60)"
+            [ "$state" = "healthy" ] && break
+            sleep 5
+          done
+          if [ "$(docker compose ps postgres --format '{{.Health}}')" != "healthy" ]; then
+            echo "::error::postgres 가 healthy 가 되지 않았다"
+            docker compose logs pg-certs postgres | tail -80
+            exit 1
+          fi
+
+      - name: TLS 가 실제로 켜졌는지 확인 (평문 접속은 거부돼야 한다)
+        # "설정에 ssl=on 이 적혀 있다"와 "TLS 로만 붙는다"는 다르다. 후자를 본다.
+        run: |
+          docker compose exec -T postgres psql -U mdfeed_bootstrap -d mdfeed -Atc \
+            "SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()" > /tmp/ssl.txt
+          cat /tmp/ssl.txt
+          docker compose exec -T postgres psql -U mdfeed_bootstrap -d mdfeed -Atc \
+            "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'mdfeed%'" > /tmp/roles.txt
+          echo "mdfeed 역할 수: $(cat /tmp/roles.txt)"
+          [ "$(cat /tmp/roles.txt)" -ge 4 ] || {
+            echo "::error::bootstrap_roles.sql 이 안 돌았다 — mdfeed_runtime 이 없다"; exit 1; }
+
+      - name: 클라이언트 인증서로 mdfeed_runtime 접속 (sslmode=verify-full)
+        # 결함 48 의 핵심이다. 예전 DSN 은 verify-full 인데 서버에 TLS 설정이 없고
+        # 역할도 없어서 붙을 수 없는 문자열이었다. 설정을 문자열로 검사하는 것과
+        # 붙여 보는 것은 다르다 — 여기서 실제로 붙는다.
+        run: |
+          docker compose run --rm --no-deps --entrypoint python3 feedd \
+            ops/verify_pg_tls.py || {
+              echo "::group::postgres 로그"; docker compose logs postgres | tail -60; echo "::endgroup::"
+              echo "::group::pg-certs 로그"; docker compose logs pg-certs | tail -30; echo "::endgroup::"
+              exit 1; }
+
+      - name: 평문 접속은 거부돼야 한다
+        # hostssl + cert 규칙이 실제로 강제되는지 본다. "설정에 적혀 있다"가 아니라
+        # "TLS 를 끄면 못 붙는다"를 확인한다.
+        run: |
+          set +e
+          docker compose run --rm --no-deps --entrypoint python3 \
+            -e DATABASE_URL="postgresql://mdfeed_runtime@postgres:5432/mdfeed?sslmode=disable" \
+            feedd ops/verify_pg_tls.py > /tmp/plain.log 2>&1
+          rc=$?
+          set -e
+          cat /tmp/plain.log
+          [ "$rc" -eq 0 ] && { echo "::error::평문으로 붙었다 — hostssl 강제가 안 된다"; exit 1; }
+          echo "평문 접속 거부됨 (exit=$rc) — 의도한 동작"
+
+      - name: 정리
+        if: always()
+        run: docker compose down -v
 
   postgres-integration:
     name: PostgreSQL integration
