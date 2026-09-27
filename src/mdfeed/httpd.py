@@ -99,6 +99,11 @@ class HTTPServer:
     def __init__(self, host: str, port: int, name: str = "mdfeed", registry=None):
         self.host, self.port, self.name = host, port, name
         self.registry = registry
+        if registry is not None:
+            # 0 으로 미리 만든다. 안 하면 **첫 오류가 날 때까지 지표가 없고**,
+            # ApiHttpErrors 알람은 그때까지 울릴 수 없다 — 그게 결함 23 의 유형이다.
+            # 오류가 0 건인 것과 오류를 못 세는 것은 다르다.
+            registry.declare_counters("http_requests_total", "http_errors_total")
         self._routes: dict[tuple[str, str], Handler] = {}
         self._prefix: list[tuple[str, str, Handler]] = []
         self._ws_handler = None

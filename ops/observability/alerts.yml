@@ -223,6 +223,7 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "디스크가 {{ $value }}시간 남았는데 6시간째 삭제된 행이 없다"
+          action: "mdfeed-retention.timer 상태와 retention_prune_incomplete 를 본다. 원격 검증 증거가 없어 막힌 경우일 수 있다"
 
       - alert: RetentionFallingBehind
         # "지운다"와 "다 지웠다"는 다르다. 삭제가 시간 예산에 걸려 매번
@@ -430,3 +431,83 @@ groups:
         annotations:
           summary: "배포 전 점검에서 미복구 데이터 공백이 확인됐다"
           action: "preflight JSON 의 OPEN_DATA_GAPS 항목과 mdfeed gap status 를 확인한다"
+
+  # 아래 묶음은 **역방향 검사가 비어 있어서** 그동안 안 보이던 것들이다.
+  # scripts/verify_alerts.py 의 선언 목록이 "알람이 참조하는 지표" 만 담고 있었고,
+  # 역방향 판정을 그 목록으로 했다. 그러니 "지표만 내고 아무도 안 본다"는 구조적으로
+  # 발견될 수 없었다 — 검사기가 자기 입력을 자기 답으로 쓰고 있었다(결함 45).
+  # 실측 스크레이프로 목록을 맞추자 버려진 데이터를 세는 카운터들이 무감시로 나왔다.
+  - name: mdfeed-dropped-data
+    rules:
+      - alert: WriterRowsDropped
+        # pending 버퍼가 꽉 차면 **들어온 행을 버린다**. WriterPendingRowsOverflow 는
+        # 그 직전(90000행)을 보는 선행 지표이고, 이쪽은 이미 잃은 것을 센다.
+        # 한 건이라도 오르면 그 구간은 DB 에 없다.
+        expr: increase(mdfeed_rows_dropped_total[5m]) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "writer 가 적재 못 한 행을 버렸다 (5분간 {{ $value | printf \"%.0f\" }}행)"
+          action: "DB 쓰기가 유입을 못 따라간다. writer_pending_rows 추이를 보고 gap 기록을 남긴다"
+
+      - alert: RingOversizeDrops
+        # 슬롯보다 큰 페이로드는 공유메모리 링에 못 넣는다. 버스 경로로는 정상 전달되므로
+        # TCP/WS 구독자는 멀쩡하고, **링을 읽는 쪽만 조용히 빠진다.** 구성 불일치 신호다.
+        expr: increase(mdfeed_ring_oversize_total[5m]) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "링버퍼 슬롯보다 큰 프레임을 버렸다 (5분간 {{ $value | printf \"%.0f\" }}건)"
+          action: "MDFEED_RING_PAYLOAD_MAX 와 실제 최대 페이로드를 맞춘다. 링 구독자는 이 구간을 못 받았다"
+
+      - alert: BusSubscriberDrops
+        # 구독자가 못 받아가면 버스가 버린다. 느린 구독자 하나 때문에 발행이 멈추는 것보다
+        # 낫다는 판단이고, 그 대가가 이 카운터다. 누가 못 따라가는지는 라벨에 있다.
+        expr: increase(mdfeed_bus_drops_total[5m]) > 100
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "버스가 {{ $labels.subscriber }} 로 보낼 프레임을 버리고 있다"
+          action: "해당 구독 프로세스의 처리 지연을 본다. 계속되면 큐 크기보다 소비 속도가 문제다"
+
+      - alert: AdapterErrorRate
+        expr: increase(mdfeed_adapter_errors_total[15m]) > 20
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.venue }} 어댑터 오류가 15분간 20건 넘는다"
+          action: "거래소 응답 변경이나 인증 문제를 본다. 되살리기가 계속 도는 상태일 수 있다"
+
+      - alert: SupervisorTaskRestarts
+        expr: increase(mdfeed_task_restarts_total[15m]) > 3
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.service }} 의 {{ $labels.task }} 가 15분간 3번 넘게 되살아났다"
+          action: "되살리기는 증상 완화다. 로그에서 되살아나는 원인을 고친다"
+
+      - alert: ApiDatabaseErrors
+        expr: increase(mdfeed_db_errors_total[10m]) > 0
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "조회 API 가 DB 오류를 냈다 (10분간 {{ $value | printf \"%.0f\" }}건)"
+          action: "storage_db_unavailable 과 함께 본다. 스키마 이전 중이면 정상일 수 있다"
+
+      - alert: UpstreamRateLimited
+        # 거래소가 우리를 막고 있다. 막힌 동안은 조회가 안 되고, 그 구간은 조용히 빈다.
+        # 재시도로 넘어가면 지연이 늘고, 계속되면 키 단위 제한에 걸린 상태다.
+        expr: increase(mdfeed_rest_rate_limited_total[10m]) > 5
+        for: 3m
+        labels: { severity: warning }
+        annotations:
+          summary: "업스트림 REST 가 레이트리밋을 걸었다 (10분간 {{ $value | printf \"%.0f\" }}회)"
+          action: "폴링 주기와 종목 수를 줄인다. 지속되면 그 구간 데이터 공백을 기록한다"
+
+      - alert: ApiHttpErrors
+        expr: increase(mdfeed_http_errors_total[10m]) > 20
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.service }} HTTP 오류가 10분간 20건 넘는다"
+          action: "요청 경로 예외를 본다. db_errors_total 과 같이 오르면 저장 계층 문제다"
