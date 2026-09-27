@@ -285,6 +285,20 @@ jobs:
             echo "::error::드롭인이 ExecStart 를 비우지 않으면 원본과 **둘 다** 실행된다"; exit 1; }
           grep -q "cpp/build/tcp_gateway" ops/systemd/mdfeed-tcp-gateway.service.d/cpp.conf
 
+      - name: 알람 규칙을 Prometheus 가 실제로 읽는지 검증
+        # 규칙 파일에 문법 오류가 하나 있으면 Prometheus 는 그 **파일 전체**를 안 읽는다.
+        # 그러면 알람 46개가 동시에 죽는데, 어디에도 빨간 줄이 안 뜬다.
+        # verify_alerts.py 는 지표 이름을 정규식으로 읽으므로 이 실패를 못 잡는다 —
+        # 사람이 손으로 쓰는 파일이면 그걸 읽을 파서가 한 번은 읽어 봐야 한다.
+        run: |
+          docker run --rm -v "$PWD/ops/observability:/w" --entrypoint promtool \
+            prom/prometheus:latest check rules /w/alerts.yml
+
+      - name: 대시보드가 프로비저닝될 모양인지 검증
+        # uid 가 없으면 프로비저닝이 조용히 건너뛰고, 패널 id 가 겹치면 하나만 남는다.
+        # expr 이 빈 패널은 나타나지만 영원히 빈 그래프이고, 그건 "값이 0" 과 구분되지 않는다.
+        run: python3 scripts/check_dashboard.py
+
       - name: compose 설정 검증 (기본 · mcast 프로파일)
         run: |
           docker compose config -q
