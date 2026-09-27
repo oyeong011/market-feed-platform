@@ -245,3 +245,50 @@ def test_every_alert_says_what_to_do():
     assert not missing, (
         "알람 규칙 파일은 '각 규칙에 무엇을 하라는 문장을 붙였다' 고 선언한다. "
         f"안 지킨 규칙: {missing}")
+
+
+def test_no_duplicate_keys_in_alert_rules():
+    """**중복 키 하나가 알람 48개를 동시에 죽인다.**
+
+    Prometheus(Go yaml)는 같은 매핑에 같은 키가 두 번 나오면 **그 파일 전체**를 거부한다.
+    규칙이 하나도 안 등록되고, 어디에도 빨간 줄이 안 뜬다.
+
+    실제로 그랬다. `ArchiveStalled` 에 `action` 이 두 개 있었다 — 하나는
+    `RetentionNotRunning` 의 문장이 잘못 붙은 것이었다. 2026-08-28 에 들어와 한 달간
+    **모든 알람이 죽어 있었다**(결함 47).
+
+    왜 안 걸렸나. `verify_alerts.py` 는 지표 이름을 정규식으로만 읽는다 — 파일이 파싱되는지
+    안 본다. PyYAML 로 읽어도 안 걸린다. **PyYAML 은 중복 키를 조용히 덮어쓴다** (그래서
+    '`action` 이 없는 규칙' 이라는 증상만 보이고 원인은 안 보였다). 진짜 파서를 붙인
+    CI 의 `promtool check rules` 첫 실행이 잡았다 — 결함 44 와 같은 구조다.
+
+    여기서는 의존성 없이 같은 것을 본다. 들여쓰기 깊이로 블록을 나누고 키 중복을 센다.
+    """
+    dupes: list[str] = []
+    stack: list[tuple[int, set[str]]] = []
+    for lineno, raw in enumerate(RULES.read_text(encoding="utf-8").splitlines(), 1):
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip())
+        key = re.match(r"(?:-\s+)?([a-z_]+):(?:\s|$)", raw.strip())
+        if raw.lstrip().startswith("- "):
+            # 새 리스트 항목은 새 매핑이다
+            while stack and stack[-1][0] >= indent:
+                stack.pop()
+            stack.append((indent + 2, set()))
+            if key:
+                stack[-1][1].add(key.group(1))
+            continue
+        if not key:
+            continue                              # 여러 줄로 이어지는 값
+        while stack and stack[-1][0] > indent:
+            stack.pop()
+        if not stack or stack[-1][0] < indent:
+            stack.append((indent, set()))
+        seen = stack[-1][1]
+        if key.group(1) in seen:
+            dupes.append(f"{RULES.name}:{lineno} '{key.group(1)}' 가 같은 블록에 두 번")
+        seen.add(key.group(1))
+    assert not dupes, (
+        "중복 키가 있으면 Prometheus 는 규칙 파일 전체를 거부한다 — 알람이 전멸한다:\n  "
+        + "\n  ".join(dupes))

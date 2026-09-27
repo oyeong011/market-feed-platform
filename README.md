@@ -3,7 +3,7 @@
 [![CI](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml)
 [![Pages](https://github.com/oyeong011/market-feed-platform/actions/workflows/pages.yml/badge.svg)](https://oyeong011.github.io/market-feed-platform/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![tests](https://img.shields.io/badge/tests-581-brightgreen)
+![tests](https://img.shields.io/badge/tests-582-brightgreen)
 ![cpp](https://img.shields.io/badge/C%2B%2B-data%20plane-blue)
 ![obs](https://img.shields.io/badge/알람-18개%20지표%20검증-blue)
 ![venues](https://img.shields.io/badge/수집경로-5개%20실연결-blue)
@@ -68,7 +68,7 @@ make demo        # replay + disposable synthetic SQLite 로 6개 프로세스 �
 make status      # 서비스 상태 (프로세스 + HTTP 헬스 + 포트)
 make client      # 참조 TCP 구독 클라이언트 (갭 탐지 포함)
 make diag        # 장애 진단 원스톱
-make test        # 581개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 25개는 스킵)
+make test        # 582개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 25개는 스킵)
 ```
 
 데모와 CI는 라이브 어댑터를 상속하지 않습니다. 저장소에 든 녹화 파일을 replay로 읽고, 임시 SQLite DB를 만들어 검증합니다.
@@ -133,6 +133,7 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 | 44 | **crash loop 방지 설정이 한 번도 안 먹고 있었다** | 유닛 9개가 `StartLimitIntervalSec` / `StartLimitBurst` 를 `[Service]` 에 두고 있었다. systemd v230 부터 이 둘은 `[Unit]` 옵션이라 "Unknown key name … ignoring" 으로 **조용히 무시**된다. 주석에는 "60초에 5번 넘게 죽으면 멈춘다"고 적혀 있었지만 그런 적이 없다 | `[Unit]` 으로 옮겼다. 찾은 방법이 중요하다 — CI 에 `systemd-analyze verify` 를 붙인 **첫 실행**이 93건을 짚었다. 유닛이 저장소에 있는데 CI 가 한 번도 읽어 본 적이 없었다 |
 | 45 | **역방향 감시 검사가 구조적으로 실패할 수 없었다** | `scripts/verify_alerts.py` 는 "지표만 내고 아무 알람도 안 보는 것" 을 잡으라고 만든 검사를 들고 있었는데, 판정 기준인 선언 목록(`DECLARED_OFFLINE`) 47종 중 43종이 **이미 알람이 참조하는 지표**였고 나머지 4종은 전부 면제 목록에 있었다. 차집합이 항상 비므로 결과는 늘 "감시 사각 없음" 이다 — **검사기가 자기 입력을 자기 답으로 쓰고 있었다.** 실측 스크레이프로 목록을 맞추자 무감시 지표가 **40종**이었고, 그 안에 `rows_dropped_total`(pending 버퍼가 차서 **버린 행**) · `ring_oversize_total`(링에 못 넣고 버린 프레임) · `bus_drops_total` · `rest_rate_limited_total`(거래소가 우리를 막은 횟수) 가 있었다 | 선언 목록을 실측 82종에 맞추고, "살아 있는데 선언에 없다" 를 참고에서 **실패**로 올렸다. 버려진 데이터·되살리기·레이트리밋에 알람 8개를 붙이고 나머지 20종에는 안 보는 이유를 적었다. 재발 방지는 실측이 아니라 **소스 호출 지점 스캔**이다 — `registry.counter("…")` 이름을 정적으로 뽑아 선언 목록과 대조하므로 스택 없이도 CI 가 잡는다. 검사가 통과할 재료를 갖고 있는지도 시험한다(면제했는데 선언에 없으면 실패, 판정 대상이 20종 미만이면 실패) |
 | 46 | **critical 알람 13건이 울려도 볼 그래프가 없었다** | 알람이 실재하는 지표를 보는지는 검사했지만, **울린 다음**은 아무도 안 봤다. Grafana 대시보드가 참조하는 지표는 13종인데 알람이 참조하는 지표는 51종이다. `rows_dropped_total` · `data_gaps_open` · `mcast_send_errors_total` 처럼 가장 급한 것들에 패널이 없어서, 새벽에 호출받은 사람이 대시보드를 열면 그 값이 화면에 없다. 반대 방향도 사각이었다 — 죽은 지표를 가리키는 패널은 빈 그래프로 남는데 **"정상 0" 과 구분되지 않는다** | 검사기에 세 번째 방향(알람 → 대시보드)을 추가했다. critical 알람은 패널이 있어야 통과하고(면제는 이유를 적는다), 패널이 선언 안 된 지표를 가리키면 실패한다. 패널 14개를 추가해 critical 20건 전원이 볼 그래프를 갖게 했다. warning 은 실패로 두지 않는다 — 한 건씩 패널을 요구하면 대시보드가 알람 목록이 되고, 그러면 아무도 안 본다 |
+| 47 | **알람 48개가 한 달 내내 죽어 있었다** | `ArchiveStalled` 규칙에 `action` 키가 두 개 있었다 — 하나는 `RetentionNotRunning` 의 문장이 잘못 붙은 것이다(2026-08-28 도입). **Prometheus(Go yaml)는 중복 키를 만나면 그 규칙 파일 전체를 거부한다.** 규칙이 하나도 등록되지 않고, 어디에도 빨간 줄이 안 뜬다. 왜 한 달을 못 봤나 — `verify_alerts.py` 는 지표 이름을 **정규식으로** 읽으므로 파일이 파싱되는지는 안 본다. PyYAML 로 읽어도 안 걸린다: **PyYAML 은 중복 키를 조용히 덮어쓴다.** 그래서 증상(`action` 없는 규칙 1건)만 보이고 원인은 안 보였다 | CI 에 `promtool check rules` 를 붙인 **첫 실행**이 잡았다. 결함 44(systemd-analyze 를 붙인 첫 실행이 93건)와 같은 구조다 — **사람이 손으로 쓰는 설정 파일은 그걸 실제로 읽는 프로그램이 CI 에서 한 번은 읽어 봐야 한다.** 의존성 없이 같은 것을 보는 시험도 넣었다(들여쓰기로 블록을 나눠 키 중복을 센다). 그 시험이 실제로 잡는지는 깨진 커밋의 파일로 확인했다 — 통과만 확인하면 결함 45 를 또 만든다 |
 | 17 | Postgres 조회 시각이 UTC | 국내 장 시간 09:00~15:30 이 00:00~06:30 으로 보인다. 장 시작 전인지 마감 후인지 눈으로 판단 불가 | 스키마에서 DB 기본 시간대를 `Asia/Seoul` 로 설정 (저장 값은 그대로, 표시만) |
 
 ---
@@ -148,7 +149,7 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 |---|---|---|
 | 금융 데이터 FEED 개발·운영 | 수집 경로 5개, 배포 프로토콜 3종 | 무결성 48.5% → **100.0000%** |
 | Linux 서비스·프로세스 점검·안정화 | systemd 6유닛 + 자동 검증 + 장애 주입 | 11항목 · 복구 4종 확인 |
-| 파이프라인·배포·점검 자동화 | Makefile · CI 8잡 · Pages 자동 갱신 | 테스트 **581개** |
+| 파이프라인·배포·점검 자동화 | Makefile · CI 8잡 · Pages 자동 갱신 | 테스트 **582개** |
 | Python | 소스 8,835줄 | 핵심 의존성 **0** |
 | SQL · 관계형 DB | 복합 인덱스 · 사전 집계 · 하이퍼테이블 | 적재 **480,586 rows/s** |
 | Linux 명령·프로세스·로그 | `ops.sh diag` · RUNBOOK 8종 | 1차 진단 한 줄 |
@@ -465,7 +466,7 @@ src/mdfeed/
 
 ops/     systemd 유닛 6종 · ops.sh · watchdog.sh · healthcheck.py · logrotate
 quant/   backtest.py · run_backtest.py · integrations.py · factor_screen.py
-tests/   581개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
+tests/   582개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
          복구 경로 · 종료 기한 · 컨플레이션 · 토큰 발급 · 운영 기록 환산 ·
          PostgreSQL 마이그레이션/백업/복구 27개는 실서버 연결 시에만)
 bench/   계층별 성능 측정 → docs/data/bench.json · 게이트웨이 비교 → gateway_compare.json
@@ -504,6 +505,11 @@ docs/    GitHub Pages 대시보드 (정적/실시간 겸용)
 | 알람 → 지표 | 없는 지표를 보는 알람은 **영원히 안 울린다** (Prometheus 는 오류 대신 no data) | 결함 23 · 43 |
 | 지표 → 알람 | 내기만 하고 **아무도 안 보는** 지표 | 결함 45 |
 | 알람 → 대시보드 | 울렸는데 **볼 그래프가 없다.** 반대로 죽은 지표를 가리키는 패널은 빈 그래프로 남고 "정상 0" 과 구분되지 않는다 | 결함 46 |
+
+이 세 방향 전부가 **파일이 읽히는지는 안 봤습니다.** `ArchiveStalled` 의 중복 키 하나 때문에
+Prometheus 가 규칙 파일 전체를 거부하고 있었고, 알람 48개가 한 달 내내 죽어 있었습니다(결함 47).
+정규식으로 이름만 읽는 검사기에게는 완벽한 파일로 보였습니다. 지금은 CI 가 `promtool check rules`
+로 진짜 파서를 한 번 통과시킵니다.
 
 두 번째 방향에서 한 번 더 같은 함정을 밟았습니다. 검사는 있었는데 **판정 기준이 자기 입력이었습니다** —
 선언 목록 47종 중 43종이 이미 알람이 참조하는 지표였으니 차집합이 늘 비었고, 결과는 항상
