@@ -87,8 +87,16 @@ services:
       - pgdata:/var/lib/postgresql/data
       - pgcerts:/certs:ro
       - ./ops/secrets/postgres_password:/run/secrets/postgres_password:ro
-      # initdb 스크립트. bootstrap_roles.sql 은 저장소에 있었지만 **아무도 실행하지
-      # 않았다** — 그래서 DSN 이 존재하지 않는 역할로 접속하려 하고 있었다.
+      # initdb 스크립트. 순서가 중요하다(initdb 는 파일명 순으로 돈다).
+      #
+      #   05  스키마. 런타임 역할은 public 에 CREATE 권한이 없으므로(의도다) 스스로
+      #       테이블을 만들 수 없다 — 여기서 만들어 둬야 한다.
+      #   10  pg_hba 교체 + 역할·권한. bootstrap_roles.sql 은 테이블에 GRANT 하므로
+      #       스키마 **뒤에** 와야 한다. 앞에 두면 "relation trades does not exist" 다.
+      #
+      # bootstrap_roles.sql 은 저장소에 있었지만 아무도 실행하지 않았다 — 그래서 DSN 이
+      # 존재하지 않는 역할로 접속하려 하고 있었다(결함 48).
+      - ./src/mdfeed/storage/schema.sql:/docker-entrypoint-initdb.d/05-schema.sql:ro
       - ./ops/pg-init/10-tls-and-roles.sh:/docker-entrypoint-initdb.d/10-tls-and-roles.sh:ro
       - ./ops/bootstrap_roles.sql:/docker-entrypoint-initdb.d/bootstrap_roles.sql:ro
     healthcheck:

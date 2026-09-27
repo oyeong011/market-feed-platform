@@ -323,8 +323,15 @@ jobs:
         # prometheus.yml 과 프로비저닝 3종은 CI 검증 밖에 있었다. 대시보드에 패널을
         # 14개 넣어도 프로비저닝이 조용히 건너뛰면 아무것도 안 보인다.
         run: |
-          docker run --rm -v "$PWD/ops/observability:/w" --entrypoint promtool \
-            prom/prometheus:latest check config /w/prometheus.yml
+          # rule_files 는 **컨테이너 기준 경로**(/etc/prometheus/alerts.yml)다. 그 자리에
+          # 규칙 파일을 같이 마운트해야 promtool 이 체인 전체를 본다 — 안 그러면
+          # "does not point to an existing file" 로 떨어지고, 경고로 흘리면
+          # 오타 난 rule_files 경로를 영원히 못 잡는다(규칙이 하나도 안 등록된다).
+          docker run --rm \
+            -v "$PWD/ops/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+            -v "$PWD/ops/observability/alerts.yml:/etc/prometheus/alerts.yml:ro" \
+            --entrypoint promtool prom/prometheus:latest \
+            check config /etc/prometheus/prometheus.yml
           python3 scripts/check_observability_wiring.py
 
   compose-stack:
