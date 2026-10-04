@@ -42,7 +42,11 @@ REST 어댑터가 매 호출마다 연결을 열고 닫으므로 fd 가 순간�
    절대 하한 10MB 를 넘으려면 최소 2시간이 필요하다. 25분 관측에서 기울기가 +8.6MB/h 로 나와도
    실제 증가는 3.4MB 라 하한에 안 걸리고 통과한다 — 그건 "누수가 없다"가 아니라 **"이 길이로는
    모른다"** 이다. 그래서 창이 임계에 도달할 수 없으면 결과에 그렇게 적는다(`floor_reachable`).
-4. 워밍업 구간(기본 앞 5분)은 기울기 계산에서 뺀다.
+4. 워밍업 구간(기본 앞 5분)은 맥락 기울기 계산에서 뺀다.
+5. **판정은 마지막 1/3(정상 상태)로 한다.** 창 하나의 기울기는 시동과 정상 상태를
+   섞어 버린다. 2026-09-29 실행에서 feedd 가 +3.20MB/h 로 보고됐는데 마지막 90분은
+   0.00 이었다 — 보고서가 평탄한 서비스를 임계의 64% 로 적고 있었다. 구간별 표를
+   함께 남겨 "하나의 숫자" 가 아니라 모양이 보이게 한다.
 
 측정 도구가 거짓 양성을 내면 사람이 결과를 안 믿게 된다. 검사기의 오탐과 같은 문제다.
 
@@ -85,7 +89,30 @@ FD_ABSOLUTE_MIN = 2          # 기울기만으로 판정하지 않는다 (docstr
 RSS_ABSOLUTE_MIN_MB = 10.0
 THROUGHPUT_FLOOR = 0.5
 MIN_MINUTES_FOR_SLOPE = 20.0  # 이보다 짧으면 시간당 외삽이 노이즈를 증폭한다
-WARMUP_MINUTES = 5.0          # 시동 구간. 기울기 계산에서 뺀다 (docstring 참고)
+WARMUP_MINUTES = 5.0          # 시동 구간. 맥락 기울기에서 뺀다 (docstring 참고)
+
+# **판정은 마지막 구간(정상 상태)으로 한다.** 전체 기울기는 맥락으로만 적는다.
+#
+# 2026-09-29 주간 실행(150분)의 원시 표본을 30분 창으로 끊어 보고 알았다.
+#
+#   feedd            8.38 → 8.96 → 0.52 → 0.00 → 0.00  MB/h
+#   mcast-publisher  7.10 → 6.47 → 1.38 → 1.18 → 0.91
+#   writer           3.88 → 1.81 → 0.77 → 0.47 → 0.44
+#
+# 전부 60분쯤에 정착한다. 그런데 보고서의 헤드라인은 전체 기울기 하나였고, feedd 는
+# **+3.20MB/h(임계의 64%)** 로 적혀 있었다 — 마지막 90분 동안 정확히 0.00 인 서비스다.
+# 앞 5분만 빼는 것으로는 부족했다. 정착에 60분이 걸리는데 5분을 뺀 셈이다.
+#
+# 더 나쁜 건 순위가 뒤집힌다는 것이다. feedd(3.20)가 mcast-publisher(2.78)보다 나쁘게
+# 보이는데, 끝까지 오르고 있는 쪽은 mcast-publisher 다.
+#
+# WARMUP 을 60분으로 올리는 건 답이 아니다 — 기본 60분 실행에서 남는 표본이 없다.
+# 마지막 1/3 로 판정하면 실행 길이에 따라 자동으로 맞는다.
+STEADY_FRACTION = 1.0 / 3.0
+MIN_MINUTES_FOR_STEADY = 15.0
+# 정상 상태 창의 노이즈 하한. 위 실측에서 정착 후 표본은 ±0.2MB 안에서 움직였다.
+# 그 10배를 하한으로 둔다 — 창이 짧을수록 절대 증가가 작아지므로 전체용 10MB 는 못 쓴다.
+RSS_STEADY_ABSOLUTE_MIN_MB = 2.0
 
 
 def poll(port: int) -> dict | None:
@@ -104,6 +131,33 @@ def slope(xs: list[float], ys: list[float]) -> float:
     mx, my = sum(xs) / n, sum(ys) / n
     den = sum((x - mx) ** 2 for x in xs)
     return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / den if den else 0.0
+
+
+def windows(rows: list, count: int = 5) -> list[dict]:
+    """관측을 같은 길이의 창으로 끊어 각 창의 기울기를 낸다.
+
+    **숫자 하나로는 모양을 못 본다.** 시동에서 8MB/h 오르고 정착해 0 이 되는 것과
+    처음부터 끝까지 4MB/h 로 새는 것은 전체 기울기가 비슷하게 나온다. 전혀 다른 일인데.
+    """
+    if len(rows) < count * 3:
+        count = max(1, len(rows) // 3)
+    t0, t1 = rows[0][0], rows[-1][0]
+    span = (t1 - t0) / count if count else 0
+    out = []
+    for i in range(count):
+        lo, hi = t0 + span * i, t0 + span * (i + 1)
+        seg = [r for r in rows if lo <= r[0] < hi] or ([rows[-1]] if i == count - 1 else [])
+        if len(seg) < 2:
+            continue
+        xs = [(r[0] - seg[0][0]) / 3600.0 for r in seg]
+        out.append({
+            "from_min": round((lo - t0) / 60.0, 1),
+            "to_min": round((hi - t0) / 60.0, 1),
+            "rss_start_mb": round(seg[0][1], 2),
+            "rss_end_mb": round(seg[-1][1], 2),
+            "rss_mb_per_hour": round(slope(xs, [r[1] for r in seg]), 2),
+        })
+    return out
 
 
 def main() -> int:
@@ -150,8 +204,9 @@ def main() -> int:
 
     # ── 판정 ──────────────────────────────────────────────────────────────
     results, failed = [], []
-    print(f"\n{'SERVICE':<13} {'RSS 시작→끝':>16} {'MB/h':>8} {'fd':>10} {'/h':>7} {'처리량':>10}")
-    print("-" * 74)
+    print(f"\n{'SERVICE':<13} {'RSS 시작→끝':>16} {'전체MB/h':>9} {'정상상태':>9} "
+          f"{'fd':>8} {'/h':>6} {'처리량':>8}")
+    print("-" * 88)
     for name, rows in series.items():
         if len(rows) < 4:
             continue
@@ -163,6 +218,19 @@ def main() -> int:
         jxs = [(r[0] - judged[0][0]) / 3600.0 for r in judged]
         rss_slope = slope(jxs, [r[1] for r in judged])
         fd_slope = slope(jxs, [float(r[2]) for r in judged])
+
+        # **정상 상태 구간.** 판정은 여기로 한다 — 위 rss_slope 는 시동을 섞고 있다.
+        tail = judged[-max(2, int(len(judged) * STEADY_FRACTION)):]
+        steady_minutes = (tail[-1][0] - tail[0][0]) / 60.0
+        steady_ok = steady_minutes >= MIN_MINUTES_FOR_STEADY and len(tail) >= 4
+        sxs = [(r[0] - tail[0][0]) / 3600.0 for r in tail]
+        rss_steady = slope(sxs, [r[1] for r in tail])
+        fd_steady = slope(sxs, [float(r[2]) for r in tail])
+        rss_steady_delta = tail[-1][1] - tail[0][1]
+        fd_steady_delta = tail[-1][2] - tail[0][2]
+        # 이 창에서 임계짜리 누수가 노이즈 하한을 넘을 수 있는가(결함 41 과 같은 질문).
+        steady_reachable = (RSS_GROWTH_LIMIT_MB_H * steady_minutes / 60.0
+                            >= RSS_STEADY_ABSOLUTE_MIN_MB)
         # 처리량: 마지막 절반 구간의 초당 프레임 vs 첫 절반
         half = len(rows) // 2
         def rate(seg):
@@ -175,12 +243,17 @@ def main() -> int:
         rss_delta = rows[-1][1] - rows[0][1]
 
         bad = []
-        if slope_valid:
-            if rss_slope > RSS_GROWTH_LIMIT_MB_H and rss_delta >= RSS_ABSOLUTE_MIN_MB:
-                bad.append(f"RSS +{rss_slope:.1f}MB/h (실제 +{rss_delta:.1f}MB)")
+        # **판정은 정상 상태 구간으로 한다.** 전체 구간 기울기로 판정하면 시동이
+        # 큰 서비스가 영원히 누수로 읽힌다 — 캐시를 채우는 것은 누수가 아니다.
+        # 정상 상태 창이 너무 짧으면(기본 15분 미만) 판정을 유보하고 그렇게 적는다.
+        if slope_valid and steady_ok:
+            if (rss_steady > RSS_GROWTH_LIMIT_MB_H
+                    and rss_steady_delta >= RSS_STEADY_ABSOLUTE_MIN_MB):
+                bad.append(f"RSS 정상상태 +{rss_steady:.1f}MB/h "
+                           f"(마지막 {steady_minutes:.0f}분에 +{rss_steady_delta:.1f}MB)")
             # 기울기만으로 판정하지 않는다 — 짧은 흔들림이 외삽되면 거짓 양성이 난다
-            if fd_slope > FD_GROWTH_LIMIT_H and fd_delta >= FD_ABSOLUTE_MIN:
-                bad.append(f"fd +{fd_slope:.1f}/h (실제 +{fd_delta})")
+            if fd_steady > FD_GROWTH_LIMIT_H and fd_steady_delta >= FD_ABSOLUTE_MIN:
+                bad.append(f"fd 정상상태 +{fd_steady:.1f}/h (마지막 구간에 +{fd_steady_delta})")
         if r_early > 1 and retained < THROUGHPUT_FLOOR:
             bad.append(f"처리량 {retained * 100:.0f}%")
         if bad:
@@ -195,33 +268,75 @@ def main() -> int:
             "rows": [{"t": round(r[0] - rows[0][0], 1), "rss_mb": round(r[1], 2),
                       "fd": r[2], "frames": r[3]} for r in rows],
             "rss_start_mb": rows[0][1], "rss_end_mb": rows[-1][1],
+            # 전체(시동 제외) 기울기는 **맥락**이다. 판정은 아래 steady 쪽으로 한다.
             "rss_growth_mb_per_hour": round(rss_slope, 2),
+            "rss_steady_mb_per_hour": round(rss_steady, 2),
+            "rss_steady_delta_mb": round(rss_steady_delta, 2),
+            "fd_steady_per_hour": round(fd_steady, 2),
+            "steady_minutes": round(steady_minutes, 1),
+            "steady_judged": steady_ok,
+            "steady_verdict_reachable": steady_reachable,
+            "windows": windows(rows),
             "fd_start": rows[0][2], "fd_end": rows[-1][2],
             "fd_growth_per_hour": round(fd_slope, 2),
             "throughput_retained": round(retained, 3),
             "rss_delta_mb": round(rss_delta, 1), "fd_delta": fd_delta,
             "slope_judged": slope_valid,
-            "verdict": "FAIL" if bad else ("OK" if slope_valid else "OK(관측 부족)"),
+            "verdict": ("FAIL" if bad
+                        else "OK" if (slope_valid and steady_ok)
+                        else "OK(관측 부족)"),
             "issues": bad,
         })
         mark = "!" if bad else " "
+        steady_txt = f"{rss_steady:>+9.2f}" if steady_ok else f"{'(짧음)':>9}"
         print(f"{mark}{name:<12} {rows[0][1]:>6.1f} → {rows[-1][1]:<6.1f}M "
-              f"{rss_slope:>+8.2f} {rows[0][2]:>4} → {rows[-1][2]:<3} "
-              f"{fd_slope:>+6.2f} {retained * 100:>9.0f}%")
+              f"{rss_slope:>+9.2f} {steady_txt} {rows[0][2]:>3} → {rows[-1][2]:<2} "
+              f"{fd_slope:>+6.2f} {retained * 100:>7.0f}%")
 
-    print("-" * 74)
-    print(f"임계: RSS {RSS_GROWTH_LIMIT_MB_H}MB/h (절대 +{RSS_ABSOLUTE_MIN_MB:.0f}MB 이상 동반) · "
+    print("-" * 88)
+    print("판정은 **정상상태**(마지막 1/3) 열로 한다. 전체 열은 시동을 포함하므로 맥락일 뿐이다.")
+
+    # ── 구간별 모양 ───────────────────────────────────────────────────────
+    # 숫자 하나로는 "시동에서 올랐다 평탄" 과 "끝까지 샌다" 가 구분되지 않는다.
+    # 2026-09-29 실행에서 feedd 가 8.38 → 8.96 → 0.52 → 0.00 → 0.00 이었는데
+    # 보고서에는 +3.20 하나만 적혀 있었다.
+    shaped = [r for r in results if r.get("windows")]
+    if shaped:
+        print("\n구간별 RSS 기울기 (MB/h) — 정착하는지 보려면 이 줄을 읽는다")
+        hdr = shaped[0]["windows"]
+        span = hdr[0]["to_min"] - hdr[0]["from_min"]
+        fmt = "{:.1f}" if span < 2 else "{:.0f}"   # 짧은 실행에서 라벨이 겹치지 않게
+        print(f"  {'SERVICE':<16}" + "".join(
+            (fmt.format(w["from_min"]) + "~" + fmt.format(w["to_min"]) + "분").rjust(12)
+            for w in hdr))
+        for r in shaped:
+            cells = "".join(f"{w['rss_mb_per_hour']:>+12.2f}" for w in r["windows"])
+            print(f"  {r['service']:<16}{cells}")
+    print(f"임계: RSS {RSS_GROWTH_LIMIT_MB_H}MB/h (정상상태 창에서 절대 "
+          f"+{RSS_STEADY_ABSOLUTE_MIN_MB:.0f}MB 이상 동반) · "
           f"fd {FD_GROWTH_LIMIT_H}/h (절대 +{FD_ABSOLUTE_MIN} 이상 동반) · 처리량 {THROUGHPUT_FLOOR * 100:.0f}%")
-    print(f"기울기는 앞 {args.warmup_minutes:.0f}분(시동)을 뺀 구간으로 낸다.")
+    print(f"'전체' 기울기는 앞 {args.warmup_minutes:.0f}분(시동)만 뺀 값이다 — 맥락용이다.\n"
+          f"판정은 마지막 1/3(정상상태, 최소 {MIN_MINUTES_FOR_STEADY:.0f}분)으로 한다. "
+          f"정착에 한 시간이 걸리는 서비스를 앞 5분만 빼고 재면 평탄한 것도 누수로 적힌다.")
     # 이 관측 창에서 임계(기울기)가 절대 하한에 도달할 수 있는가.
     # 도달할 수 없으면 "통과" 는 "누수 없음" 이 아니라 "이 길이로는 모름" 이다.
-    hours = args.minutes / 60.0
-    floor_reachable = RSS_GROWTH_LIMIT_MB_H * max(hours - args.warmup_minutes / 60.0, 0) >= RSS_ABSOLUTE_MIN_MB
+    #
+    # **판정 창이 바뀌었으므로 이 계산도 바뀐다.** 판정은 전체 창이 아니라 마지막 1/3 로
+    # 하고, 그 창의 노이즈 하한은 2MB 다. 필요한 시간이 125분에서 77분으로 줄었다 —
+    # 창을 좁히면서 하한도 함께 낮췄기 때문이다. 둘 중 하나만 바꾸면 틀린 값이 나온다.
+    steady_h = max(args.minutes / 60.0 - args.warmup_minutes / 60.0, 0) * STEADY_FRACTION
+    steady_min = steady_h * 60.0
+    floor_reachable = (RSS_GROWTH_LIMIT_MB_H * steady_h >= RSS_STEADY_ABSOLUTE_MIN_MB
+                       and steady_min >= MIN_MINUTES_FOR_STEADY)
     if not floor_reachable:
-        need_h = RSS_ABSOLUTE_MIN_MB / RSS_GROWTH_LIMIT_MB_H + args.warmup_minutes / 60.0
+        need_steady = max(RSS_STEADY_ABSOLUTE_MIN_MB / RSS_GROWTH_LIMIT_MB_H * 60.0,
+                          MIN_MINUTES_FOR_STEADY)
+        need_total = need_steady / STEADY_FRACTION + args.warmup_minutes
         print(f"\n주의: 관측 {args.minutes:.0f}분으로는 RSS 누수 판정이 성립하지 않는다.\n"
-              f"  임계 {RSS_GROWTH_LIMIT_MB_H:.0f}MB/h 짜리 누수가 절대 하한 {RSS_ABSOLUTE_MIN_MB:.0f}MB 를 넘으려면 "
-              f"최소 {need_h * 60:.0f}분이 필요하다.\n"
+              f"  판정 창(마지막 1/3)이 {steady_min:.0f}분인데, 임계 "
+              f"{RSS_GROWTH_LIMIT_MB_H:.0f}MB/h 짜리 누수가 노이즈 하한 "
+              f"{RSS_STEADY_ABSOLUTE_MIN_MB:.0f}MB 를 넘으려면 그 창이 "
+              f"{need_steady:.0f}분 이상이어야 한다 (전체 {need_total:.0f}분).\n"
               f"  이 실행이 보증하는 것은 fd 누수 없음·처리량 유지·급격한 메모리 증가 없음까지다.")
     if not slope_valid:
         print(f"관측 {args.minutes:.0f}분 < {args.min_minutes_for_slope:.0f}분 — "

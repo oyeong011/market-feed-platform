@@ -3,7 +3,7 @@
 [![CI](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/oyeong011/market-feed-platform/actions/workflows/ci.yml)
 [![Pages](https://github.com/oyeong011/market-feed-platform/actions/workflows/pages.yml/badge.svg)](https://oyeong011.github.io/market-feed-platform/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![tests](https://img.shields.io/badge/tests-589-brightgreen)
+![tests](https://img.shields.io/badge/tests-599-brightgreen)
 ![cpp](https://img.shields.io/badge/C%2B%2B-data%20plane-blue)
 ![obs](https://img.shields.io/badge/알람-18개%20지표%20검증-blue)
 ![venues](https://img.shields.io/badge/수집경로-5개%20실연결-blue)
@@ -68,7 +68,7 @@ make demo        # replay + disposable synthetic SQLite 로 6개 프로세스 �
 make status      # 서비스 상태 (프로세스 + HTTP 헬스 + 포트)
 make client      # 참조 TCP 구독 클라이언트 (갭 탐지 포함)
 make diag        # 장애 진단 원스톱
-make test        # 589개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 25개는 스킵)
+make test        # 599개 테스트 — 네트워크 불필요 (PostgreSQL 없으면 25개는 스킵)
 ```
 
 데모와 CI는 라이브 어댑터를 상속하지 않습니다. 저장소에 든 녹화 파일을 replay로 읽고, 임시 SQLite DB를 만들어 검증합니다.
@@ -135,6 +135,8 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 | 46 | **critical 알람 13건이 울려도 볼 그래프가 없었다** | 알람이 실재하는 지표를 보는지는 검사했지만, **울린 다음**은 아무도 안 봤다. Grafana 대시보드가 참조하는 지표는 13종인데 알람이 참조하는 지표는 51종이다. `rows_dropped_total` · `data_gaps_open` · `mcast_send_errors_total` 처럼 가장 급한 것들에 패널이 없어서, 새벽에 호출받은 사람이 대시보드를 열면 그 값이 화면에 없다. 반대 방향도 사각이었다 — 죽은 지표를 가리키는 패널은 빈 그래프로 남는데 **"정상 0" 과 구분되지 않는다** | 검사기에 세 번째 방향(알람 → 대시보드)을 추가했다. critical 알람은 패널이 있어야 통과하고(면제는 이유를 적는다), 패널이 선언 안 된 지표를 가리키면 실패한다. 패널 14개를 추가해 critical 20건 전원이 볼 그래프를 갖게 했다. warning 은 실패로 두지 않는다 — 한 건씩 패널을 요구하면 대시보드가 알람 목록이 되고, 그러면 아무도 안 본다 |
 | 47 | **알람 48개가 한 달 내내 죽어 있었다** | `ArchiveStalled` 규칙에 `action` 키가 두 개 있었다 — 하나는 `RetentionNotRunning` 의 문장이 잘못 붙은 것이다(2026-08-28 도입). **Prometheus(Go yaml)는 중복 키를 만나면 그 규칙 파일 전체를 거부한다.** 규칙이 하나도 등록되지 않고, 어디에도 빨간 줄이 안 뜬다. 왜 한 달을 못 봤나 — `verify_alerts.py` 는 지표 이름을 **정규식으로** 읽으므로 파일이 파싱되는지는 안 본다. PyYAML 로 읽어도 안 걸린다: **PyYAML 은 중복 키를 조용히 덮어쓴다.** 그래서 증상(`action` 없는 규칙 1건)만 보이고 원인은 안 보였다 | CI 에 `promtool check rules` 를 붙인 **첫 실행**이 잡았다. 결함 44(systemd-analyze 를 붙인 첫 실행이 93건)와 같은 구조다 — **사람이 손으로 쓰는 설정 파일은 그걸 실제로 읽는 프로그램이 CI 에서 한 번은 읽어 봐야 한다.** 의존성 없이 같은 것을 보는 시험도 넣었다(들여쓰기로 블록을 나눠 키 중복을 센다). 그 시험이 실제로 잡는지는 깨진 커밋의 파일로 확인했다 — 통과만 확인하면 결함 45 를 또 만든다 |
 | 48 | **`docker compose up` 이 한 번도 뜬 적이 없었다** | 네 군데가 동시에 끊겨 있었다. ① compose 가 읽는 비밀 파일 4개(`postgres_password` · `pgpass` · `postgres_ca.crt` · `grafana_admin_password`)가 **저장소에 하나도 없고, 만드는 절차도 없고, `.gitignore` 에도 없었다**(즉 누가 만들면 자격증명이 커밋된다). 없는 경로를 바인드하면 도커는 그 자리에 **디렉터리**를 만들고, 비밀번호 파일을 기대하는 프로세스는 디렉터리를 읽는다. ② DSN 은 `sslmode=verify-full` 인데 **postgres 쪽에 TLS 설정이 아예 없었다** — 클라이언트가 TLS 를 요구하고 서버가 제공하지 않으니 전부 떨어진다. ③ `ops/bootstrap_roles.sql` 이 **initdb 경로에 들어가 있지 않았다** — DSN 이 접속하려는 `mdfeed_runtime` 역할이 존재하지 않는 DB 였다. ④ 그 SQL 은 역할을 비밀번호 없이 만드는데(의도이고 시험이 고정한다) compose 는 `PGPASSFILE` 로 붙으려 했다 — **만들 수 없는 비밀번호**다. 왜 안 걸렸나: CI 는 `docker compose config -q`(문법만) 와 이미지 빌드만 했고, 시험은 **"CA 를 마운트한다고 적혀 있는가"** 만 봤다. 적혀 있었다 | `ops/gen_dev_secrets.sh` 로 비밀 생성 절차를 만들고 `ops/secrets/` 를 `.gitignore` 에 넣었다. TLS 는 인증서를 **볼륨 안에서** 만들고(호스트 파일 권한에 기동이 걸리지 않게), 서버 키는 initdb 스크립트가 `$PGDATA` 로 복사해 자기 소유로 만든다 — postgres uid 는 이미지마다 다르므로(debian 999 · alpine 70) **추측하지 않는다.** 인증은 비밀번호 대신 **클라이언트 인증서**로 맞췄다(`hostssl … cert clientcert=verify-full`, CN=역할명). `bootstrap_roles.sql` 을 initdb 에 넣고, healthcheck 가 `pg_isready` 를 넘어 **역할 존재까지** 본다. 증명은 문자열 검사가 아니다 — CI 잡 `compose-stack` 이 스택을 실제로 띄워 `ops/verify_pg_tls.py` 로 **붙어 보고**, TLS·역할·권한을 확인하고, `sslmode=disable` 로는 **못 붙는지**까지 확인한다. 정적 그물(`tests/test_compose_bind_mounts.py`)은 도커 없이 돌고, 고치기 전 커밋으로 돌려 4건이 실제로 실패하는 것을 확인했다 |
+| 49 | **누수 보고서가 평탄한 서비스를 임계의 64% 로 적고 있었다** | 주간 soak(2026-09-29, 150분)이 남긴 **원시 표본**을 30분 창으로 끊어 보고 알았다. `feedd` 는 8.38 → 8.96 → 0.52 → **0.00 → 0.00** MB/h 로 60분쯤에 완전히 정착하는데, 보고서 헤드라인은 창 하나의 기울기 **+3.20MB/h**(임계 5의 64%)였다. 앞 5분만 빼는 워밍업 제외로는 부족했다 — **정착에 한 시간이 걸리는데 5분을 뺀 셈**이다. 더 나쁜 건 서열이 뒤집힌다는 것이다. 보고서에서 `feedd`(3.20)가 `mcast-publisher`(2.78)보다 나쁘게 보이는데, 끝까지 오르고 있는 쪽은 `mcast-publisher`(마지막 48분 +1.00)다. **판정에 쓰는 값이 서비스 서열을 반대로 매겼다.** 창 하나의 기울기는 "시동에서 올랐다 평탄" 과 "끝까지 샌다" 를 구분하지 못한다 | 판정을 **정상 상태 창**(마지막 1/3, 최소 15분)으로 옮기고, 전체 기울기는 맥락으로만 적는다. 구간별 기울기 표를 함께 출력해 하나의 숫자가 아니라 모양이 보이게 했다. 창을 좁히면 절대 하한도 함께 내려야 한다 — 10MB 를 그대로 두면 짧은 창에서 못 넘어 판정이 영원히 유보된다(결함 41 의 재발). 정상 상태 창의 하한을 2MB 로 두니 임계짜리 누수를 잡는 데 필요한 시간이 **125분 → 77분**으로 줄었다. `WARMUP` 을 60분으로 올리는 건 답이 아니다 — 기본 60분 실행에서 남는 표본이 없다. 마지막 1/3 은 실행 길이에 자동으로 맞는다. 회귀 시험은 **그때의 실측 표본**(`tests/data/soak-linux-20260929-trimmed.json`)을 입력으로 쓴다. 하네스가 원시 표본을 남기기로 한 것이 결함 39 의 조치였고, 여기서 처음 값을 했다 — 판정 기준이 바뀌어도 과거 실행을 다시 볼 수 있다. 상수가 서로 어긋나는지, **주간 실행이 판정 가능한 길이인지**까지 시험한다(아니면 매주 조용히 '판정 보류'로 돌면서 초록불이다) |
+| 50 | **야간 Pages 배포가 조용히 떨어졌다** | 2026-10-03 야간 실행이 GitHub 쪽 OIDC 타임아웃(`Request timeout: /idtoken/…`)으로 실패했다. 설정 문제가 아니다 — 앞 5일은 같은 권한으로 성공했다. 문제는 실패가 아니라 **아무도 모른다는 것**이다. 야간 배포가 떨어지면 공개 페이지가 낡은 숫자를 계속 보여 주고, 다음 성공까지 그 사실이 어디에도 안 남는다 | 일시 오류는 재시도로 흡수한다. 다만 **재시도로 살아난 사실을 요약에 남긴다** — 재시도가 매번 필요해지면 그건 일시 오류가 아니라 구조 문제인데, 재시도가 성공을 가려 주면 그 전환을 눈치채지 못한다 |
 | 17 | Postgres 조회 시각이 UTC | 국내 장 시간 09:00~15:30 이 00:00~06:30 으로 보인다. 장 시작 전인지 마감 후인지 눈으로 판단 불가 | 스키마에서 DB 기본 시간대를 `Asia/Seoul` 로 설정 (저장 값은 그대로, 표시만) |
 
 ---
@@ -150,7 +152,7 @@ TEST_POSTGRES_DSN=postgresql://mdfeed_test@127.0.0.1:55439/mdfeed_test make test
 |---|---|---|
 | 금융 데이터 FEED 개발·운영 | 수집 경로 5개, 배포 프로토콜 3종 | 무결성 48.5% → **100.0000%** |
 | Linux 서비스·프로세스 점검·안정화 | systemd 6유닛 + 자동 검증 + 장애 주입 | 11항목 · 복구 4종 확인 |
-| 파이프라인·배포·점검 자동화 | Makefile · CI 9잡 · Pages 자동 갱신 | 테스트 **589개** |
+| 파이프라인·배포·점검 자동화 | Makefile · CI 9잡 · Pages 자동 갱신 | 테스트 **599개** |
 | Python | 소스 8,835줄 | 핵심 의존성 **0** |
 | SQL · 관계형 DB | 복합 인덱스 · 사전 집계 · 하이퍼테이블 | 적재 **480,586 rows/s** |
 | Linux 명령·프로세스·로그 | `ops.sh diag` · RUNBOOK 8종 | 1차 진단 한 줄 |
@@ -467,7 +469,7 @@ src/mdfeed/
 
 ops/     systemd 유닛 6종 · ops.sh · watchdog.sh · healthcheck.py · logrotate
 quant/   backtest.py · run_backtest.py · integrations.py · factor_screen.py
-tests/   589개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
+tests/   599개 (프로토콜 · 지표 · 링버퍼 · HTTP · WS · 저장소 · 백테스트 · E2E ·
          복구 경로 · 종료 기한 · 컨플레이션 · 토큰 발급 · 운영 기록 환산 ·
          PostgreSQL 마이그레이션/백업/복구 27개는 실서버 연결 시에만)
 bench/   계층별 성능 측정 → docs/data/bench.json · 게이트웨이 비교 → gateway_compare.json
