@@ -466,8 +466,11 @@ jobs:
             | python3 -c 'import json,sys; d=json.load(sys.stdin); a=d["data"]["activeAlertmanagers"]; print("Alertmanager 연결:", a); sys.exit(0 if a else 1)'
 
       - name: MarketDataGapOpen 이 수신기에 닿는지 (critical 라우트)
-        run: python3 scripts/wait_for_alert.py --alertname MarketDataGapOpen \
-               --status firing --receiver critical --timeout 240
+        # 블록 스칼라(|)를 쓴다. `run:` 뒤에 바로 이어 쓰면 YAML 이 줄바꿈을 공백으로
+        # 접으면서 역슬래시를 **글자 그대로** 남긴다 — bash 가 `\ --status` 를 인자로 받는다.
+        run: |
+          python3 scripts/wait_for_alert.py --alertname MarketDataGapOpen \
+            --status firing --receiver critical --timeout 240
 
       - name: 해소도 전달되는지 (send_resolved)
         # 울린 것만 가고 풀린 것은 안 가면, 사람은 끝난 일을 계속 쫓는다.
