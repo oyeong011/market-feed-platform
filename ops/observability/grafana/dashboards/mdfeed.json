@@ -397,7 +397,7 @@
   {
    "id": 50,
    "title": "서비스 가동 상태",
-   "description": "ServiceDown 이 울렸을 때 어느 프로세스가 빠졌는지 본다. 멀티캐스트 발행자(mcast-publisher)는 선택 서비스라 0 이 정상일 수 있다",
+   "description": "ServiceDown · AlertDeliveryDown · AlertReceiverDown 이 울렸을 때 어느 프로세스가 빠졌는지 본다. job=\"mdfeed\" 로만 걸러 두면 **알람을 보내는 쪽(alertmanager)이 죽은 것은 이 그래프에 안 나온다** — 그래서 세 job 을 함께 본다. 멀티캐스트 발행자는 선택 서비스라 0 이 정상일 수 있다",
    "type": "timeseries",
    "gridPos": {
     "h": 7,
@@ -430,8 +430,8 @@
    },
    "targets": [
     {
-     "expr": "up{job=\"mdfeed\"}",
-     "legendFormat": "{{service}} {{shard}}",
+     "expr": "up{job=~\"mdfeed|alertmanager|alert-sink\"}",
+     "legendFormat": "{{job}} {{service}} {{shard}}",
      "refId": "A"
     }
    ]

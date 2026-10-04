@@ -17,6 +17,15 @@ global:
 rule_files:
   - /etc/prometheus/alerts.yml
 
+# **알람을 보낼 곳.** 이 절이 없으면 규칙은 Prometheus 안에서 firing 이 되고 거기서
+# 끝난다. UI 를 열어 보는 사람이 없으면 아무 일도 안 일어난다 — 규칙 48개가 그 상태로
+# 있었다(결함 51). 규칙 파일 머리의 "울리면 사람이 할 일이 있어야 한다" 는 전달
+# 경로가 있어야 성립한다.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
 scrape_configs:
   - job_name: mdfeed
     metrics_path: /metrics
@@ -43,3 +52,17 @@ scrape_configs:
       # up{} 알람이 그걸 잡지 않도록 아래 알람들은 지표 존재를 전제로만 판정한다.
       - targets: ["host.docker.internal:9132"]
         labels: { service: mcast-publisher }
+
+  # **알람을 보내는 쪽도 감시한다.** Alertmanager 가 죽으면 알람이 안 오는데, 그 사실을
+  # 알려 줄 수 있는 건 Alertmanager 가 아니다. 그래서 Prometheus 가 직접 긁는다.
+  - job_name: alertmanager
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["alertmanager:9093"]
+        labels: { service: alertmanager }
+
+  - job_name: alert-sink
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["alert-sink:9140"]
+        labels: { service: alert-sink }

@@ -23,6 +23,37 @@ services:
       - promdata:/prometheus
     extra_hosts: ["host.docker.internal:host-gateway"]
     ports: ["127.0.0.1:9090:9090"]
+    depends_on: [alertmanager]
+
+  # **알람 전달 경로.** 이게 없으면 규칙 48개가 Prometheus 안에서 firing 이 되고
+  # 거기서 끝난다 — UI 를 열어 보는 사람이 없으면 아무 일도 안 일어난다(결함 51).
+  alertmanager:
+    image: prom/alertmanager:latest
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./ops/observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - amdata:/alertmanager
+    ports: ["127.0.0.1:9093:9093"]
+    depends_on: [alert-sink]
+
+  # 운영에서는 이 자리에 이메일·Slack·PagerDuty 가 온다. 개발 스택에는 그걸 붙일 수
+  # 없으므로 **도착했는지 물어볼 수 있는 가장 작은 수신기**를 둔다. 표준 라이브러리만 쓴다.
+  alert-sink:
+    image: python:3.12-slim
+    restart: unless-stopped
+    command: ["python3", "/app/alert_sink.py", "--port", "9140"]
+    volumes:
+      - ./ops/alert_sink.py:/app/alert_sink.py:ro
+    ports: ["127.0.0.1:9140:9140"]
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9140/healthz',timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   grafana:
     image: grafana/grafana:latest
@@ -43,3 +74,4 @@ services:
 volumes:
   promdata:
   grafanadata:
+  amdata:

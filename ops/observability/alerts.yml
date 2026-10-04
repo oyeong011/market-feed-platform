@@ -18,6 +18,25 @@ groups:
           summary: "{{ $labels.service }} 응답 없음"
           action: "systemctl status mdfeed-{{ $labels.service }} · journalctl -u 로 원인 확인"
 
+      - alert: AlertDeliveryDown
+        # **알람을 보내는 쪽이 죽으면 알람이 안 온다.** 그 사실을 알려 줄 수 있는 건
+        # Alertmanager 가 아니므로, 이 알람은 Prometheus UI·다른 경로로만 보인다.
+        # 한계를 알고 두는 것이, 전달 경로를 아무도 안 보는 것보다 낫다.
+        expr: up{job="alertmanager"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Alertmanager 응답 없음 — 이 뒤로 울리는 알람은 아무 데도 안 간다"
+          action: "docker compose -f docker-compose.observability.yml logs alertmanager · 되살린 뒤 /api/v1/alerts 로 밀린 알람을 확인한다"
+
+      - alert: AlertReceiverDown
+        expr: up{job="alert-sink"} == 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "알람 수신기 응답 없음 — Alertmanager 가 보내도 받는 곳이 없다"
+          action: "운영에서는 이 자리가 이메일·Slack 연동이다. 그쪽 설정을 확인한다"
+
       - alert: UpstreamStale
         # 프로세스는 멀쩡한데 데이터만 안 오는 상태. systemd 가 못 잡는 종류다.
         expr: mdfeed_upstream_stale > 0

@@ -1,0 +1,68 @@
+# Alertmanager 라우팅.
+#
+# **이게 없으면 알람은 Prometheus 안에서 firing 이 되고 거기서 끝난다.** UI 를 열어
+# 보는 사람이 없으면 아무 일도 일어나지 않는다. 규칙 파일 머리에는 "울리면 사람이
+# 할 일이 있어야 한다" 고 적혀 있었는데, 그 사람에게 닿는 경로가 없었다(결함 51).
+#
+# 운영에서는 아래 receiver 자리에 이메일·Slack·PagerDuty 가 온다. 개발 스택과 CI 에는
+# 그걸 붙일 수 없으므로 ops/alert_sink.py 로 보낸다 — **도착했는지 물어볼 수 있는
+# 가장 작은 수신기**다. 그래야 "알람이 사람에게 간다" 를 설정 문자열이 아니라
+# 실행으로 확인할 수 있다.
+
+global:
+  # 같은 알람이 해소됐는지 모르는 채로 매달려 있지 않게 한다. Prometheus 가
+  # 규칙을 평가하다 멈추면 알람은 이 시간 뒤에 resolved 로 바뀐다.
+  resolve_timeout: 5m
+
+route:
+  # 서비스별로 묶는다. tcp-gateway 와 writer 가 같이 아픈 것과 하나만 아픈 것은
+  # 다른 상황이고, 한 묶음으로 보내면 그 구분이 사라진다.
+  group_by: ['alertname', 'service']
+  # 첫 알람을 바로 보내지 않고 조금 기다린다. 한 사건이 여러 알람을 연쇄로 내는
+  # 경우(업스트림 정체 → 처리량 0 → 공백)를 한 통으로 묶기 위해서다.
+  group_wait: 30s
+  group_interval: 5m
+  # 해소되지 않은 알람을 다시 보내는 간격. 너무 짧으면 사람이 무시하게 되고,
+  # 너무 길면 교대 근무자가 모르고 넘어간다.
+  repeat_interval: 4h
+  receiver: default
+
+  routes:
+    # critical 은 더 빨리, 더 자주 보낸다. 묶기를 기다리는 30초가 아깝다.
+    - matchers: ['severity = "critical"']
+      receiver: critical
+      group_wait: 10s
+      group_interval: 2m
+      repeat_interval: 1h
+      continue: false
+
+    - matchers: ['severity = "warning"']
+      receiver: warning
+
+inhibit_rules:
+  # 서비스가 죽었으면 그 서비스의 다른 알람은 보내지 않는다. ServiceDown 하나로
+  # 충분한데 같은 프로세스의 지표 알람이 줄줄이 따라오면 묻혀 버린다.
+  - source_matchers: ['alertname = "ServiceDown"']
+    target_matchers: ['severity =~ "critical|warning"']
+    equal: ['service']
+
+  # 업스트림이 정체면 처리량 0 은 결과다. 원인 쪽만 보낸다.
+  - source_matchers: ['alertname = "UpstreamStale"']
+    target_matchers: ['alertname =~ "CryptoFeedThroughputZero|KrxFeedThroughputZeroDuringMarketHours"']
+    equal: ['service']
+
+receivers:
+  - name: default
+    webhook_configs:
+      - url: http://alert-sink:9140/alerts
+        send_resolved: true
+
+  - name: critical
+    webhook_configs:
+      - url: http://alert-sink:9140/alerts
+        send_resolved: true
+
+  - name: warning
+    webhook_configs:
+      - url: http://alert-sink:9140/alerts
+        send_resolved: true

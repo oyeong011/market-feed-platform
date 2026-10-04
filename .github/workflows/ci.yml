@@ -294,6 +294,15 @@ jobs:
           docker run --rm -v "$PWD/ops/observability:/w" --entrypoint promtool \
             prom/prometheus:latest check rules /w/alerts.yml
 
+      - name: Alertmanager 설정을 amtool 로 검증
+        # 결함 47 과 같은 이유다. 라우팅 설정에 문법 오류가 하나 있으면 Alertmanager 가
+        # 기동을 거부하고, 그러면 울리는 알람이 전부 아무 데도 안 간다 — 어디에도
+        # 빨간 줄이 안 뜬다. 사람이 손으로 쓰는 설정 파일은 그걸 읽는 프로그램이
+        # CI 에서 한 번은 읽어 봐야 한다.
+        run: |
+          docker run --rm -v "$PWD/ops/observability:/w" --entrypoint amtool \
+            prom/alertmanager:latest check-config /w/alertmanager.yml
+
       - name: 대시보드가 프로비저닝될 모양인지 검증
         # uid 가 없으면 프로비저닝이 조용히 건너뛰고, 패널 id 가 겹치면 하나만 남는다.
         # expr 이 빈 패널은 나타나지만 영원히 빈 그래프이고, 그건 "값이 0" 과 구분되지 않는다.
@@ -410,6 +419,74 @@ jobs:
       - name: 정리
         if: always()
         run: docker compose down -v
+
+  alert-delivery:
+    name: 알람이 사람에게 실제로 도착하는가
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+
+      - name: 과녁 익스포터 (지표 값만 흉내 낸다)
+        # 흉내 내는 것은 지표 값 하나뿐이다. 수집 설정·규칙·라우팅·수신기는
+        # 전부 실제 파일 그대로 쓴다. rest-api 포트(9103)에 띄우면 실제
+        # prometheus.yml 이 host.docker.internal:9103 으로 그대로 긁는다.
+        run: |
+          nohup python3 scripts/stub_metrics.py --port 9103 \
+            --set 'mdfeed_data_gaps_open 1' > /tmp/stub.log 2>&1 &
+          for i in $(seq 1 20); do
+            curl -sf localhost:9103/metrics && break || sleep 1
+          done
+          curl -sf localhost:9103/metrics
+
+      - name: 관측 스택 기동 (Prometheus + Alertmanager + 수신기)
+        run: |
+          bash ops/gen_dev_secrets.sh
+          docker compose -f docker-compose.observability.yml up -d \
+            prometheus alertmanager alert-sink
+          for i in $(seq 1 30); do
+            if curl -sf localhost:9093/-/ready >/dev/null \
+               && curl -sf localhost:9090/-/ready >/dev/null \
+               && curl -sf localhost:9140/healthz >/dev/null; then
+              echo "셋 다 준비됨"; break
+            fi
+            sleep 2
+          done
+
+      - name: Prometheus 가 규칙을 실제로 등록했는지 확인
+        # 결함 47: 중복 키 하나로 규칙 파일 전체가 거부되면 등록 수가 0 이 된다.
+        # promtool 과는 별개로, 돌고 있는 서버에 직접 물어본다.
+        run: |
+          n=$(curl -sf localhost:9090/api/v1/rules \
+              | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sum(len(g["rules"]) for g in d["data"]["groups"]))')
+          echo "등록된 규칙 $n개"
+          [ "$n" -ge 40 ] || { echo "::error::규칙이 $n개만 등록됐다"; exit 1; }
+          curl -sf localhost:9090/api/v1/alertmanagers \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin); a=d["data"]["activeAlertmanagers"]; print("Alertmanager 연결:", a); sys.exit(0 if a else 1)'
+
+      - name: MarketDataGapOpen 이 수신기에 닿는지 (critical 라우트)
+        run: python3 scripts/wait_for_alert.py --alertname MarketDataGapOpen \
+               --status firing --receiver critical --timeout 240
+
+      - name: 해소도 전달되는지 (send_resolved)
+        # 울린 것만 가고 풀린 것은 안 가면, 사람은 끝난 일을 계속 쫓는다.
+        run: |
+          curl -sf -X POST localhost:9103/set -d 'mdfeed_data_gaps_open 0'
+          python3 scripts/wait_for_alert.py --alertname MarketDataGapOpen \
+            --status resolved --timeout 300
+
+      - name: 실패 시 로그
+        if: failure()
+        run: |
+          echo "::group::수신기"; docker compose -f docker-compose.observability.yml logs alert-sink | tail -40; echo "::endgroup::"
+          echo "::group::Alertmanager"; docker compose -f docker-compose.observability.yml logs alertmanager | tail -40; echo "::endgroup::"
+          echo "::group::Prometheus"; docker compose -f docker-compose.observability.yml logs prometheus | tail -40; echo "::endgroup::"
+          echo "::group::규칙 상태"; curl -sf localhost:9090/api/v1/alerts || true; echo "::endgroup::"
+
+      - name: 정리
+        if: always()
+        run: docker compose -f docker-compose.observability.yml down -v
 
   postgres-integration:
     name: PostgreSQL integration
