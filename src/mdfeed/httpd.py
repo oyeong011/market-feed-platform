@@ -77,14 +77,17 @@ class Response:
     def text(cls, s: str, status: int = 200) -> "Response":
         return cls(status, s)
 
-    def render(self, keep_alive: bool, head_only: bool = False) -> bytes:
+    def render(self, keep_alive: bool, head_only: bool = False, cors: bool = True,
+               extra_headers: dict | None = None) -> bytes:
         lines = [f"HTTP/1.1 {self.status} {STATUS_TEXT.get(self.status, 'OK')}"]
         lines.append(f"Content-Type: {self.content_type}")
         lines.append(f"Content-Length: {len(self.body)}")     # 반드시 바이트 길이
         lines.append(f"Connection: {'keep-alive' if keep_alive else 'close'}")
-        # 대시보드가 다른 오리진에서 붙을 수 있게 (읽기 전용 API라 안전)
-        lines.append("Access-Control-Allow-Origin: *")
-        for k, v in self.headers.items():
+        # 대시보드가 다른 오리진에서 붙을 수 있게 (읽기 전용 API라 안전).
+        # 쿠키로 인증하는 주문 데스크는 끈다 — 쓰기 API 를 다른 오리진에 열 이유가 없다.
+        if cors:
+            lines.append("Access-Control-Allow-Origin: *")
+        for k, v in {**(extra_headers or {}), **self.headers}.items():
             lines.append(f"{k}: {v}")
         head = ("\r\n".join(lines) + "\r\n\r\n").encode()
         return head if head_only else head + self.body
@@ -96,8 +99,13 @@ Handler = Callable[[Request], "Response | Awaitable[Response]"]
 class HTTPServer:
     """라우팅 + keep-alive + WebSocket 업그레이드 훅을 갖춘 asyncio HTTP 서버."""
 
-    def __init__(self, host: str, port: int, name: str = "mdfeed", registry=None):
+    def __init__(self, host: str, port: int, name: str = "mdfeed", registry=None,
+                 ssl_context=None, cors: bool = True, default_headers: dict | None = None):
         self.host, self.port, self.name = host, port, name
+        # TLS 는 표준 라이브러리 ssl 이 맡는다. 바이트 위의 HTTP 처리는 평문일 때와 같다.
+        self.ssl_context = ssl_context
+        self.cors = cors
+        self.default_headers = default_headers or {}
         self.registry = registry
         if registry is not None:
             # 0 으로 미리 만든다. 안 하면 **첫 오류가 날 때까지 지표가 없고**,
@@ -139,8 +147,10 @@ class HTTPServer:
 
     # ── 수명주기 ──────────────────────────────────────────────────────────
     async def start(self) -> None:
-        self._server = await asyncio.start_server(self._handle, self.host, self.port)
-        log.info("[%s] HTTP listening on %s:%d", self.name, self.host, self.port)
+        self._server = await asyncio.start_server(self._handle, self.host, self.port,
+                                                  ssl=self.ssl_context)
+        log.info("[%s] %s listening on %s:%d", self.name,
+                 "HTTPS" if self.ssl_context else "HTTP", self.host, self.port)
 
     async def close(self) -> None:
         # keep-alive 연결과 WebSocket 은 핸들러가 read() 에서 대기 중이다.
@@ -204,7 +214,8 @@ class HTTPServer:
                 resp = await self._dispatch(req)
                 keep = (req.headers.get("connection", "keep-alive").lower() != "close"
                         and resp.status < 500)
-                writer.write(resp.render(keep, head_only=(req.method == "HEAD")))
+                writer.write(resp.render(keep, head_only=(req.method == "HEAD"),
+                                         cors=self.cors, extra_headers=self.default_headers))
                 await writer.drain()
                 if not keep:
                     return

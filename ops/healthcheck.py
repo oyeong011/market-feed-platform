@@ -38,6 +38,9 @@ SERVICES = [
 # 안 켠 구성에서 "응답 없음"으로 WARN 을 내면 사람이 알람을 무시하게 된다.
 if os.getenv("MDFEED_MCAST_ENABLED", "").lower() in ("1", "true", "yes", "on"):
     SERVICES.append(("mcast-publisher", 9132, True))
+# 주문 데스크도 같다. 켜져 있으면 필수 — 죽은 동안 체결·잔고 대사가 멈춘다.
+if os.getenv("MDFEED_ORDER_DESK_ENABLED", "").lower() in ("1", "true", "yes", "on"):
+    SERVICES.append(("order-desk", 9140, True))
 
 # 피드 품질 임계치
 MAX_TICK_AGE_S = 120.0          # 이보다 오래 틱이 없으면 CRIT (하트비트는 별개)

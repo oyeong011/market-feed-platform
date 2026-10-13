@@ -165,6 +165,25 @@ class Config:
     # 기동 로그에 어느 쪽인지 남긴다. 형식은 src/mdfeed/entitlements.py 참고.
     entitlements_file: str = field(default_factory=lambda: _env("ENTITLEMENTS_FILE", ""))
 
+    # ── 주문 데스크 (선택 서비스, services/order_desk.py) ─────────────────
+    # 기본은 모의투자. 실전은 ORDER_ALLOW_REAL=1 을 함께 줘야 기동한다 — 설정 하나 바꿔서
+    # 실제 돈이 움직이면 안 된다.
+    order_env: str = field(default_factory=lambda: _env("ORDER_ENV", "mock"))
+    order_allow_real: bool = field(default_factory=lambda: _bool("ORDER_ALLOW_REAL"))
+    order_kis_base: str = field(default_factory=lambda: _env("ORDER_KIS_BASE", ""))   # 시험용 가짜 서버
+    order_max_krw: int = field(default_factory=lambda: _int("ORDER_MAX_KRW", 1_000_000))
+    order_daily_max_krw: int = field(default_factory=lambda: _int("ORDER_DAILY_MAX_KRW", 5_000_000))
+    order_max_qty: int = field(default_factory=lambda: _int("ORDER_MAX_QTY", 1000))
+    ledger_path: str = field(default_factory=lambda: _env("LEDGER_PATH", "data/orders.db"))
+    reconcile_open_s: float = field(default_factory=lambda: float(_env("RECONCILE_OPEN_S", "5")))
+    reconcile_closed_s: float = field(default_factory=lambda: float(_env("RECONCILE_CLOSED_S", "60")))
+    desk_host: str = field(default_factory=lambda: _env("DESK_HOST", "127.0.0.1"))
+    desk_port: int = field(default_factory=lambda: _int("DESK_PORT", 8443))
+    desk_admin_port: int = field(default_factory=lambda: _int("DESK_ADMIN_PORT", 9140))
+    desk_tls_cert: str = field(default_factory=lambda: _env("DESK_TLS_CERT", "data/tls/desk.crt"))
+    desk_tls_key: str = field(default_factory=lambda: _env("DESK_TLS_KEY", "data/tls/desk.key"))
+    desk_password_hash: str = field(default_factory=lambda: _env("DESK_PASSWORD_HASH", ""))
+
     # ── 저장소 ─────────────────────────────────────────────────────────────
     storage_backend: str = field(default_factory=lambda: _env("STORAGE_BACKEND", "postgres"))
     storage_profile: str = field(default_factory=lambda: _env("STORAGE_PROFILE", "production"))
@@ -248,7 +267,7 @@ class Config:
 
     def to_dict(self) -> dict[str, str | int | float | bool | list[str] | None]:
         d = asdict(self)
-        for secret in ("kis_app_key", "kis_app_secret", "pg_dsn"):
+        for secret in ("kis_app_key", "kis_app_secret", "pg_dsn", "desk_password_hash"):
             if d.get(secret):
                 d[secret] = "***"          # 로그/헬스체크에 자격증명이 새지 않게
         return d

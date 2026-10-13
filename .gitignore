@@ -31,3 +31,7 @@ ops/mdfeed.local.env
 # 이 줄이 없어서 "만들면 커밋되는" 상태였다 — 자격증명이 저장소에 들어가는 길이었다.
 ops/secrets/
 cpp/build/
+
+# 주문 데스크: 개발용 TLS 키와 주문 원장. 원장에는 계좌의 실제 주문 기록이 들어간다.
+data/tls/
+data/orders.db*

@@ -10,7 +10,7 @@ export PYTHONPATH
 .DEFAULT_GOAL := help
 .PHONY: help venv install test lint bench up down status health logs \
         demo record replay backtest factor clean docker-build docker-up docker-down \
-        ci docs schema cpp cpp-test cpp-bench cpp-gateway cpp-compare mcast-pub mcast-client
+        ci docs schema cpp cpp-test cpp-bench cpp-gateway cpp-compare mcast-pub mcast-client desk desk-cert desk-password
 
 help:  ## 사용 가능한 명령
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -72,6 +72,20 @@ mcast-pub: cpp  ## UDP 멀티캐스트 발행자 + TCP 복구 채널 기동 (MDF
 
 mcast-client: venv  ## 멀티캐스트 참조 구독자 — 갭 탐지·재전송 복구 통계를 JSON 으로
 	$(BIN)/python -m mdfeed.mcast_client --duration $${DURATION:-10}
+
+desk-cert:  ## 주문 데스크 개발용 TLS 인증서 (localhost + 이 기기의 사설 IP, 397일)
+	@mkdir -p data/tls
+	openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 397 \
+	  -subj "/CN=mdfeed-desk" \
+	  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:$$(ipconfig getifaddr en0 2>/dev/null || hostname -I 2>/dev/null | cut -d' ' -f1 || echo 127.0.0.1)" \
+	  -keyout data/tls/desk.key -out data/tls/desk.crt
+	@chmod 600 data/tls/desk.key
+
+desk-password: venv  ## 주문 데스크 비밀번호 해시 만들기 → MDFEED_DESK_PASSWORD_HASH 에 넣는다
+	@$(BIN)/python -m mdfeed.auth hash
+
+desk: venv  ## 주문 데스크 기동 (기본 모의투자, https://localhost:8443). 휴대폰에서 열려면 MDFEED_DESK_HOST=0.0.0.0
+	MDFEED_ENV_FILE=$${MDFEED_ENV_FILE:-$$HOME/.mdfeed/kis.env} $(BIN)/python -m mdfeed.services.order_desk
 
 cpp-compare: cpp venv  ## 같은 수집기 아래 파이썬/C++ 게이트웨이 부하 비교 → docs/data/gateway_compare.json (CLIENT=cpp 로 C++ 클라이언트)
 	bench/compare_gateways.sh

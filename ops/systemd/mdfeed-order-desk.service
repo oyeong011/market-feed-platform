@@ -1,0 +1,58 @@
+[Unit]
+Description=MDFeed — 주문 데스크 (웹 MTS · 주문 · 원장 대사)
+Documentation=https://github.com/oyeong011/market-feed-platform
+# 시세 파이프라인과 독립이다. 증권사 REST 만 쓰므로 feedd 를 기다리지 않는다.
+After=network-online.target
+Wants=network-online.target
+PartOf=mdfeed.target
+
+# crash loop 방지. [Unit] 옵션이다(결함 44).
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=mdfeed
+Group=mdfeed
+WorkingDirectory=/opt/mdfeed
+Environment=PYTHONPATH=/opt/mdfeed/src
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/mdfeed/mdfeed.env
+# 계좌 자격증명은 시세용과 분리된 파일에서 읽는다(KIS_MOCK_* 또는 KIS_*, MDFEED_DESK_PASSWORD_HASH).
+EnvironmentFile=/etc/mdfeed/order-desk.env
+Environment=MDFEED_LEDGER_PATH=/var/lib/mdfeed/orders.db
+Environment=MDFEED_DESK_TLS_CERT=/etc/mdfeed/tls/desk.crt
+Environment=MDFEED_DESK_TLS_KEY=/etc/mdfeed/tls/desk.key
+ExecStart=/usr/bin/python3 -m mdfeed.services.order_desk
+
+# 기동 거부(설정 부족, 종료코드 2)는 재시작해도 안 고쳐진다. 되풀이하지 않는다.
+Restart=on-failure
+RestartPreventExitStatus=2
+RestartSec=3
+
+KillSignal=SIGTERM
+TimeoutStopSec=20
+KillMode=mixed
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mdfeed-order-desk
+
+# ── 격리 ──────────────────────────────────────────────────────────────────
+# 쓰는 곳은 원장 파일과 토큰 캐시뿐이다.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mdfeed /run/mdfeed
+Environment=HOME=/var/lib/mdfeed
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryMax=512M
+
+[Install]
+WantedBy=mdfeed.target

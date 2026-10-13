@@ -826,3 +826,33 @@ curl -s localhost:9111/healthz | python3 -c "import sys,json; print(json.load(sy
 - 거절은 구독자에게 `MSG_ACK` 로도 간다. "안 온다"는 문의가 오면 클라이언트 쪽 로그를 먼저 본다.
 
 토큰은 평문으로 흐른다. 이 포트를 인터넷에 열지 않는다 — 사설망이나 TLS 종단 뒤에 둔다.
+
+## 주문 데스크 — 원장 불일치 · 결과 모르는 주문
+
+**원칙: 원장을 손으로 맞추지 않는다.** 숫자를 맞춰 넣으면 다음 불일치의 원인을 못 찾는다.
+
+### LedgerReconcileBreak (원장 불일치)
+1. `https://<desk>:8443/api/reconcile` 의 `breaks` 와 `events` 를 본다.
+2. `unexplained_broker_orders` — 증권사에 원장이 모르는 주문이 있다. 대부분 HTS·MTS·`scripts/kis_paper.py` 로
+   직접 낸 주문이다. 그 종목·방향은 체결 배분이 **멈춰 있다**. HTS 주문내역에서 그 주문을 찾는다.
+3. `position_mismatch` — 보유수량이 다르다. 2번이 원인이면 같이 나온다. 아니면 기준선(`holdings_baseline`)
+   이후 입고·출고·권리 변동이 있었는지 본다.
+4. 원인이 데스크 밖 주문이면 그날은 그 종목·방향을 데스크로 주문하지 않는다. 다음 거래일에 기준선이 새로 잡힌다.
+
+### OrderOutcomeUnknown (결과 모르는 주문)
+- **같은 주문을 다시 내지 않는다.** 대사가 증권사 주문수량 합계로 판정한다:
+  늘었으면 ACCEPTED → 체결 반영, 30초가 지나도 안 늘었으면 NOT_SENT.
+- 2분 넘게 UNKNOWN 이면 대사 자체가 멈춘 것이다(LedgerReconcileStalled 와 같이 본다). 로그의 `대사 실패` 사유를 본다.
+
+### 설치
+```bash
+sudo install -m 600 -o mdfeed /dev/null /etc/mdfeed/order-desk.env   # KIS_MOCK_APP_KEY·SECRET·ACCOUNT, MDFEED_DESK_PASSWORD_HASH
+sudo install -d -m 700 -o mdfeed /etc/mdfeed/tls                     # desk.crt · desk.key
+sudo systemctl enable --now mdfeed-order-desk
+```
+기동 거부(설정 부족)는 종료코드 2 로 끝나고 systemd 가 되살리지 않는다(`RestartPreventExitStatus=2`).
+`journalctl -u mdfeed-order-desk` 의 `기동 거부:` 줄이 무엇이 빠졌는지 말한다.
+
+휴대폰에서 쓰려면 `desk.crt` 를 휴대폰에 설치하고 신뢰로 표시한다. 인증서 경고를 눌러 넘기는 습관이 들면
+TLS 를 쓰는 의미가 없다. 포트는 집 사설망에만 열고 공유기 포트포워딩은 하지 않는다.
+

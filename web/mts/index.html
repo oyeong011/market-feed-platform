@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<title>MDFeed 주문</title>
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<main id="login" class="screen" hidden>
+  <h1>MDFeed 주문 데스크</h1>
+  <form id="login-form">
+    <label for="pw">비밀번호</label>
+    <input id="pw" type="password" autocomplete="current-password" required>
+    <button type="submit">로그인</button>
+    <p id="login-msg" class="msg" role="alert"></p>
+  </form>
+</main>
+
+<main id="app" class="screen" hidden>
+  <header class="top">
+    <span id="env-badge" class="badge"></span>
+    <span id="account" class="muted"></span>
+    <button id="logout" class="link">로그아웃</button>
+  </header>
+
+  <section id="recon" class="banner" hidden role="status"></section>
+
+  <section class="card">
+    <form id="symbol-form" class="row">
+      <input id="symbol" inputmode="numeric" maxlength="6" pattern="\d{6}" value="005930" aria-label="종목코드">
+      <button type="submit">조회</button>
+    </form>
+    <div id="quote">
+      <div class="price"><span id="q-price">-</span><span id="q-change" class="change"></span></div>
+      <div class="muted small" id="q-meta"></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="seg" role="tablist">
+      <button type="button" data-side="buy" class="on buy">매수</button>
+      <button type="button" data-side="sell" class="sell">매도</button>
+    </div>
+    <div class="seg" role="tablist">
+      <button type="button" data-kind="market" class="on">시장가</button>
+      <button type="button" data-kind="limit">지정가</button>
+    </div>
+    <label for="qty">수량</label>
+    <input id="qty" type="number" min="1" step="1" value="1" inputmode="numeric">
+    <div id="price-row" hidden>
+      <label for="price">가격(원)</label>
+      <input id="price" type="number" min="1" step="1" inputmode="numeric">
+    </div>
+    <div class="muted small" id="est"></div>
+    <button id="order-btn" class="big buy" type="button">매수 주문</button>
+  </section>
+
+  <section class="card">
+    <h2>보유 <span class="muted small" id="cash"></span></h2>
+    <ul id="holdings" class="list"></ul>
+  </section>
+
+  <section class="card">
+    <h2>오늘 주문</h2>
+    <ul id="orders" class="list"></ul>
+  </section>
+</main>
+
+<dialog id="confirm">
+  <form method="dialog">
+    <h2 id="c-title"></h2>
+    <p id="c-body"></p>
+    <div class="row">
+      <button value="cancel" class="ghost">취소</button>
+      <button value="ok" id="c-ok">주문 보내기</button>
+    </div>
+  </form>
+</dialog>
+</body>
+</html>

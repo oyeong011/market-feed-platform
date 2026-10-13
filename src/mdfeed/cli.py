@@ -53,8 +53,18 @@ def mcast_enabled() -> bool:
     return os.getenv("MDFEED_MCAST_ENABLED", "").lower() in ("1", "true", "yes", "on")
 
 
+# 주문 데스크도 **선택 서비스**다. 계좌 자격증명·TLS 인증서·비밀번호 해시가 있어야 뜨고,
+# 없으면 기동을 거부한다. 시세 플랫폼만 돌리는 구성에서 그게 빨간 줄이 되면 안 되므로 명시적으로 켠다.
+ORDER_DESK_SERVICE = ("order-desk", "mdfeed.services.order_desk", 9140)
+
+
+def order_desk_enabled() -> bool:
+    return os.getenv("MDFEED_ORDER_DESK_ENABLED", "").lower() in ("1", "true", "yes", "on")
+
+
 def active_services() -> list[tuple]:
-    return SERVICES + ([MCAST_SERVICE] if mcast_enabled() else [])
+    return (SERVICES + ([MCAST_SERVICE] if mcast_enabled() else [])
+            + ([ORDER_DESK_SERVICE] if order_desk_enabled() else []))
 
 
 def service_command(name: str, module: str) -> list[str]:

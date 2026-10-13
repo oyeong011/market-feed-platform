@@ -898,6 +898,79 @@
      "refId": "C"
     }
    ]
+  },
+  {
+   "type": "timeseries",
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "id": 64,
+   "title": "주문 원장 대사",
+   "description": "LedgerReconcileBreak · OrderOutcomeUnknown 용. 불일치는 두 번 연속 보인 것만 센다. 0 이 아니면 그 종목·방향은 체결 배분이 멈춰 있다",
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 0,
+    "y": 74
+   },
+   "targets": [
+    {
+     "expr": "mdfeed_reconcile_breaks",
+     "legendFormat": "원장 불일치",
+     "refId": "A"
+    },
+    {
+     "expr": "mdfeed_orders_unknown",
+     "legendFormat": "결과 모르는 주문",
+     "refId": "B"
+    },
+    {
+     "expr": "increase(mdfeed_orders_total[15m])",
+     "legendFormat": "주문 {{result}}",
+     "refId": "C"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "id": 65,
+   "title": "대사 지연",
+   "description": "LedgerReconcileStalled · LedgerReconcileErrors 용. 마지막 성공 이후 초. 모의투자는 호출 1건이 약 4초라 평소 10~20초다",
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 12,
+    "y": 74
+   },
+   "targets": [
+    {
+     "expr": "time() - mdfeed_reconcile_last_success_timestamp_seconds",
+     "legendFormat": "마지막 성공 후",
+     "refId": "A"
+    },
+    {
+     "expr": "increase(mdfeed_reconcile_errors_total[10m])",
+     "legendFormat": "대사 실패 10분",
+     "refId": "B"
+    }
+   ]
   }
  ]
 }

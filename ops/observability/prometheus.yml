@@ -52,6 +52,9 @@ scrape_configs:
       # up{} 알람이 그걸 잡지 않도록 아래 알람들은 지표 존재를 전제로만 판정한다.
       - targets: ["host.docker.internal:9132"]
         labels: { service: mcast-publisher }
+      # 주문 데스크도 선택 서비스다(관리 포트 9140, 주문 화면은 TLS 8443 이라 따로).
+      - targets: ["host.docker.internal:9140"]
+        labels: { service: order-desk }
 
   # **알람을 보내는 쪽도 감시한다.** Alertmanager 가 죽으면 알람이 안 오는데, 그 사실을
   # 알려 줄 수 있는 건 Alertmanager 가 아니다. 그래서 Prometheus 가 직접 긁는다.

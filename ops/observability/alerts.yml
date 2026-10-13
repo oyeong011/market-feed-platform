@@ -529,3 +529,59 @@ groups:
         annotations:
           summary: "{{ $labels.service }} HTTP 오류가 10분간 20건 넘는다"
           action: "요청 경로 예외를 본다. db_errors_total 과 같이 오르면 저장 계층 문제다"
+
+  # 주문 데스크 (선택 서비스). 원장과 증권사 기록이 어긋나면 숫자를 맞추지 않고 사람을 부른다.
+  - name: mdfeed-orders
+    rules:
+      - alert: LedgerReconcileBreak
+        # 두 번 연속 대사에서 같은 불일치가 보였다(일시적 반영 지연은 이미 걸렀다).
+        # 원장 밖에서 낸 주문(HTS·다른 스크립트)이거나 원장 결함이다. 그 종목·방향은 배분이 멈춰 있다.
+        expr: mdfeed_reconcile_breaks > 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "주문 원장과 증권사 기록이 어긋났다 ({{ $value }}건)"
+          action: "https://<desk>/api/reconcile 의 breaks·events 를 보고 HTS 체결내역과 대조한다. 원장을 손으로 맞추지 않는다"
+
+      - alert: OrderOutcomeUnknown
+        # 보냈는데 응답을 못 받은 주문. 재전송하지 않고 대사가 판정하는데, 그게 안 끝나고 있다.
+        expr: mdfeed_orders_unknown > 0
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "결과를 모르는 주문이 {{ $value }}건 있다"
+          action: "같은 주문을 다시 내지 않는다. HTS 에서 그 종목 주문내역을 확인한다"
+
+      - alert: LedgerReconcileStalled
+        expr: time() - mdfeed_reconcile_last_success_timestamp_seconds > 300
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "대사가 5분 넘게 성공하지 못했다 — 체결·잔고 반영이 멈춤"
+          action: "order-desk 로그의 '대사 실패' 사유(토큰·유량제한·네트워크)를 본다"
+
+      - alert: LedgerReconcileErrors
+        expr: increase(mdfeed_reconcile_errors_total[10m]) > 5
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "대사 호출이 10분간 5번 넘게 실패했다"
+          action: "KIS 유량제한(EGW00201)·토큰 만료 여부를 본다"
+
+      - alert: OrdersRejectedSpike
+        expr: increase(mdfeed_orders_total{result="rejected"}[10m]) > 3
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "증권사가 주문을 10분간 3건 넘게 거부했다"
+          action: "주문 기록의 message(잔고 부족·호가 단위·장 시간)를 본다"
+
+      - alert: DeskLoginFailures
+        # 사용자는 한 명이다. 5회 실패면 잠금이 걸리는데, 내가 아니라면 누가 두드리는 것이다.
+        expr: increase(mdfeed_login_failures_total[10m]) >= 5
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "주문 데스크 로그인 실패가 10분간 5회 이상"
+          action: "본인이 아니면 비밀번호를 바꾸고(MDFEED_DESK_PASSWORD_HASH) 접속 경로를 사설망으로 좁힌다"
+

@@ -65,6 +65,13 @@ CONDITIONAL = {
         "REST 로 폴링하는 어댑터(KIS)가 붙어 있어야 생성된다. 웹소켓·리플레이 구성에는 없다",
 }
 DECLARED_OFFLINE = {
+    "mdfeed_login_failures_total",
+    "mdfeed_orders_total",
+    "mdfeed_orders_unknown",
+    "mdfeed_reconcile_breaks",
+    "mdfeed_reconcile_errors_total",
+    "mdfeed_reconcile_last_success_timestamp_seconds",
+    "mdfeed_reconcile_runs_total",
     "mdfeed_adapter_errors_total",
     "mdfeed_adapter_silent_exits_total",
     "mdfeed_adapter_task_deaths_total",
@@ -171,6 +178,9 @@ GATEWAY_PORT = 9111
 # 아예 없다 — 같은 값을 억지로 만들면 "0 이니까 괜찮다" 는 거짓말이 된다. 구현이 다르면 낼 수
 # 있는 것도 다르고, 그 사실을 분류로 적는다.
 CPP_GATEWAY_METRICS = {"mdfeed_send_eagain_total", "mdfeed_fanout_delay_spread", "mdfeed_fanout_delay_max_us"}
+# 주문 데스크도 선택 서비스(MDFEED_ORDER_DESK_ENABLED). 멀티캐스트와 같은 방식으로 구분한다.
+ORDER_DESK_PORT = 9140
+ORDER_DESK_METRICS = {"mdfeed_login_failures_total", "mdfeed_orders_total", "mdfeed_orders_unknown", "mdfeed_reconcile_breaks", "mdfeed_reconcile_errors_total", "mdfeed_reconcile_last_success_timestamp_seconds"}
 MCAST_METRICS = {
     "mdfeed_mcast_send_errors_total",
     "mdfeed_mcast_retrans_unavailable_total",
@@ -184,6 +194,7 @@ MCAST_METRICS = {
 # 여기 없고 알람도 없으면 실패한다 — 지표를 새로 내면서 "볼지 말지" 결정을 건너뛰지 못하게 한다.
 # 이 저장소는 반대 방향(알람은 있는데 지표가 없다)으로 이미 한 번 당했다(결함 23).
 NO_ALERT_BY_DESIGN = {
+    "mdfeed_reconcile_runs_total",     # 대사 주기 분모. 멈춤은 last_success 시각으로 본다
     "mdfeed_uptime_seconds",           # 대시보드 표시용
     "mdfeed_sent_total",               # 처리량. 이상은 비율 지표로 본다
     "mdfeed_frames_in_total",
@@ -409,6 +420,9 @@ def main() -> int:
             # 멀티캐스트 발행자를 안 켠 구성. 없는 것이 정확한 동작이다.
             conditional[m] = alerts
             notes[m] = f"멀티캐스트 발행자(:{MCAST_PORT}) 가 떠 있어야 생성된다 (MDFEED_MCAST_ENABLED)"
+        elif m in ORDER_DESK_METRICS and live_ports and ORDER_DESK_PORT not in live_ports:
+            conditional[m] = alerts
+            notes[m] = f"주문 데스크(:{ORDER_DESK_PORT}) 가 떠 있어야 생성된다 (MDFEED_ORDER_DESK_ENABLED)"
         elif m in PREFLIGHT_METRICS and live_ports and not preflight_live:
             # 익스포터가 안 떠 있다. 떠 있는데 없으면 아래 missing 으로 간다
             conditional[m] = alerts
