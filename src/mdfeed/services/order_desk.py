@@ -33,7 +33,7 @@ from pathlib import Path
 from .. import auth, ledger as L
 from ..adapters.kis import KST, market_is_open
 from ..httpd import HTTPServer, Request, Response, health_routes
-from ..kis_trading import KISTrading, Rejected, Uncertain
+from ..kis_trading import THROTTLED, KISTrading, Rejected, Uncertain
 from ..metrics import Registry
 
 SERVICE = "order-desk"
@@ -42,6 +42,9 @@ WEB_DIR = Path(__file__).resolve().parents[3] / "web" / "mts"
 COOKIE = "desk_session"
 SYMBOL_RE = re.compile(r"^\d{6}$")
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+# 현재가는 주문·대사와 같은 초당 호출 한도를 나눠 쓴다. 화면(탭)이 몇 개든 종목당 이 간격에 한 번만 부른다.
+# 모의는 한도가 초당 1건이라, 화면이 2초마다 부르면 그것만으로 예산의 절반을 쓴다.
+QUOTE_TTL_S = {"mock": 5.0, "real": 1.0}
 
 SECURITY_HEADERS = {
     "Strict-Transport-Security": "max-age=31536000",
@@ -104,7 +107,12 @@ class OrderDesk:
         self.registry = Registry(SERVICE)
         self.registry.declare_counters(
             "login_failures_total", "reconcile_runs_total", "reconcile_errors_total",
-            orders_total=[{"result": r} for r in ("accepted", "rejected", "unknown", "blocked")])
+            orders_total=[{"result": r} for r in ("accepted", "rejected", "unknown", "blocked")],
+            kis_throttled_total=[{"code": c} for c in sorted(THROTTLED)])
+        self.client.observer = self._kis_event
+        self.quote_ttl_s = QUOTE_TTL_S[cfg.order_env]
+        self._quotes: dict[str, tuple[float, dict]] = {}
+        self._quote_inflight: dict[str, asyncio.Task] = {}
         self.sessions = auth.SessionStore()
         self.throttle = auth.LoginThrottle()
         self._submit_lock = asyncio.Lock()
@@ -168,15 +176,37 @@ class OrderDesk:
         return Response.json({"authenticated": self._authed(req), "env": self.cfg.order_env,
                               "account": self.client.account_label})
 
+    def _kis_event(self, kind: str, value: str) -> None:
+        if kind == "call":
+            self.registry.counter("kis_calls_total", tr=value)
+        elif kind == "throttled":
+            self.registry.counter("kis_throttled_total", code=value)
+
     # ── 조회 ──────────────────────────────────────────────────────────────
+    async def price(self, sym: str) -> dict:
+        """종목당 quote_ttl_s 안에서는 증권사를 한 번만 부른다. 동시에 온 요청은 같은 호출을 기다린다."""
+        hit = self._quotes.get(sym)
+        if hit and time.monotonic() - hit[0] < self.quote_ttl_s:
+            return hit[1]
+        task = self._quote_inflight.get(sym)
+        if task is None:
+            task = asyncio.ensure_future(self.client.price(sym))
+            self._quote_inflight[sym] = task
+            task.add_done_callback(lambda _t: self._quote_inflight.pop(sym, None))
+        q = {**await asyncio.shield(task), "as_of": time.time()}
+        self._quotes[sym] = (time.monotonic(), q)
+        return q
+
     async def quote(self, req: Request) -> Response:
         sym = req.query.get("symbol", "")
         if not SYMBOL_RE.match(sym):
             return Response.json({"error": "종목코드는 숫자 6자리"}, 400)
         try:
-            return Response.json(await self.client.price(sym))
+            q = await self.price(sym)
         except (Rejected, Uncertain) as e:
             return Response.json({"error": str(e)}, 502)
+        # 몇 초 묵은 값인지 서버 시계로 알려 준다(휴대폰 시계와 어긋나도 맞게)
+        return Response.json({**q, "age_s": round(time.time() - q["as_of"], 1)})
 
     async def balance(self, req: Request) -> Response:
         if self.balance_cache is None or req.query.get("fresh") == "1":
@@ -215,7 +245,7 @@ class OrderDesk:
             if self.ledger.open_order(day, sym, side):
                 return self._blocked("같은 종목·방향에 아직 열린 주문이 있습니다", 409)
             try:
-                unit = price or (await self.client.price(sym))["price"]
+                unit = price or (await self.price(sym))["price"]
             except (Rejected, Uncertain) as e:
                 return self._blocked(f"현재가를 못 가져와 금액 한도를 확인할 수 없습니다: {e}", 503)
             notional = unit * qty

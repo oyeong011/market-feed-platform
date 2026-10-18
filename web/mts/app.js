@@ -56,7 +56,8 @@ async function refreshQuote() {
   const ch = $("q-change");
   ch.textContent = `${data.change > 0 ? "+" : ""}${won(data.change)} (${data.change_pct.toFixed(2)}%)`;
   ch.className = "change " + (data.change > 0 ? "up" : data.change < 0 ? "down" : "");
-  $("q-meta").textContent = `${sym} · 시 ${won(data.open)} 고 ${won(data.high)} 저 ${won(data.low)} · 거래량 ${won(data.volume)}`;
+  const age = data.age_s >= 1 ? ` · ${Math.round(data.age_s)}초 전 시세` : "";
+  $("q-meta").textContent = `${sym} · 시 ${won(data.open)} 고 ${won(data.high)} 저 ${won(data.low)} · 거래량 ${won(data.volume)}${age}`;
   updateEstimate();
 }
 

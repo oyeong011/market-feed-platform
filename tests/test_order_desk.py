@@ -12,6 +12,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from http.cookiejar import CookieJar
 
 import pytest
@@ -51,17 +52,23 @@ class FakeKIS:
         self.mode = "ok"                  # ok · reject · throttle_once · sent_then_hang · hang_not_sent
         self.price = 1000
         self.throttle_code = "EGW00201"
+        self.price_calls = 0
         self.orders: list[dict] = []
         self.totals: dict[tuple, dict] = {}
         self.holdings: dict[str, int] = {"005930": 2}
         self.srv = HTTPServer("127.0.0.1", port, "fake-kis")
         r = self.srv.route
         r("POST", "/oauth2/tokenP", lambda q: Response.json({"access_token": "t", "expires_in": 86400}))
-        r("GET", "/uapi/domestic-stock/v1/quotations/inquire-price", lambda q: Response.json(
-            {"rt_cd": "0", "output": {"stck_prpr": str(self.price), "prdy_vrss": "0", "prdy_ctrt": "0"}}))
+        r("GET", "/uapi/domestic-stock/v1/quotations/inquire-price", self._price)
         r("GET", "/uapi/domestic-stock/v1/trading/inquire-balance", self._balance)
         r("GET", "/uapi/domestic-stock/v1/trading/inquire-daily-ccld", self._ccld)
         r("POST", "/uapi/domestic-stock/v1/trading/order-cash", self._order)
+
+    async def _price(self, q):
+        self.price_calls += 1
+        await asyncio.sleep(0.05)                    # 동시 요청이 겹칠 틈
+        return Response.json({"rt_cd": "0", "output": {"stck_prpr": str(self.price),
+                                                       "prdy_vrss": "0", "prdy_ctrt": "0"}})
 
     def _balance(self, q):
         return Response.json({"rt_cd": "0", "output2": [{"dnca_tot_amt": "1000000"}], "output1": [
@@ -234,6 +241,38 @@ def test_throttled_call_is_retried_once(cert, tmp_path, code):
         st, d, _ = b.order("test-order-0001")
         assert st == 201 and d["order"]["state"] != "REJECTED"
         assert len(kis.orders) == 1
+    run_desk(cert, check, tmp_path)
+
+
+def test_quotes_from_many_tabs_share_one_broker_call(cert, tmp_path):
+    """현재가는 주문·대사와 같은 초당 한도를 쓴다. 화면 수만큼 호출이 늘면 대사가 밀린다."""
+    def check(b, kis, desk):
+        desk.quote_ttl_s = 0.5
+        b.login()
+        before = kis.price_calls
+        with ThreadPoolExecutor(8) as ex:
+            got = list(ex.map(lambda _: b.call("/api/quote?symbol=005930")[0], range(8)))
+        assert got == [200] * 8
+        assert kis.price_calls - before == 1
+        time.sleep(desk.quote_ttl_s + 0.1)
+        b.call("/api/quote?symbol=005930")
+        assert kis.price_calls - before == 2
+    run_desk(cert, check, tmp_path)
+
+
+def test_throttle_is_counted_per_code(cert, tmp_path):
+    def check(b, kis, desk):
+        b.login()
+        kis.throttle_code = "EGW00215"
+        kis.mode = "throttle_once"
+        b.order("test-order-0001")
+        lines = desk.registry.prometheus().splitlines()
+
+        def value(name, label):
+            return [float(x.rsplit(" ", 1)[1]) for x in lines if x.startswith(name + "{") and label in x]
+        assert value("mdfeed_kis_throttled_total", 'code="EGW00215"') == [1.0]
+        assert value("mdfeed_kis_throttled_total", 'code="EGW00201"') == [0.0]
+        assert value("mdfeed_kis_calls_total", 'tr="VTTC0802U"') == [2.0]     # 거절 1 + 재시도 1
     run_desk(cert, check, tmp_path)
 
 

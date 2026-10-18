@@ -65,6 +65,8 @@ CONDITIONAL = {
         "REST 로 폴링하는 어댑터(KIS)가 붙어 있어야 생성된다. 웹소켓·리플레이 구성에는 없다",
 }
 DECLARED_OFFLINE = {
+    "mdfeed_kis_calls_total",
+    "mdfeed_kis_throttled_total",
     "mdfeed_login_failures_total",
     "mdfeed_orders_total",
     "mdfeed_orders_unknown",
@@ -180,7 +182,7 @@ GATEWAY_PORT = 9111
 CPP_GATEWAY_METRICS = {"mdfeed_send_eagain_total", "mdfeed_fanout_delay_spread", "mdfeed_fanout_delay_max_us"}
 # 주문 데스크도 선택 서비스(MDFEED_ORDER_DESK_ENABLED). 멀티캐스트와 같은 방식으로 구분한다.
 ORDER_DESK_PORT = 9140
-ORDER_DESK_METRICS = {"mdfeed_login_failures_total", "mdfeed_orders_total", "mdfeed_orders_unknown", "mdfeed_reconcile_breaks", "mdfeed_reconcile_errors_total", "mdfeed_reconcile_last_success_timestamp_seconds"}
+ORDER_DESK_METRICS = {"mdfeed_login_failures_total", "mdfeed_orders_total", "mdfeed_orders_unknown", "mdfeed_reconcile_breaks", "mdfeed_reconcile_errors_total", "mdfeed_reconcile_last_success_timestamp_seconds", "mdfeed_kis_calls_total", "mdfeed_kis_throttled_total"}
 MCAST_METRICS = {
     "mdfeed_mcast_send_errors_total",
     "mdfeed_mcast_retrans_unavailable_total",
@@ -195,6 +197,7 @@ MCAST_METRICS = {
 # 이 저장소는 반대 방향(알람은 있는데 지표가 없다)으로 이미 한 번 당했다(결함 23).
 NO_ALERT_BY_DESIGN = {
     "mdfeed_reconcile_runs_total",     # 대사 주기 분모. 멈춤은 last_success 시각으로 본다
+    "mdfeed_kis_calls_total",          # TR 별 호출 수. 한도 거절(kis_throttled_total)의 분모
     "mdfeed_uptime_seconds",           # 대시보드 표시용
     "mdfeed_sent_total",               # 처리량. 이상은 비율 지표로 본다
     "mdfeed_frames_in_total",

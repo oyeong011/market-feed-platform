@@ -568,6 +568,15 @@ groups:
           summary: "대사 호출이 10분간 5번 넘게 실패했다"
           action: "KIS 유량제한(EGW00201)·토큰 만료 여부를 본다"
 
+      - alert: KisThrottleSpike
+        # 접수 전 거절이라 1회 재시도로 흡수하지만, 잦으면 재시도도 같은 1초에 묶여 대사·주문이 실패한다.
+        expr: increase(mdfeed_kis_throttled_total[10m]) > 10
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "KIS 초당 한도 거절이 10분간 10번 넘게 났다"
+          action: "mdfeed_kis_calls_total 를 TR 별로 보고 어느 호출이 늘었는지 확인한다(열린 화면 수·현재가 조회)"
+
       - alert: OrdersRejectedSpike
         expr: increase(mdfeed_orders_total{result="rejected"}[10m]) > 3
         for: 1m

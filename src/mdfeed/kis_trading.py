@@ -45,7 +45,10 @@ TR = {
 }
 TR_PRICE = "FHKST01010100"
 # 모의투자는 초당 호출 한도가 실전보다 훨씬 낮다. 넘으면 EGW00201 로 거절된다.
-MIN_INTERVAL_S = {"mock": 0.55, "real": 0.06}
+# 한도는 TR 종류와 무관하게 사실상 초당 1건이다(2026-10-18 실측, 재시도 없이 원시 응답):
+#   0.55초 30건 중 8건 · 0.8초 40건 중 5건 · 1.05초 70건 중 1건 · 1.2초·1.5초 80건 중 0건 거절.
+# 처음 값 0.55 는 "초당 2건"이라는 가정이었고, 24시간 가동에서 한도 거절이 하루 수십 번 난 원인이었다.
+MIN_INTERVAL_S = {"mock": 1.1, "real": 0.06}
 # 간격을 지켜도 토큰 발급 직후 첫 호출은 같은 초로 묶여 EGW00201 이 난다(모의 실측).
 # EGW00215 는 원장 쪽 초당 한도로, 간격을 지켜도 하루 수십 번 산발한다(모의 24시간 실측).
 # 둘 다 접수 전 거절이라 주문도 안 들어간 게 확실하므로 1초 뒤 한 번만 다시 보낸다.
@@ -92,6 +95,8 @@ class KISTrading:
         self._last = 0.0
         self._pace = asyncio.Lock()
         self.calls = 0
+        # (사건, 값) 을 받는 콜백. 데스크가 지표로 바꾼다: ("call", tr_id) · ("throttled", msg_cd)
+        self.observer = None
 
     @property
     def account_label(self) -> str:
@@ -117,6 +122,7 @@ class KISTrading:
                 await asyncio.sleep(wait)
             self._last = time.monotonic()
         self.calls += 1
+        self._notify("call", tr_id)
         url = self.base + path
         if params:
             url += "?" + urllib.parse.urlencode(params)
@@ -145,8 +151,15 @@ class KISTrading:
         if "rt_cd" not in d:
             raise Uncertain(f"rt_cd 없는 응답 {tr_id}")
         if d["rt_cd"] != "0":
-            raise Rejected(d.get("msg_cd", ""), (d.get("msg1") or "").strip())
+            code = d.get("msg_cd", "")
+            if code in THROTTLED:
+                self._notify("throttled", code)
+            raise Rejected(code, (d.get("msg1") or "").strip())
         return d
+
+    def _notify(self, kind: str, value: str) -> None:
+        if self.observer:
+            self.observer(kind, value)
 
     # ── 조회 ──────────────────────────────────────────────────────────────
     async def price(self, symbol: str) -> dict:
