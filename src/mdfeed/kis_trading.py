@@ -46,6 +46,11 @@ TR = {
 TR_PRICE = "FHKST01010100"
 # 모의투자는 초당 호출 한도가 실전보다 훨씬 낮다. 넘으면 EGW00201 로 거절된다.
 MIN_INTERVAL_S = {"mock": 0.55, "real": 0.06}
+# 간격을 지켜도 토큰 발급 직후 첫 호출은 같은 초로 묶여 EGW00201 이 난다(모의 실측).
+# EGW00215 는 원장 쪽 초당 한도로, 간격을 지켜도 하루 수십 번 산발한다(모의 24시간 실측).
+# 둘 다 접수 전 거절이라 주문도 안 들어간 게 확실하므로 1초 뒤 한 번만 다시 보낸다.
+THROTTLED = {"EGW00201", "EGW00215"}
+THROTTLE_RETRY_S = 1.0
 SIDE_CODE = {"sell": "01", "buy": "02"}
 
 
@@ -94,6 +99,17 @@ class KISTrading:
 
     async def _call(self, method: str, path: str, tr_id: str,
                     params: dict | None = None, body: dict | None = None) -> dict:
+        try:
+            return await self._call_once(method, path, tr_id, params, body)
+        except Rejected as e:
+            if e.code not in THROTTLED:
+                raise
+            log.warning("[kis] %s 초당 한도 초과 → %.0f초 뒤 1회 재시도", tr_id, THROTTLE_RETRY_S)
+            await asyncio.sleep(THROTTLE_RETRY_S)
+            return await self._call_once(method, path, tr_id, params, body)
+
+    async def _call_once(self, method: str, path: str, tr_id: str,
+                         params: dict | None, body: dict | None) -> dict:
         token = await self._tokens.token()
         async with self._pace:
             wait = self._last + self._gap - time.monotonic()

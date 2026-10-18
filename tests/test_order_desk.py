@@ -48,8 +48,9 @@ class FakeKIS:
 
     def __init__(self, port: int):
         self.port = port
-        self.mode = "ok"                  # ok · reject · sent_then_hang · hang_not_sent
+        self.mode = "ok"                  # ok · reject · throttle_once · sent_then_hang · hang_not_sent
         self.price = 1000
+        self.throttle_code = "EGW00201"
         self.orders: list[dict] = []
         self.totals: dict[tuple, dict] = {}
         self.holdings: dict[str, int] = {"005930": 2}
@@ -83,6 +84,9 @@ class FakeKIS:
     async def _order(self, q):
         b = json.loads(q.body)
         side = "buy" if q.headers["tr_id"].endswith("0802U") else "sell"
+        if self.mode == "throttle_once":
+            self.mode = "ok"
+            return Response.json({"rt_cd": "1", "msg_cd": self.throttle_code, "msg1": "초당 거래건수를 초과하였습니다."})
         if self.mode == "reject":
             return Response.json({"rt_cd": "1", "msg_cd": "APBK0013", "msg1": "주문가능금액 부족"})
         if self.mode != "hang_not_sent":
@@ -217,6 +221,19 @@ def test_rejection_is_recorded(cert, tmp_path):
         kis.mode = "reject"
         st, d, _ = b.order("test-order-0001")
         assert st == 422 and d["order"]["state"] == "REJECTED" and "부족" in d["order"]["message"]
+    run_desk(cert, check, tmp_path)
+
+
+@pytest.mark.parametrize("code", ["EGW00201", "EGW00215"])
+def test_throttled_call_is_retried_once(cert, tmp_path, code):
+    """초당 한도 거절은 주문이 안 들어간 것이라 다시 보내도 1건이다."""
+    def check(b, kis, desk):
+        b.login()
+        kis.throttle_code = code
+        kis.mode = "throttle_once"
+        st, d, _ = b.order("test-order-0001")
+        assert st == 201 and d["order"]["state"] != "REJECTED"
+        assert len(kis.orders) == 1
     run_desk(cert, check, tmp_path)
 
 
