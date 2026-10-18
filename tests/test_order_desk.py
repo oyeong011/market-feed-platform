@@ -53,6 +53,7 @@ class FakeKIS:
         self.price = 1000
         self.throttle_code = "EGW00201"
         self.price_calls = 0
+        self.balance_calls = 0
         self.orders: list[dict] = []
         self.totals: dict[tuple, dict] = {}
         self.holdings: dict[str, int] = {"005930": 2}
@@ -71,6 +72,7 @@ class FakeKIS:
                                                        "prdy_vrss": "0", "prdy_ctrt": "0"}})
 
     def _balance(self, q):
+        self.balance_calls += 1
         return Response.json({"rt_cd": "0", "output2": [{"dnca_tot_amt": "1000000"}], "output1": [
             {"pdno": s, "prdt_name": s, "hldg_qty": str(n), "pchs_avg_pric": "1000", "prpr": "1000",
              "evlu_pfls_amt": "0", "evlu_pfls_rt": "0"} for s, n in self.holdings.items()]})
@@ -258,6 +260,18 @@ def test_quotes_from_many_tabs_share_one_broker_call(cert, tmp_path):
         b.call("/api/quote?symbol=005930")
         assert kis.price_calls - before == 2
     run_desk(cert, check, tmp_path)
+
+
+def test_screen_balance_reads_reconcile_cache(cert, tmp_path):
+    """화면이 증권사 잔고 조회를 직접 일으키지 못한다. 예전 화면은 10초마다 ?fresh=1 로 캐시를 건너뛰었다."""
+    def check(b, kis, desk):
+        b.login()
+        assert wait_for(lambda: desk.balance_cache is not None)
+        before = kis.balance_calls
+        for _ in range(5):
+            assert b.call("/api/balance?fresh=1")[0] == 200
+        assert kis.balance_calls - before <= 1        # 그 사이 대사 주기 한 번은 있을 수 있다
+    run_desk(cert, check, tmp_path, reconcile_open_s=5.0, reconcile_closed_s=5.0)
 
 
 def test_throttle_is_counted_per_code(cert, tmp_path):

@@ -208,8 +208,9 @@ class OrderDesk:
         # 몇 초 묵은 값인지 서버 시계로 알려 준다(휴대폰 시계와 어긋나도 맞게)
         return Response.json({**q, "age_s": round(time.time() - q["as_of"], 1)})
 
-    async def balance(self, req: Request) -> Response:
-        if self.balance_cache is None or req.query.get("fresh") == "1":
+    async def balance(self, _req: Request) -> Response:
+        # 대사가 매 주기 잔고를 새로 받아 둔다. 화면 요청마다 증권사를 부르면 한도를 나눠 먹는다(결함 52).
+        if self.balance_cache is None:
             try:
                 self.balance_cache = {**await self.client.balance(), "as_of": time.time()}
             except (Rejected, Uncertain) as e:

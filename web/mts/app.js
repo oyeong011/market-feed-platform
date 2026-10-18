@@ -62,7 +62,7 @@ async function refreshQuote() {
 }
 
 async function refreshBalance() {
-  const { status, data } = await api("/api/balance?fresh=1").catch(() => ({}));
+  const { status, data } = await api("/api/balance").catch(() => ({}));
   if (status !== 200) return;
   $("cash").textContent = `예수금 ${won(data.cash)}원 · 평가 ${won(data.total)}원`;
   const ul = $("holdings"); ul.replaceChildren();
