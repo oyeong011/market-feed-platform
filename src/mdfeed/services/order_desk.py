@@ -45,6 +45,8 @@ CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 # 현재가는 주문·대사와 같은 초당 호출 한도를 나눠 쓴다. 화면(탭)이 몇 개든 종목당 이 간격에 한 번만 부른다.
 # 모의는 한도가 초당 1건이라, 화면이 2초마다 부르면 그것만으로 예산의 절반을 쓴다.
 QUOTE_TTL_S = {"mock": 5.0, "real": 1.0}
+# 정규장은 15:30 에 끝난다. 마지막 체결이 증권사 합계에 반영될 여유를 두고 닫는다.
+DAY_CLOSE_AT = dt.time(15, 40)
 
 SECURITY_HEADERS = {
     "Strict-Transport-Security": "max-age=31536000",
@@ -121,6 +123,9 @@ class OrderDesk:
         self.breaks: list[dict] = []           # 두 번 연속 보인 불일치만 (일시적 지연을 거른다)
         self.last_reconcile: dict = {}
         self.balance_cache: dict | None = None
+        self.close_status: dict = {}
+        self._now = lambda: dt.datetime.now(KST)
+        self.registry.gauge("ledger_close_blocked", 0.0)
         self.started = time.time()
         recovered = self.ledger.recover_pending()
         if recovered:
@@ -223,7 +228,7 @@ class OrderDesk:
 
     def reconcile_status(self, _req: Request) -> Response:
         return Response.json({**self.last_reconcile, "breaks": self.breaks,
-                              "events": self.ledger.events(20)})
+                              "day_close": self.close_status, "events": self.ledger.events(20)})
 
     # ── 주문 ──────────────────────────────────────────────────────────────
     async def submit(self, req: Request) -> Response:
@@ -243,6 +248,8 @@ class OrderDesk:
             existing = self.ledger.by_client_id(cid)
             if existing:
                 return Response.json({"order": existing, "duplicate": True})
+            if self.ledger.day_close(day):
+                return self._blocked("오늘 장부는 마감됐습니다", 409)
             if self.ledger.open_order(day, sym, side):
                 return self._blocked("같은 종목·방향에 아직 열린 주문이 있습니다", 409)
             try:
@@ -320,6 +327,7 @@ class OrderDesk:
                                        "candidates": found}
                 if self.breaks:
                     log.warning("원장 불일치 %d건: %s", len(self.breaks), self.breaks)
+                self._maybe_close(found)
             except (Rejected, Uncertain) as e:
                 self.registry.counter("reconcile_errors_total")
                 log.warning("대사 실패: %s", e)
@@ -332,6 +340,20 @@ class OrderDesk:
             self._kick.clear()
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(self._wait_any(stop), timeout=interval)
+
+    def _maybe_close(self, found: list[dict]) -> None:
+        """장 마감 뒤 대사가 깨끗하게 끝났으면 하루를 닫는다. 막히면 이유를 지표·로그로 남긴다."""
+        now = self._now()
+        if now.time() < DAY_CLOSE_AT:
+            return
+        prev = self.close_status
+        self.close_status = self.ledger.close_day(now.strftime("%Y%m%d"), open_breaks=len(found))
+        closed = self.close_status["closed"]
+        self.registry.gauge("ledger_close_blocked", 0.0 if closed else 1.0)
+        if closed and not prev.get("closed"):
+            log.info("장부 마감 %s: %s", self.close_status["trade_date"], self.close_status)
+        elif not closed and prev.get("reason") != self.close_status["reason"]:
+            log.warning("장부를 닫지 못함: %s", self.close_status)
 
     async def _wait_any(self, stop: asyncio.Event) -> None:
         kick, halt = asyncio.ensure_future(self._kick.wait()), asyncio.ensure_future(stop.wait())

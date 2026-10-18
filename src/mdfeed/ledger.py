@@ -17,6 +17,11 @@
    맞춰 넣으면 숫자는 맞아 보이지만 원장이 틀린 채로 굳는다.
 
 잔고 대사는 별도다: 오늘 첫 대사 때 잡은 보유수량 기준선 + 원장 체결 순증감 = 증권사 보유수량.
+
+6. **장이 끝나면 하루를 닫는다.** 미체결 잔량은 EXPIRED 로 닫고 그날 결과를 한 건으로 남긴다.
+   결과를 모르는 주문(UNKNOWN)이나 불일치가 남아 있으면 닫지 않는다 — 틀린 하루를 확정하지 않는다.
+   EXPIRED 는 증권사에 들어간 주문이라 주문수량 합계는 계속 설명하지만, 더는 체결을 받지 않는다.
+   마감 뒤 체결이 늘면 흡수하지 않고 불일치로 올린다.
 """
 
 from __future__ import annotations
@@ -34,9 +39,11 @@ FILLED = "FILLED"
 REJECTED = "REJECTED"
 UNKNOWN = "UNKNOWN"
 NOT_SENT = "NOT_SENT"
+EXPIRED = "EXPIRED"           # 장 마감까지 체결되지 않은 잔량. 증권사에 들어간 주문이다
 
 OPEN_STATES = (PENDING_SUBMIT, ACCEPTED, PARTIAL, UNKNOWN)
-LIVE_STATES = (ACCEPTED, PARTIAL, FILLED)          # 증권사에 들어간 것이 확실한 주문
+LIVE_STATES = (ACCEPTED, PARTIAL, FILLED, EXPIRED)  # 증권사에 들어간 것이 확실한 주문
+FILLABLE_STATES = (ACCEPTED, PARTIAL)                # 그중 아직 체결을 받을 수 있는 주문
 UNKNOWN_GRACE_S = 30.0
 
 SCHEMA = """
@@ -77,6 +84,8 @@ CREATE TABLE IF NOT EXISTS holdings_baseline (
     PRIMARY KEY (trade_date, symbol)
 );
 CREATE TABLE IF NOT EXISTS holdings_baseline_taken (trade_date TEXT PRIMARY KEY, ts REAL NOT NULL);
+-- 하루 마감 기록. 한 번 닫힌 날은 다시 닫지 않는다.
+CREATE TABLE IF NOT EXISTS day_close (trade_date TEXT PRIMARY KEY, ts REAL NOT NULL, summary TEXT NOT NULL);
 -- 감사 기록. 지우거나 고치지 않는다.
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -262,7 +271,7 @@ class Ledger:
             return breaks + [{**key, "kind": "broker_fills_below_ledger", "delta": delta}]
         if delta == 0:
             return breaks
-        open_live = [o for o in live if o["filled_qty"] < o["qty"]]
+        open_live = [o for o in live if o["state"] in FILLABLE_STATES and o["filled_qty"] < o["qty"]]
         room = sum(o["qty"] - o["filled_qty"] for o in open_live)
         if delta > room:
             return breaks + [{**key, "kind": "fills_exceed_orders", "delta": delta, "room": room}]
@@ -301,3 +310,41 @@ class Ledger:
         return [{"symbol": s, "kind": "position_mismatch",
                  "ledger_qty": exp.get(s, 0), "broker_qty": broker.get(s, 0)}
                 for s in sorted(set(exp) | set(broker)) if exp.get(s, 0) != broker.get(s, 0)]
+
+    # ── 마감 ──────────────────────────────────────────────────────────────
+    def day_close(self, trade_date: str) -> dict | None:
+        row = self._db.execute("SELECT ts, summary FROM day_close WHERE trade_date=?",
+                               (trade_date,)).fetchone()
+        return {"trade_date": trade_date, "ts": row["ts"], **json.loads(row["summary"])} if row else None
+
+    def close_day(self, trade_date: str, open_breaks: int) -> dict:
+        """미체결 잔량을 EXPIRED 로 닫고 하루 결과를 남긴다. 닫을 수 없으면 이유를 돌려준다."""
+        with self._lock:
+            done = self.day_close(trade_date)
+            if done:
+                return {"closed": True, **done}
+            rows = self.orders(trade_date, limit=100_000)
+            unresolved = [o["id"] for o in rows if o["state"] in (PENDING_SUBMIT, UNKNOWN)]
+            if unresolved:
+                return {"closed": False, "reason": "unknown_orders", "order_ids": unresolved}
+            if open_breaks:
+                return {"closed": False, "reason": "breaks", "breaks": open_breaks}
+            now = self._clock()
+            expired = [o for o in rows if o["state"] in FILLABLE_STATES]
+            for o in expired:
+                self._set_state(o["id"], EXPIRED, now)
+                self._event("order_expired", o["id"], unfilled_qty=o["qty"] - o["filled_qty"])
+            sent = [o for o in rows if o["state"] in LIVE_STATES]
+            summary = {
+                "orders_sent": len(sent),
+                "orders_rejected": sum(o["state"] == REJECTED for o in rows),
+                "orders_not_sent": sum(o["state"] == NOT_SENT for o in rows),
+                "filled_qty": sum(o["filled_qty"] for o in sent),
+                "filled_amt": sum(o["filled_amt"] for o in sent),
+                "expired_orders": len(expired),
+                "expired_qty": sum(o["qty"] - o["filled_qty"] for o in expired),
+            }
+            self._db.execute("INSERT INTO day_close VALUES (?,?,?)",
+                             (trade_date, now, json.dumps(summary, ensure_ascii=False)))
+            self._event("day_closed", None, trade_date=trade_date, **summary)
+            return {"closed": True, "trade_date": trade_date, "ts": now, **summary}

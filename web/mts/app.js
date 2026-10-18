@@ -101,7 +101,15 @@ async function refreshRecon() {
   const { status, data } = await api("/api/reconcile").catch(() => ({}));
   if (status !== 200) return;
   const b = $("recon");
-  if (!data.breaks?.length) { b.hidden = true; return; }
+  const dc = data.day_close || {};
+  if (!data.breaks?.length) {
+    b.hidden = !("closed" in dc);
+    b.textContent = dc.closed
+      ? `오늘 장부 마감 · 체결 ${won(dc.filled_qty)}주 · 미체결 ${won(dc.expired_qty)}주 만료`
+      : dc.reason === "unknown_orders" ? "장부를 닫지 못함: 결과를 모르는 주문이 있습니다"
+      : "장부를 닫지 못함: 불일치가 남아 있습니다";
+    return;
+  }
   b.hidden = false;
   b.textContent = "원장 불일치 " + data.breaks.length + "건: " + data.breaks.map((x) =>
     x.kind === "position_mismatch" ? `${x.symbol} 원장 ${x.ledger_qty}주 / 증권사 ${x.broker_qty}주`

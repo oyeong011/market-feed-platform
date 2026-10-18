@@ -844,6 +844,13 @@ curl -s localhost:9111/healthz | python3 -c "import sys,json; print(json.load(sy
   늘었으면 ACCEPTED → 체결 반영, 30초가 지나도 안 늘었으면 NOT_SENT.
 - 2분 넘게 UNKNOWN 이면 대사 자체가 멈춘 것이다(LedgerReconcileStalled 와 같이 본다). 로그의 `대사 실패` 사유를 본다.
 
+### LedgerDayCloseBlocked (장부 마감이 안 될 때)
+15:40 이후 대사가 깨끗하게 끝나면 데스크가 하루를 닫는다 — 미체결 잔량은 `EXPIRED`, 결과는 `day_close` 한 건.
+닫힌 날에는 데스크가 새 주문을 받지 않는다. 막혔으면 `/api/reconcile` 의 `day_close.reason` 을 본다.
+- `unknown_orders` — 결과를 모르는 주문이 남아 있다. 위 OrderOutcomeUnknown 절차. 대사가 판정하면 다음 주기에 닫힌다.
+- `breaks` — 불일치가 남아 있다. 위 LedgerReconcileBreak 절차. **불일치를 안고 하루를 확정하지 않는다.**
+- 마감 뒤 체결이 늘면(시간외 등 데스크 밖 체결) 닫힌 주문에 붙이지 않고 `fills_exceed_orders` 불일치로 올린다.
+
 ### 설치
 ```bash
 sudo install -m 600 -o mdfeed /dev/null /etc/mdfeed/order-desk.env   # KIS_MOCK_APP_KEY·SECRET·ACCOUNT, MDFEED_DESK_PASSWORD_HASH

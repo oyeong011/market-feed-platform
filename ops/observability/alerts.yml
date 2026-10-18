@@ -577,6 +577,15 @@ groups:
           summary: "KIS 초당 한도 거절이 10분간 10번 넘게 났다"
           action: "mdfeed_kis_calls_total 를 TR 별로 보고 어느 호출이 늘었는지 확인한다(열린 화면 수·현재가 조회)"
 
+      - alert: LedgerDayCloseBlocked
+        # 장 마감(15:40) 뒤에도 결과를 모르는 주문이나 불일치가 남아 하루를 확정하지 못하고 있다.
+        expr: mdfeed_ledger_close_blocked > 0
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "주문 장부를 마감하지 못하고 있다"
+          action: "/api/reconcile 의 day_close.reason 을 보고 RUNBOOK '장부 마감이 안 될 때' 절차를 따른다"
+
       - alert: OrdersRejectedSpike
         expr: increase(mdfeed_orders_total{result="rejected"}[10m]) > 3
         for: 1m

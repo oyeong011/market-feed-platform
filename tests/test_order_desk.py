@@ -4,6 +4,7 @@
   보낸 뒤 응답이 끊김(들어갔는지 모름) · 버튼 두 번 · 밖에서 낸 주문 · 한도 · 로그인·CSRF·평문 접속.
 """
 import asyncio
+import datetime
 import json
 import shutil
 import socket
@@ -49,7 +50,7 @@ class FakeKIS:
 
     def __init__(self, port: int):
         self.port = port
-        self.mode = "ok"                  # ok · reject · throttle_once · sent_then_hang · hang_not_sent
+        self.mode = "ok"                  # ok · reject · no_fill · throttle_once · sent_then_hang · hang_not_sent
         self.price = 1000
         self.throttle_code = "EGW00201"
         self.price_calls = 0
@@ -98,7 +99,10 @@ class FakeKIS:
             return Response.json({"rt_cd": "1", "msg_cd": self.throttle_code, "msg1": "초당 거래건수를 초과하였습니다."})
         if self.mode == "reject":
             return Response.json({"rt_cd": "1", "msg_cd": "APBK0013", "msg1": "주문가능금액 부족"})
-        if self.mode != "hang_not_sent":
+        if self.mode == "no_fill":                   # 지정가가 안 닿아 접수만 된 주문
+            self.orders.append(b)
+            self.totals.setdefault((b["PDNO"], side), {"o": 0, "f": 0, "a": 0})["o"] += int(b["ORD_QTY"])
+        elif self.mode != "hang_not_sent":
             self.orders.append(b)
             self.execute(b["PDNO"], side, int(b["ORD_QTY"]))
         if self.mode in ("sent_then_hang", "hang_not_sent"):
@@ -152,6 +156,7 @@ def run_desk(cert, fn, tmp_path, **cfg_over):
                             token_cache=str(tmp_path / "tok.json"), timeout_s=0.5, min_interval_s=0)
         led = L.Ledger(str(tmp_path / "orders.db"))
         desk = od.OrderDesk(cfg, client=client, ledger=led, tls=od.make_tls_context(*cert))
+        desk._now = lambda: at(10, 0)            # 기본은 장중. 저녁에 시험을 돌려도 장부가 닫히지 않게
         stop = asyncio.Event()
         task = asyncio.create_task(desk.run(stop))
         await asyncio.sleep(0.3)
@@ -162,6 +167,12 @@ def run_desk(cert, fn, tmp_path, **cfg_over):
             await task
             await kis.srv.close()
     return asyncio.run(main())
+
+
+def at(h, m):
+    """오늘(KST) h:m. 장부 마감 시각을 시험에서 고정한다."""
+    return datetime.datetime.combine(datetime.datetime.now(od.KST).date(), datetime.time(h, m),
+                                     tzinfo=od.KST)
 
 
 def wait_for(pred, timeout=5.0):
@@ -287,6 +298,36 @@ def test_throttle_is_counted_per_code(cert, tmp_path):
         assert value("mdfeed_kis_throttled_total", 'code="EGW00215"') == [1.0]
         assert value("mdfeed_kis_throttled_total", 'code="EGW00201"') == [0.0]
         assert value("mdfeed_kis_calls_total", 'tr="VTTC0802U"') == [2.0]     # 거절 1 + 재시도 1
+    run_desk(cert, check, tmp_path)
+
+
+def test_day_close_expires_unfilled_and_stops_new_orders(cert, tmp_path):
+    def check(b, kis, desk):
+        b.login()
+        kis.mode = "no_fill"
+        st, d, _ = b.order("test-order-0001", qty=2, price=900)
+        assert st == 201
+        desk._now = lambda: at(15, 45)
+        desk._kick.set()
+        assert wait_for(lambda: desk.ledger.orders()[0]["state"] == "EXPIRED")
+        dc = b.call("/api/reconcile")[1]["day_close"]
+        assert dc["closed"] and (dc["expired_orders"], dc["expired_qty"]) == (1, 2)
+        st, d, _ = b.order("test-order-0002")
+        assert st == 409 and "마감" in d["error"]
+        assert len(kis.orders) == 1
+    run_desk(cert, check, tmp_path)
+
+
+def test_day_close_waits_while_an_order_outcome_is_unknown(cert, tmp_path):
+    def check(b, kis, desk):
+        b.login()
+        kis.mode = "hang_not_sent"
+        assert b.order("test-order-0001")[1]["order"]["state"] == "UNKNOWN"
+        desk._now = lambda: at(15, 45)
+        desk._kick.set()
+        assert wait_for(lambda: desk.close_status.get("reason") == "unknown_orders")
+        assert 'mdfeed_ledger_close_blocked{service="order-desk"} 1' in desk.registry.prometheus().splitlines()
+        assert desk.ledger.day_close(od.trade_date()) is None
     run_desk(cert, check, tmp_path)
 
 

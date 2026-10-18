@@ -67,6 +67,7 @@ CONDITIONAL = {
 DECLARED_OFFLINE = {
     "mdfeed_kis_calls_total",
     "mdfeed_kis_throttled_total",
+    "mdfeed_ledger_close_blocked",
     "mdfeed_login_failures_total",
     "mdfeed_orders_total",
     "mdfeed_orders_unknown",
@@ -182,7 +183,7 @@ GATEWAY_PORT = 9111
 CPP_GATEWAY_METRICS = {"mdfeed_send_eagain_total", "mdfeed_fanout_delay_spread", "mdfeed_fanout_delay_max_us"}
 # 주문 데스크도 선택 서비스(MDFEED_ORDER_DESK_ENABLED). 멀티캐스트와 같은 방식으로 구분한다.
 ORDER_DESK_PORT = 9140
-ORDER_DESK_METRICS = {"mdfeed_login_failures_total", "mdfeed_orders_total", "mdfeed_orders_unknown", "mdfeed_reconcile_breaks", "mdfeed_reconcile_errors_total", "mdfeed_reconcile_last_success_timestamp_seconds", "mdfeed_kis_calls_total", "mdfeed_kis_throttled_total"}
+ORDER_DESK_METRICS = {"mdfeed_login_failures_total", "mdfeed_orders_total", "mdfeed_orders_unknown", "mdfeed_reconcile_breaks", "mdfeed_reconcile_errors_total", "mdfeed_reconcile_last_success_timestamp_seconds", "mdfeed_kis_calls_total", "mdfeed_kis_throttled_total", "mdfeed_ledger_close_blocked"}
 MCAST_METRICS = {
     "mdfeed_mcast_send_errors_total",
     "mdfeed_mcast_retrans_unavailable_total",

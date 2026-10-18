@@ -121,3 +121,47 @@ def test_daily_notional_counts_unfilled_market_orders_at_estimate():
     led, _ = _ledger()
     _accepted(led, "cid-00000001", 3)                   # 시장가 3주, 추정 단가 100
     assert led.notional_today(DAY) == 300
+
+
+def _limit_order_half_filled(led):
+    led.set_totals_baseline(DAY, "005930", "buy", _totals())
+    o = _accepted(led, "cid-00000001", 3)
+    led.apply_totals(DAY, "005930", "buy", _totals(3, 1, 100))
+    return o
+
+
+def test_close_expires_unfilled_remainder_once():
+    led, _ = _ledger()
+    o = _limit_order_half_filled(led)
+    r = led.close_day(DAY, open_breaks=0)
+    assert r["closed"] and (r["expired_orders"], r["expired_qty"], r["filled_qty"]) == (1, 2, 1)
+    assert led.order(o["id"])["state"] == L.EXPIRED
+    again = led.close_day(DAY, open_breaks=0)
+    assert again["closed"] and again["ts"] == r["ts"]
+    assert sum(e["kind"] == "day_closed" for e in led.events()) == 1
+
+
+def test_expired_order_still_explains_broker_orders_but_takes_no_fills():
+    """마감 뒤 체결이 늘면 닫힌 주문에 붙이지 않는다."""
+    led, _ = _ledger()
+    _limit_order_half_filled(led)
+    led.close_day(DAY, open_breaks=0)
+    assert led.apply_totals(DAY, "005930", "buy", _totals(3, 1, 100)) == []
+    breaks = led.apply_totals(DAY, "005930", "buy", _totals(3, 2, 200))
+    assert [b["kind"] for b in breaks] == ["fills_exceed_orders"]
+
+
+def test_unknown_order_blocks_close():
+    led, _ = _ledger()
+    o, _ = led.new_order("cid-00000001", DAY, "005930", "buy", 1, 0)
+    led.mark(o["id"], L.UNKNOWN)
+    r = led.close_day(DAY, open_breaks=0)
+    assert (r["closed"], r["reason"], r["order_ids"]) == (False, "unknown_orders", [o["id"]])
+    assert led.day_close(DAY) is None
+
+
+def test_open_break_blocks_close():
+    led, _ = _ledger()
+    o = _limit_order_half_filled(led)
+    assert led.close_day(DAY, open_breaks=1) == {"closed": False, "reason": "breaks", "breaks": 1}
+    assert led.order(o["id"])["state"] == L.PARTIAL
