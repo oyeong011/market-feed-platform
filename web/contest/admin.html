@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<title>대회 운영</title>
+<link rel="stylesheet" href="/style.css">
+<script src="/admin.js" defer></script>
+</head>
+<body>
+<main id="login" class="screen" hidden>
+  <h1>대회 운영자</h1>
+  <form id="login-form">
+    <label for="pw">운영자 비밀번호</label>
+    <input id="pw" type="password" autocomplete="current-password" required>
+    <button type="submit" class="big">로그인</button>
+    <p id="login-msg" class="msg" role="alert"></p>
+  </form>
+</main>
+
+<main id="app" class="screen" hidden>
+  <header class="top"><span id="badge" class="badge"></span><span class="muted">대회 운영</span></header>
+  <section id="halt" class="banner" hidden role="alert"></section>
+
+  <section class="card">
+    <h2>현황</h2>
+    <div id="summary" class="muted small"></div>
+    <button id="resume" class="big" hidden type="button">원인 확인 후 주문 재개</button>
+  </section>
+
+  <section class="card">
+    <h2>초대 코드</h2>
+    <div class="row">
+      <input id="n" type="number" min="1" max="100" value="5" inputmode="numeric" aria-label="장수">
+      <button id="make" type="button">발급</button>
+    </div>
+    <p class="muted small">링크를 참가자에게 하나씩 보내세요. 코드 하나에 한 명입니다.</p>
+    <ul id="invites" class="list codes"></ul>
+  </section>
+
+  <section class="card">
+    <h2>순위</h2>
+    <ol id="board" class="list"></ol>
+  </section>
+
+  <section class="card scroll">
+    <h2>전체 주문 (최근 200건)</h2>
+    <table><thead><tr><th>시각</th><th>참가자</th><th>주문</th><th class="r">체결가</th><th>상태</th></tr></thead>
+    <tbody id="orders"></tbody></table>
+  </section>
+</main>
+</body>
+</html>

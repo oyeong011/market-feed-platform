@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<title>모의투자대회</title>
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<main id="login" class="screen" hidden>
+  <h1>모의투자대회</h1>
+  <div class="tabs" role="tablist">
+    <button type="button" data-tab="login" class="on">로그인</button>
+    <button type="button" data-tab="signup">참가하기</button>
+  </div>
+  <form id="login-form">
+    <label for="l-nick">닉네임</label>
+    <input id="l-nick" autocomplete="username" required>
+    <label for="l-pw">비밀번호</label>
+    <input id="l-pw" type="password" autocomplete="current-password" required>
+    <button type="submit" class="big">로그인</button>
+  </form>
+  <form id="signup-form" hidden>
+    <label for="s-code">초대 코드</label>
+    <input id="s-code" autocomplete="off" required>
+    <label for="s-nick">닉네임 (한글·영문·숫자 2~16자)</label>
+    <input id="s-nick" autocomplete="username" required>
+    <label for="s-pw">비밀번호 (10자 이상)</label>
+    <input id="s-pw" type="password" autocomplete="new-password" minlength="10" required>
+    <button type="submit" class="big">참가하기</button>
+  </form>
+  <p id="login-msg" class="msg" role="alert"></p>
+  <p class="muted small">가상 자금으로 겨루는 대회입니다. 실제 돈이나 증권 계좌는 쓰지 않습니다.</p>
+</main>
+
+<main id="app" class="screen" hidden>
+  <header class="top">
+    <span id="status-badge" class="badge"></span>
+    <span id="me" class="muted"></span>
+    <button id="logout" class="link">로그아웃</button>
+  </header>
+
+  <section id="status" class="banner" hidden role="status"></section>
+
+  <section class="card">
+    <div class="muted small">내 평가금액</div>
+    <div class="equity"><span id="equity">-</span> <span id="ret" class="change"></span></div>
+    <div class="muted small" id="cash"></div>
+  </section>
+
+  <section class="card">
+    <form id="symbol-form" class="row">
+      <input id="symbol" inputmode="numeric" maxlength="6" pattern="\d{6}" value="005930" aria-label="종목코드">
+      <button type="submit">조회</button>
+    </form>
+    <div class="price"><span id="q-price">-</span><span id="q-change" class="change"></span></div>
+    <div class="seg mt" role="tablist">
+      <button type="button" data-side="buy" class="on buy">매수</button>
+      <button type="button" data-side="sell" class="sell">매도</button>
+    </div>
+    <label for="qty">수량 (시장가)</label>
+    <input id="qty" type="number" min="1" step="1" value="1" inputmode="numeric">
+    <div class="muted small" id="est"></div>
+    <button id="order-btn" class="big buy" type="button">매수 주문</button>
+  </section>
+
+  <section class="card">
+    <h2>순위</h2>
+    <ol id="board" class="list"></ol>
+  </section>
+
+  <section class="card">
+    <h2>보유 종목</h2>
+    <ul id="holdings" class="list"></ul>
+  </section>
+
+  <section class="card">
+    <h2>내 주문</h2>
+    <ul id="orders" class="list"></ul>
+  </section>
+</main>
+
+<dialog id="confirm">
+  <form method="dialog">
+    <h2 id="c-title"></h2>
+    <p id="c-body"></p>
+    <div class="row">
+      <button value="cancel" class="ghost">취소</button>
+      <button value="ok" id="c-ok">주문 보내기</button>
+    </div>
+  </form>
+</dialog>
+</body>
+</html>

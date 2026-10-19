@@ -84,6 +84,12 @@ desk-cert:  ## 주문 데스크 개발용 TLS 인증서 (localhost + 이 기기�
 desk-password: venv  ## 주문 데스크 비밀번호 해시 만들기 → MDFEED_DESK_PASSWORD_HASH 에 넣는다
 	@$(BIN)/python -m mdfeed.auth hash
 
+contest-admin-password: venv  ## 대회 운영자 비밀번호 해시 만들기 → MDFEED_CONTEST_ADMIN_HASH 에 넣는다
+	@$(BIN)/python -m mdfeed.auth hash
+
+contest: venv  ## 모의투자대회 기동 (https://localhost:8444, 운영자 화면 /admin.html). 휴대폰은 MDFEED_CONTEST_HOST=0.0.0.0
+	MDFEED_ENV_FILE=$${MDFEED_ENV_FILE:-$$HOME/.mdfeed/kis.env} $(BIN)/python -m mdfeed.services.contest
+
 desk: venv  ## 주문 데스크 기동 (기본 모의투자, https://localhost:8443). 휴대폰에서 열려면 MDFEED_DESK_HOST=0.0.0.0
 	MDFEED_ENV_FILE=$${MDFEED_ENV_FILE:-$$HOME/.mdfeed/kis.env} $(BIN)/python -m mdfeed.services.order_desk
 

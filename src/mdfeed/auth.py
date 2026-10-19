@@ -73,12 +73,13 @@ class LoginThrottle:
 class SessionStore:
     def __init__(self, clock=time.monotonic):
         self._clock = clock
-        self._sessions: dict[str, tuple[float, float]] = {}   # token → (생성, 마지막 사용)
+        self._sessions: dict[str, tuple[float, float, object]] = {}   # token → (생성, 마지막 사용, 주체)
 
-    def create(self) -> str:
+    def create(self, subject: object = None) -> str:
+        """subject 는 세션 주인(대회 참가자 id 등). 사용자가 한 명이면 비워 둔다."""
         tok = secrets.token_urlsafe(32)
         now = self._clock()
-        self._sessions[tok] = (now, now)
+        self._sessions[tok] = (now, now, subject)
         return tok
 
     def check(self, token: str | None) -> bool:
@@ -88,13 +89,17 @@ class SessionStore:
         got = self._sessions.get(token)
         if got is None:
             return False
-        created, last = got
+        created, last, subject = got
         now = self._clock()
         if now - last > IDLE_TTL_S or now - created > ABSOLUTE_TTL_S:
             del self._sessions[token]
             return False
-        self._sessions[token] = (created, now)
+        self._sessions[token] = (created, now, subject)
         return True
+
+    def subject(self, token: str | None) -> object:
+        """유효한 세션의 주인. 없거나 만료면 None."""
+        return self._sessions[token][2] if self.check(token) else None
 
     def revoke(self, token: str | None) -> None:
         self._sessions.pop(token or "", None)

@@ -76,6 +76,7 @@ SERVICES = [
     # 멀티캐스트 발행자는 선택 서비스다. 안 떠 있으면 아래에서 그냥 건너뛴다.
     ("mcast-publisher", 9132),
     ("order-desk", 9140),               # 선택 서비스. 안 떠 있으면 건너뛴다
+    ("contest", 9150),                  # 선택 서비스
 ]
 
 # 이 목록에 없는 프로세스는 감시 밖이다. C++ 서비스(tcp-gateway 의 C++ 판, mcast-publisher)는

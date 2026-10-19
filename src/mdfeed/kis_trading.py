@@ -81,11 +81,12 @@ class KISTrading:
                  timeout_s: float = 10.0, min_interval_s: float | None = None):
         if env not in BASES:
             raise ValueError(f"env 는 mock 또는 real: {env!r}")
+        # account 를 비우면 시세 전용 클라이언트다(대회 플랫폼처럼 주문을 증권사로 보내지 않는 곳).
         cano, _, prdt = account.replace(" ", "").partition("-")
-        if len(cano) != 8 or not cano.isdigit():
+        if account and (len(cano) != 8 or not cano.isdigit()):
             raise ValueError("계좌번호 앞자리는 숫자 8자리여야 합니다")
         self.env = env
-        self.cano, self.prdt = cano, (prdt or "01")
+        self.cano, self.prdt = (cano, prdt or "01") if account else (None, None)
         self.app_key, self.app_secret = app_key, app_secret
         self.base = base or BASES[env]
         cache = token_cache or ("~/.mdfeed/kis_vts_token.json" if env == "mock"
@@ -101,7 +102,7 @@ class KISTrading:
 
     @property
     def account_label(self) -> str:
-        return f"{self.cano[:4]}****-{self.prdt}"
+        return f"{self.cano[:4]}****-{self.prdt}" if self.cano else "시세 전용"
 
     async def _call(self, method: str, path: str, tr_id: str,
                     params: dict | None = None, body: dict | None = None) -> dict:
@@ -158,6 +159,10 @@ class KISTrading:
             raise Rejected(code, (d.get("msg1") or "").strip())
         return d
 
+    def _need_account(self) -> None:
+        if not self.cano:
+            raise ValueError("시세 전용 클라이언트로는 계좌 조회·주문을 할 수 없습니다")
+
     def _notify(self, kind: str, value: str) -> None:
         if self.observer:
             self.observer(kind, value)
@@ -173,6 +178,7 @@ class KISTrading:
                 "low": int(_num(o.get("stck_lwpr"))), "open": int(_num(o.get("stck_oprc")))}
 
     async def balance(self) -> dict:
+        self._need_account()
         d = await self._call("GET", "/uapi/domestic-stock/v1/trading/inquire-balance",
                              TR[self.env]["balance"], {
                                  "CANO": self.cano, "ACNT_PRDT_CD": self.prdt, "AFHR_FLPR_YN": "N",
@@ -194,6 +200,7 @@ class KISTrading:
 
     async def day_totals(self, date: str, symbol: str, side: str) -> dict:
         """(날짜, 종목, 방향)의 주문·체결 합계. 모의투자에서 믿을 수 있는 유일한 체결 출처."""
+        self._need_account()
         d = await self._call("GET", "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
                              TR[self.env]["ccld"], {
                                  "CANO": self.cano, "ACNT_PRDT_CD": self.prdt,
@@ -215,6 +222,7 @@ class KISTrading:
 
         Rejected 면 안 들어간 것, Uncertain 이면 들어갔는지 모르는 것이다. 여기서 재시도하지 않는다.
         """
+        self._need_account()
         d = await self._call("POST", "/uapi/domestic-stock/v1/trading/order-cash",
                              TR[self.env][side], body={
                                  "CANO": self.cano, "ACNT_PRDT_CD": self.prdt, "PDNO": symbol,

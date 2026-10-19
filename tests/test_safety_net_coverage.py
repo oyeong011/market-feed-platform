@@ -36,8 +36,9 @@ EXPECTED = {
 }
 # 선택 서비스: 켠 구성에서만 대상이 된다. 안 켠 곳에서 빨간 줄을 내면 안 되므로
 # "있어야 한다"가 아니라 "켜면 모든 안전망이 함께 본다"를 요구한다.
-OPTIONAL = {"mcast-publisher": 9132, "order-desk": 9140}
-OPTIONAL_FLAGS = {"mcast-publisher": "MDFEED_MCAST_ENABLED", "order-desk": "MDFEED_ORDER_DESK_ENABLED"}
+OPTIONAL = {"mcast-publisher": 9132, "order-desk": 9140, "contest": 9150}
+OPTIONAL_FLAGS = {"mcast-publisher": "MDFEED_MCAST_ENABLED", "order-desk": "MDFEED_ORDER_DESK_ENABLED",
+                  "contest": "MDFEED_CONTEST_ENABLED"}
 
 
 def _text(rel: str) -> str:
@@ -95,6 +96,7 @@ def test_chaos_can_actually_find_every_process():
         assert name in restart, f"재기동 시나리오에 {name} 없음"
     assert "mcast_publisher" in restart, "멀티캐스트 발행자가 재기동 시나리오에 없다"
     assert "order_desk 9140" in _block(chaos, "chaos_restart_all() {", 1400), "주문 데스크가 재기동 시나리오에 없다"
+    assert "contest 9150" in _block(chaos, "chaos_restart_all() {", 1800), "모의투자대회가 재기동 시나리오에 없다"
 
 
 def test_optional_service_is_opt_in_everywhere():

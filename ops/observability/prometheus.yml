@@ -55,6 +55,9 @@ scrape_configs:
       # 주문 데스크도 선택 서비스다(관리 포트 9140, 주문 화면은 TLS 8443 이라 따로).
       - targets: ["host.docker.internal:9140"]
         labels: { service: order-desk }
+      # 모의투자대회도 선택 서비스다(관리 포트 9150, 참가자 화면은 TLS 8444).
+      - targets: ["host.docker.internal:9150"]
+        labels: { service: contest }
 
   # **알람을 보내는 쪽도 감시한다.** Alertmanager 가 죽으면 알람이 안 오는데, 그 사실을
   # 알려 줄 수 있는 건 Alertmanager 가 아니다. 그래서 Prometheus 가 직접 긁는다.

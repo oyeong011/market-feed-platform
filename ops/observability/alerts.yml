@@ -586,6 +586,41 @@ groups:
           summary: "주문 장부를 마감하지 못하고 있다"
           action: "/api/reconcile 의 day_close.reason 을 보고 RUNBOOK '장부 마감이 안 될 때' 절차를 따른다"
 
+      - alert: ContestLedgerIntegrityBreak
+        # 대회 잔고표가 해시 체인 거래 기록으로 다시 계산한 값과 다르다. 서비스가 이미 주문을 멈췄다.
+        # 누가 DB 를 직접 고쳤거나 장부 코드 결함이다. 재개는 장부가 다시 맞을 때만 받는다.
+        expr: mdfeed_contest_integrity_breaks > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "모의투자대회 장부 불일치 {{ $value }}건 — 주문 정지됨"
+          action: "운영자 화면(/admin.html)의 불일치 내용과 journal 을 대조한다. 잔고를 손으로 맞추지 않는다. RUNBOOK '대회 장부 불일치'"
+
+      - alert: ContestIntegrityStalled
+        expr: time() - mdfeed_contest_integrity_last_success_timestamp_seconds > 120
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "대회 장부 대사가 2분 넘게 돌지 않았다 — 어긋나도 주문이 안 멈춘다"
+          action: "contest 로그의 'integrity_once 예외' 를 본다"
+
+      - alert: ContestTradingHalted
+        # 불일치가 사라져도 사람이 원인을 확인하고 재개할 때까지 멈춰 있다. 오래 멈춰 있으면 참가자가 기다린다.
+        expr: mdfeed_contest_halted > 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "모의투자대회 주문이 10분 넘게 멈춰 있다"
+          action: "원인을 확인한 뒤 운영자 화면에서 재개한다(장부가 어긋나 있으면 재개가 거부된다)"
+
+      - alert: ContestQuoteErrors
+        expr: increase(mdfeed_contest_quote_errors_total[10m]) > 10
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "대회 현재가 조회가 10분간 10번 넘게 실패했다 — 그동안 주문이 체결되지 않는다"
+          action: "KIS 토큰·유량제한(mdfeed_kis_throttled_total)·네트워크를 본다"
+
       - alert: OrdersRejectedSpike
         expr: increase(mdfeed_orders_total{result="rejected"}[10m]) > 3
         for: 1m

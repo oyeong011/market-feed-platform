@@ -184,6 +184,24 @@ class Config:
     desk_tls_key: str = field(default_factory=lambda: _env("DESK_TLS_KEY", "data/tls/desk.key"))
     desk_password_hash: str = field(default_factory=lambda: _env("DESK_PASSWORD_HASH", ""))
 
+    # ── 모의투자대회 (선택 서비스, MDFEED_CONTEST_ENABLED=1) ─────────────────
+    # 증권사로 주문을 보내지 않는다. 체결가만 증권사 현재가를 쓰고 돈은 대회 장부 안에서만 움직인다.
+    contest_host: str = field(default_factory=lambda: _env("CONTEST_HOST", "127.0.0.1"))
+    contest_port: int = field(default_factory=lambda: _int("CONTEST_PORT", 8444))
+    contest_admin_port: int = field(default_factory=lambda: _int("CONTEST_ADMIN_PORT", 9150))
+    contest_db: str = field(default_factory=lambda: _env("CONTEST_DB", "data/contest.db"))
+    contest_initial_cash: int = field(default_factory=lambda: _int("CONTEST_INITIAL_CASH", 10_000_000))
+    contest_fee_ppm: int = field(default_factory=lambda: _int("CONTEST_FEE_PPM", 150))      # 0.015%
+    contest_tax_ppm: int = field(default_factory=lambda: _int("CONTEST_TAX_PPM", 2000))     # 매도 0.20%
+    contest_max_qty: int = field(default_factory=lambda: _int("CONTEST_MAX_QTY", 10_000))
+    contest_start: str = field(default_factory=lambda: _env("CONTEST_START", ""))           # YYYYMMDD
+    contest_end: str = field(default_factory=lambda: _env("CONTEST_END", ""))
+    # 장 밖에서도 주문을 받는다(마지막 현재가로 체결). 시연·시험용. 화면에 표시된다.
+    contest_off_hours: bool = field(default_factory=lambda: _bool("CONTEST_OFF_HOURS"))
+    contest_quote_env: str = field(default_factory=lambda: _env("CONTEST_QUOTE_ENV", "real"))
+    contest_kis_base: str = field(default_factory=lambda: _env("CONTEST_KIS_BASE", ""))   # 시험용 가짜 서버
+    contest_admin_hash: str = field(default_factory=lambda: _env("CONTEST_ADMIN_HASH", ""))
+
     # ── 저장소 ─────────────────────────────────────────────────────────────
     storage_backend: str = field(default_factory=lambda: _env("STORAGE_BACKEND", "postgres"))
     storage_profile: str = field(default_factory=lambda: _env("STORAGE_PROFILE", "production"))
@@ -267,7 +285,7 @@ class Config:
 
     def to_dict(self) -> dict[str, str | int | float | bool | list[str] | None]:
         d = asdict(self)
-        for secret in ("kis_app_key", "kis_app_secret", "pg_dsn", "desk_password_hash"):
+        for secret in ("kis_app_key", "kis_app_secret", "pg_dsn", "desk_password_hash", "contest_admin_hash"):
             if d.get(secret):
                 d[secret] = "***"          # 로그/헬스체크에 자격증명이 새지 않게
         return d

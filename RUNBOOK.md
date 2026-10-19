@@ -863,3 +863,28 @@ sudo systemctl enable --now mdfeed-order-desk
 휴대폰에서 쓰려면 `desk.crt` 를 휴대폰에 설치하고 신뢰로 표시한다. 인증서 경고를 눌러 넘기는 습관이 들면
 TLS 를 쓰는 의미가 없다. 포트는 집 사설망에만 열고 공유기 포트포워딩은 하지 않는다.
 
+
+## 모의투자대회 — 운영
+
+증권사로 주문을 보내지 않는다. 체결가만 증권사 현재가이고, 돈과 주식은 대회 장부(`data/contest.db`) 안에서만 움직인다.
+
+### 열기
+```bash
+make contest-admin-password            # 출력된 해시를 kis.env 에 MDFEED_CONTEST_ADMIN_HASH='...' 로 (작은따옴표 필수)
+make desk-cert                         # 주문 데스크와 같은 인증서를 쓴다
+MDFEED_CONTEST_START=20261020 MDFEED_CONTEST_END=20261031 make contest
+```
+운영자 화면 `https://<호스트>:8444/admin.html` 에서 초대 코드를 발급해 한 명에게 하나씩 링크로 보낸다.
+참가자는 링크를 열면 코드가 채워진 참가 화면이 뜬다. 시작 자금 1,000만 원(설정 `MDFEED_CONTEST_INITIAL_CASH`).
+
+### ContestLedgerIntegrityBreak (대회 장부 불일치)
+10초마다 잔고표를 해시 체인 거래 기록으로 다시 계산해 대조한다. 어긋나면 **주문이 자동으로 멈춘다.**
+1. 운영자 화면의 불일치 종류를 본다.
+   - `journal_chain_broken` — 거래 기록 한 줄이 고쳐지거나 빠졌다. 그 줄 번호 이후는 믿을 수 없다. DB 백업과 대조한다.
+   - `cash_mismatch` · `position_mismatch` — 잔고표가 거래 기록과 다르다. 누가 DB 를 직접 고쳤거나 장부 코드 결함이다.
+   - `order_journal_mismatch` — 주문표의 체결 내용이 거래 기록과 다르다.
+2. **잔고를 손으로 맞추지 않는다.** 거래 기록이 기준이다. 잔고표는 거래 기록으로 다시 만들 수 있다.
+3. 원인을 확인한 뒤 운영자 화면에서 재개한다. 장부가 아직 어긋나 있으면 재개가 거부된다.
+
+### ContestQuoteErrors
+현재가를 못 받으면 주문을 체결하지 않는다(어림값으로 체결하지 않는다). `mdfeed_kis_throttled_total` 과 토큰 상태를 본다.

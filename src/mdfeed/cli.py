@@ -62,9 +62,18 @@ def order_desk_enabled() -> bool:
     return os.getenv("MDFEED_ORDER_DESK_ENABLED", "").lower() in ("1", "true", "yes", "on")
 
 
+# 모의투자대회도 선택 서비스다. 시세 키·인증서·운영자 비밀번호 해시가 있어야 뜬다.
+CONTEST_SERVICE = ("contest", "mdfeed.services.contest", 9150)
+
+
+def contest_enabled() -> bool:
+    return os.getenv("MDFEED_CONTEST_ENABLED", "").lower() in ("1", "true", "yes", "on")
+
+
 def active_services() -> list[tuple]:
     return (SERVICES + ([MCAST_SERVICE] if mcast_enabled() else [])
-            + ([ORDER_DESK_SERVICE] if order_desk_enabled() else []))
+            + ([ORDER_DESK_SERVICE] if order_desk_enabled() else [])
+            + ([CONTEST_SERVICE] if contest_enabled() else []))
 
 
 def service_command(name: str, module: str) -> list[str]:

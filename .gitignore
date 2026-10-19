@@ -35,3 +35,4 @@ cpp/build/
 # 주문 데스크: 개발용 TLS 키와 주문 원장. 원장에는 계좌의 실제 주문 기록이 들어간다.
 data/tls/
 data/orders.db*
+data/contest.db*

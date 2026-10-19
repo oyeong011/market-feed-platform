@@ -971,6 +971,84 @@
      "refId": "B"
     }
    ]
+  },
+  {
+   "type": "timeseries",
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "id": 66,
+   "title": "모의투자대회 장부",
+   "description": "ContestLedgerIntegrityBreak · ContestTradingHalted 용. 불일치가 1 이상이면 서비스가 이미 주문을 멈췄다. 재개는 운영자 화면에서만",
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 0,
+    "y": 81
+   },
+   "targets": [
+    {
+     "expr": "mdfeed_contest_integrity_breaks",
+     "legendFormat": "장부 불일치",
+     "refId": "A"
+    },
+    {
+     "expr": "mdfeed_contest_halted",
+     "legendFormat": "주문 정지",
+     "refId": "B"
+    },
+    {
+     "expr": "mdfeed_contest_participants",
+     "legendFormat": "참가자",
+     "refId": "C"
+    },
+    {
+     "expr": "increase(mdfeed_contest_orders_total[15m])",
+     "legendFormat": "주문 {{result}}",
+     "refId": "D"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 8
+     }
+    },
+    "overrides": []
+   },
+   "id": 67,
+   "title": "대회 장부 대사 지연",
+   "description": "ContestIntegrityStalled · ContestQuoteErrors 용. 평소 10초 주기라 0~10초다",
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 12,
+    "y": 81
+   },
+   "targets": [
+    {
+     "expr": "time() - mdfeed_contest_integrity_last_success_timestamp_seconds",
+     "legendFormat": "마지막 대사 후",
+     "refId": "A"
+    },
+    {
+     "expr": "increase(mdfeed_contest_quote_errors_total[10m])",
+     "legendFormat": "현재가 실패 10분",
+     "refId": "B"
+    }
+   ]
   }
  ]
 }

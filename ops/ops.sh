@@ -20,6 +20,7 @@ SERVICES="feedd tcp-gateway ws-gateway rest-api writer strategy quality"
 # 멀티캐스트 발행자는 선택 서비스. 켠 구성에서만 행으로 센다(안 켠 곳에서 빨간 줄을 내지 않는다).
 case "${MDFEED_MCAST_ENABLED:-}" in 1|true|yes|on) SERVICES="$SERVICES mcast-publisher" ;; esac
 case "${MDFEED_ORDER_DESK_ENABLED:-}" in 1|true|yes|on) SERVICES="$SERVICES order-desk" ;; esac
+case "${MDFEED_CONTEST_ENABLED:-}" in 1|true|yes|on) SERVICES="$SERVICES contest" ;; esac
 
 # `up --shards` 는 feedd 를 venue 그룹별로 쪼갠다. crypto 는 9100, krx 는 9200.
 # 그런데 상태판은 9100 만 봤다. 2026-09-03 에 KIS 자격증명 없이 재기동했더니
@@ -39,7 +40,7 @@ admin_port() {
     feedd|feedd:crypto) echo 9100 ;; feedd:krx) echo 9200 ;;
     tcp-gateway) echo 9111 ;; ws-gateway) echo 9102 ;;
     rest-api) echo 9103 ;; writer) echo 9104 ;; strategy) echo 9105 ;; quality) echo 9106 ;;
-    mcast-publisher) echo 9132 ;; order-desk) echo 9140 ;;
+    mcast-publisher) echo 9132 ;; order-desk) echo 9140 ;; contest) echo 9150 ;;
   esac
 }
 # MDFEED_GATEWAY_IMPL=cpp 면 tcp-gateway 는 파이썬 모듈이 아니라 C++ 바이너리로 뜬다.
@@ -58,6 +59,7 @@ module_of() {
     quality) echo mdfeed.services.quality ;;
     mcast-publisher) echo cpp/build/mcast_publisher ;;
     order-desk) echo mdfeed.services.order_desk ;;
+    contest) echo mdfeed.services.contest ;;
     # 샤드는 둘 다 같은 모듈이라 명령줄로 구분되지 않는다(구분은 환경변수
     # MDFEED_SHARD 에 있고 argv 에는 안 나온다). PID 는 포트로 찾는다.
     feedd:krx) echo "" ;;
@@ -292,6 +294,7 @@ cmd_install() {
                    mdfeed-backup.timer mdfeed-restore-drill.timer mdfeed-preflight-monitor
   # 멀티캐스트 발행자는 선택이라 여기서 켜지 않는다: systemctl enable --now mdfeed-mcast-publisher
   # 주문 데스크도 선택이다(계좌·인증서 필요): systemctl enable --now mdfeed-order-desk
+  # 모의투자대회도 선택이다(시세 키·인증서·운영자 해시 필요): systemctl enable --now mdfeed-contest
   echo "설치 완료. 기동: systemctl start mdfeed.target"
 }
 

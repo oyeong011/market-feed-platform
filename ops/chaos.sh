@@ -269,6 +269,12 @@ chaos_restart_all() {
   else
     info "주문 데스크가 안 떠 있어 건너뛴다 (MDFEED_ORDER_DESK_ENABLED=1 로 켠다)"
   fi
+  # 대회: 죽였다 살아나도 장부(SQLite 트랜잭션)와 거래 기록 해시 체인이 그대로여야 한다.
+  if [ -n "$(health 9150)" ]; then
+    chaos_service_kill contest 9150
+  else
+    info "모의투자대회가 안 떠 있어 건너뛴다 (MDFEED_CONTEST_ENABLED=1 로 켠다)"
+  fi
 }
 
 # ── 감독이 실제로 되살리는가 (프로세스 안) ────────────────────────────────

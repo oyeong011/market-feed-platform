@@ -1,0 +1,58 @@
+[Unit]
+Description=MDFeed — 모의투자대회 (참가자 웹 MTS · 가상 체결 · 장부 대사)
+Documentation=https://github.com/oyeong011/market-feed-platform
+# 시세 파이프라인과 독립이다. 증권사 현재가 REST 만 쓰므로 feedd 를 기다리지 않는다.
+After=network-online.target
+Wants=network-online.target
+PartOf=mdfeed.target
+
+# crash loop 방지. [Unit] 옵션이다(결함 44).
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=mdfeed
+Group=mdfeed
+WorkingDirectory=/opt/mdfeed
+Environment=PYTHONPATH=/opt/mdfeed/src
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/mdfeed/mdfeed.env
+# 시세 키(KIS_APP_KEY·SECRET, 주문 권한은 안 쓴다)와 운영자 해시(MDFEED_CONTEST_ADMIN_HASH)를 따로 둔다.
+EnvironmentFile=/etc/mdfeed/contest.env
+Environment=MDFEED_CONTEST_DB=/var/lib/mdfeed/contest.db
+Environment=MDFEED_DESK_TLS_CERT=/etc/mdfeed/tls/desk.crt
+Environment=MDFEED_DESK_TLS_KEY=/etc/mdfeed/tls/desk.key
+ExecStart=/usr/bin/python3 -m mdfeed.services.contest
+
+# 기동 거부(설정 부족, 종료코드 2)는 재시작해도 안 고쳐진다. 되풀이하지 않는다.
+Restart=on-failure
+RestartPreventExitStatus=2
+RestartSec=3
+
+KillSignal=SIGTERM
+TimeoutStopSec=20
+KillMode=mixed
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mdfeed-contest
+
+# ── 격리 ──────────────────────────────────────────────────────────────────
+# 쓰는 곳은 대회 장부 파일과 토큰 캐시뿐이다.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mdfeed /run/mdfeed
+Environment=HOME=/var/lib/mdfeed
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryMax=512M
+
+[Install]
+WantedBy=mdfeed.target

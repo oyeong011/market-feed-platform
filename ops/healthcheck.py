@@ -41,6 +41,9 @@ if os.getenv("MDFEED_MCAST_ENABLED", "").lower() in ("1", "true", "yes", "on"):
 # 주문 데스크도 같다. 켜져 있으면 필수 — 죽은 동안 체결·잔고 대사가 멈춘다.
 if os.getenv("MDFEED_ORDER_DESK_ENABLED", "").lower() in ("1", "true", "yes", "on"):
     SERVICES.append(("order-desk", 9140, True))
+# 모의투자대회도 같다. 켜져 있으면 필수 — 죽은 동안 참가자 주문과 장부 대사가 멈춘다.
+if os.getenv("MDFEED_CONTEST_ENABLED", "").lower() in ("1", "true", "yes", "on"):
+    SERVICES.append(("contest", 9150, True))
 
 # 피드 품질 임계치
 MAX_TICK_AGE_S = 120.0          # 이보다 오래 틱이 없으면 CRIT (하트비트는 별개)
