@@ -90,6 +90,10 @@ contest-admin-password: venv  ## 대회 운영자 비밀번호 해시 만들기 
 contest: venv  ## 모의투자대회 기동 (https://localhost:8444, 운영자 화면 /admin.html). 휴대폰은 MDFEED_CONTEST_HOST=0.0.0.0
 	MDFEED_ENV_FILE=$${MDFEED_ENV_FILE:-$$HOME/.mdfeed/kis.env} $(BIN)/python -m mdfeed.services.contest
 
+contest-tunnel:  ## 대회를 인터넷에 공개 (Cloudflare 임시 터널 → https://*.trycloudflare.com). make contest 를 먼저 띄운다
+	@# 터널이 정식 인증서로 HTTPS 를 받고, 이 Mac 의 8444(자체 서명)로 넘긴다. 주소는 재시작마다 바뀐다.
+	cloudflared tunnel --no-autoupdate --url https://localhost:8444 --no-tls-verify
+
 desk: venv  ## 주문 데스크 기동 (기본 모의투자, https://localhost:8443). 휴대폰에서 열려면 MDFEED_DESK_HOST=0.0.0.0
 	MDFEED_ENV_FILE=$${MDFEED_ENV_FILE:-$$HOME/.mdfeed/kis.env} $(BIN)/python -m mdfeed.services.order_desk
 

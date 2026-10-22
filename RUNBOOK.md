@@ -877,6 +877,12 @@ MDFEED_CONTEST_START=20261020 MDFEED_CONTEST_END=20261031 make contest
 운영자 화면 `https://<호스트>:8444/admin.html` 에서 초대 코드를 발급해 한 명에게 하나씩 링크로 보낸다.
 참가자는 링크를 열면 코드가 채워진 참가 화면이 뜬다. 시작 자금 1,000만 원(설정 `MDFEED_CONTEST_INITIAL_CASH`).
 
+### 동아리원에게 열기 (Cloudflare Tunnel)
+`make contest` 를 띄운 채 다른 터미널에서 `make contest-tunnel`. 출력되는 `https://<임의>.trycloudflare.com` 이 참가 주소다.
+초대 링크는 운영자 화면을 **그 주소로 열어서** 발급해야 링크 도메인이 맞는다.
+임시 터널은 주소가 재시작마다 바뀌고 가용성 보장이 없다. 1~2주 대회는 Cloudflare 계정·도메인으로 이름 있는 터널을 만든다.
+이 Mac 이 잠들면 대회가 멈춘다 — 대회 기간에는 `caffeinate -s` 를 같이 띄운다.
+
 ### ContestLedgerIntegrityBreak (대회 장부 불일치)
 10초마다 잔고표를 해시 체인 거래 기록으로 다시 계산해 대조한다. 어긋나면 **주문이 자동으로 멈춘다.**
 1. 운영자 화면의 불일치 종류를 본다.
