@@ -520,7 +520,12 @@ jobs:
       - name: 서버와 같은 메이저의 pg_dump·pg_restore
         # 러너 기본 클라이언트가 17 이상으로 올라가자 덤프에 transaction_timeout 이 실려
         # 16 서버로의 복원이 깨졌다(결함 53). 백업 도구는 서버 메이저를 따라간다.
-        run: sudo apt-get update -q && sudo apt-get install -y -q postgresql-client-16
+        # 러너가 Ubuntu 26.04 로 올라가 기본 저장소에 16 이 없다 → PostgreSQL 공식 저장소(PGDG)에서 받는다.
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y -q postgresql-client-16
+          /usr/lib/postgresql/16/bin/pg_restore --version
       - name: PostgreSQL storage tests
         # 스킵은 실패로 본다. 이 잡은 원래 TEST_POSTGRES_DSN 을 넘기기만 하고
         # 읽는 테스트가 없어서 전부 스킵된 채 초록불이었다.
