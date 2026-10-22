@@ -52,8 +52,8 @@ scrape_configs:
       # up{} 알람이 그걸 잡지 않도록 아래 알람들은 지표 존재를 전제로만 판정한다.
       - targets: ["host.docker.internal:9132"]
         labels: { service: mcast-publisher }
-      # 주문 데스크도 선택 서비스다(관리 포트 9140, 주문 화면은 TLS 8443 이라 따로).
-      - targets: ["host.docker.internal:9140"]
+      # 주문 데스크도 선택 서비스다(관리 포트 9141, 주문 화면은 TLS 8443 이라 따로).
+      - targets: ["host.docker.internal:9141"]
         labels: { service: order-desk }
       # 모의투자대회도 선택 서비스다(관리 포트 9150, 참가자 화면은 TLS 8444).
       - targets: ["host.docker.internal:9150"]

@@ -85,7 +85,7 @@ desk-password: venv  ## 주문 데스크 비밀번호 해시 만들기 → MDFEE
 	@$(BIN)/python -m mdfeed.auth hash
 
 contest-admin-password: venv  ## 대회 운영자 비밀번호 해시 만들기 → MDFEED_CONTEST_ADMIN_HASH 에 넣는다
-	@$(BIN)/python -m mdfeed.auth hash
+	@$(BIN)/python -m mdfeed.auth hash contest
 
 contest: venv  ## 모의투자대회 기동 (https://localhost:8444, 운영자 화면 /admin.html). 휴대폰은 MDFEED_CONTEST_HOST=0.0.0.0
 	MDFEED_ENV_FILE=$${MDFEED_ENV_FILE:-$$HOME/.mdfeed/kis.env} $(BIN)/python -m mdfeed.services.contest

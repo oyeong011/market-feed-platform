@@ -3,7 +3,7 @@
     브라우저(휴대폰) ──HTTPS(TLS 1.2+)·세션쿠키──▶ order-desk :8443 ──HTTPS──▶ 한국투자증권
                                                    │  원장(SQLite, write-ahead)
                                                    └─ 대사 루프: 체결합계 → 원장, 보유수량 ↔ 원장
-    Prometheus ──HTTP──▶ :9140 /healthz /metrics (관리 포트는 다른 서비스와 같은 규약)
+    Prometheus ──HTTP──▶ :9141 /healthz /metrics (관리 포트는 다른 서비스와 같은 규약)
 
 기동 조건이 안 맞으면 **조용히 낮춰 뜨지 않고 실패한다.**
 인증서·비밀번호 해시·자격증명이 없으면 시작하지 않는다. 실전(real)은

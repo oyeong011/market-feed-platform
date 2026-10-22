@@ -179,7 +179,7 @@ class Config:
     reconcile_closed_s: float = field(default_factory=lambda: float(_env("RECONCILE_CLOSED_S", "60")))
     desk_host: str = field(default_factory=lambda: _env("DESK_HOST", "127.0.0.1"))
     desk_port: int = field(default_factory=lambda: _int("DESK_PORT", 8443))
-    desk_admin_port: int = field(default_factory=lambda: _int("DESK_ADMIN_PORT", 9140))
+    desk_admin_port: int = field(default_factory=lambda: _int("DESK_ADMIN_PORT", 9141))
     desk_tls_cert: str = field(default_factory=lambda: _env("DESK_TLS_CERT", "data/tls/desk.crt"))
     desk_tls_key: str = field(default_factory=lambda: _env("DESK_TLS_KEY", "data/tls/desk.key"))
     desk_password_hash: str = field(default_factory=lambda: _env("DESK_PASSWORD_HASH", ""))

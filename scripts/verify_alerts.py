@@ -188,7 +188,7 @@ GATEWAY_PORT = 9111
 # 있는 것도 다르고, 그 사실을 분류로 적는다.
 CPP_GATEWAY_METRICS = {"mdfeed_send_eagain_total", "mdfeed_fanout_delay_spread", "mdfeed_fanout_delay_max_us"}
 # 주문 데스크도 선택 서비스(MDFEED_ORDER_DESK_ENABLED). 멀티캐스트와 같은 방식으로 구분한다.
-ORDER_DESK_PORT = 9140
+ORDER_DESK_PORT = 9141
 # 모의투자대회도 선택 서비스(MDFEED_CONTEST_ENABLED). login_failures·kis_* 는 주문 데스크와 같이 낸다.
 CONTEST_PORT = 9150
 CONTEST_METRICS = {"mdfeed_contest_orders_total", "mdfeed_contest_quote_errors_total", "mdfeed_contest_participants", "mdfeed_contest_integrity_breaks", "mdfeed_contest_integrity_last_success_timestamp_seconds", "mdfeed_contest_halted"}

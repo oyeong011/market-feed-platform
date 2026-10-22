@@ -36,7 +36,7 @@ EXPECTED = {
 }
 # 선택 서비스: 켠 구성에서만 대상이 된다. 안 켠 곳에서 빨간 줄을 내면 안 되므로
 # "있어야 한다"가 아니라 "켜면 모든 안전망이 함께 본다"를 요구한다.
-OPTIONAL = {"mcast-publisher": 9132, "order-desk": 9140, "contest": 9150}
+OPTIONAL = {"mcast-publisher": 9132, "order-desk": 9141, "contest": 9150}
 OPTIONAL_FLAGS = {"mcast-publisher": "MDFEED_MCAST_ENABLED", "order-desk": "MDFEED_ORDER_DESK_ENABLED",
                   "contest": "MDFEED_CONTEST_ENABLED"}
 
@@ -95,7 +95,7 @@ def test_chaos_can_actually_find_every_process():
     for name in ("tcp_gateway", "ws_gateway", "rest_api", "writer", "strategy", "quality"):
         assert name in restart, f"재기동 시나리오에 {name} 없음"
     assert "mcast_publisher" in restart, "멀티캐스트 발행자가 재기동 시나리오에 없다"
-    assert "order_desk 9140" in _block(chaos, "chaos_restart_all() {", 1400), "주문 데스크가 재기동 시나리오에 없다"
+    assert "order_desk 9141" in _block(chaos, "chaos_restart_all() {", 1400), "주문 데스크가 재기동 시나리오에 없다"
     assert "contest 9150" in _block(chaos, "chaos_restart_all() {", 1800), "모의투자대회가 재기동 시나리오에 없다"
 
 
@@ -150,3 +150,20 @@ def test_install_enables_every_required_service():
     enable = _block(ops, "systemctl enable mdfeed.target", 400)
     for name in EXPECTED:
         assert f"mdfeed-{name}" in enable, f"install 이 {name} 를 enable 하지 않는다"
+
+
+def test_admin_ports_do_not_collide():
+    """관리 포트가 서로, 또는 관측 스택이 호스트에 여는 포트와 겹치면 늦게 뜬 쪽이 죽는다.
+
+    주문 데스크를 9140 에 붙였는데 알람 수신기(alert-sink)가 이미 호스트 9140 을 쓰고 있었다.
+    관측 스택을 켠 채 주문 데스크를 띄우면 "Address already in use" 로 기동이 실패했다.
+    """
+    import re as _re
+    ports = list({**EXPECTED, **OPTIONAL}.values())
+    assert len(ports) == len(set(ports)), f"관리 포트 중복: {sorted(ports)}"
+    compose = _text("docker-compose.observability.yml")
+    host = {int(p) for p in _re.findall(r"127\.0\.0\.1:(\d+):\d+", compose)}
+    assert host, "관측 스택의 호스트 포트를 못 읽었다 — 검사가 헛통과한다"
+    clash = sorted(set(ports) & host)
+    assert not clash, f"관리 포트 {clash} 가 관측 스택 호스트 포트와 겹친다"
+

@@ -116,11 +116,16 @@ def cookie_value(cookie_header: str, name: str) -> str | None:
     return None
 
 
+PURPOSES = {"desk": "주문 데스크 비밀번호", "contest": "대회 운영자 비밀번호"}
+
+
 def main(argv: list[str]) -> int:
-    if argv[1:2] != ["hash"]:
-        print("사용법: python -m mdfeed.auth hash", file=sys.stderr)
+    """python -m mdfeed.auth hash [desk|contest] — 어디에 쓸 비밀번호인지 물을 때 밝힌다."""
+    purpose = argv[2] if len(argv) > 2 else "desk"
+    if argv[1:2] != ["hash"] or purpose not in PURPOSES:
+        print("사용법: python -m mdfeed.auth hash [desk|contest]", file=sys.stderr)
         return 2
-    pw = getpass.getpass("주문 데스크 비밀번호: ")
+    pw = getpass.getpass(f"{PURPOSES[purpose]}: ")
     if len(pw) < 10:
         print("10자 이상으로 정하세요", file=sys.stderr)
         return 2

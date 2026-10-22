@@ -40,7 +40,7 @@ admin_port() {
     feedd|feedd:crypto) echo 9100 ;; feedd:krx) echo 9200 ;;
     tcp-gateway) echo 9111 ;; ws-gateway) echo 9102 ;;
     rest-api) echo 9103 ;; writer) echo 9104 ;; strategy) echo 9105 ;; quality) echo 9106 ;;
-    mcast-publisher) echo 9132 ;; order-desk) echo 9140 ;; contest) echo 9150 ;;
+    mcast-publisher) echo 9132 ;; order-desk) echo 9141 ;; contest) echo 9150 ;;
   esac
 }
 # MDFEED_GATEWAY_IMPL=cpp 면 tcp-gateway 는 파이썬 모듈이 아니라 C++ 바이너리로 뜬다.

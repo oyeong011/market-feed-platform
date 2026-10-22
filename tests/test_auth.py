@@ -1,4 +1,6 @@
 """주문 데스크 로그인 부품 — 해시·세션 만료·잠금."""
+import pytest
+
 from mdfeed import auth
 
 
@@ -45,3 +47,17 @@ def test_throttle_locks_then_unlocks():
 def test_cookie_parse():
     assert auth.cookie_value("a=1; desk_session=xyz; b=2", "desk_session") == "xyz"
     assert auth.cookie_value("", "desk_session") is None
+
+
+@pytest.mark.parametrize("purpose,label", [(None, "주문 데스크"), ("contest", "대회 운영자")])
+def test_hash_cli_names_what_the_password_is_for(monkeypatch, capsys, purpose, label):
+    """대회 운영자 비밀번호를 만들면서 '주문 데스크 비밀번호'라고 물으면 엉뚱한 비밀번호를 넣게 된다."""
+    asked = []
+    monkeypatch.setattr(auth.getpass, "getpass", lambda p: asked.append(p) or "long-enough-pw")
+    assert auth.main(["auth", "hash"] + ([purpose] if purpose else [])) == 0
+    assert label in asked[0]
+    assert auth.verify_password("long-enough-pw", capsys.readouterr().out.strip())
+
+
+def test_hash_cli_rejects_unknown_purpose():
+    assert auth.main(["auth", "hash", "bank"]) == 2

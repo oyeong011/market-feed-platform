@@ -40,7 +40,7 @@ if os.getenv("MDFEED_MCAST_ENABLED", "").lower() in ("1", "true", "yes", "on"):
     SERVICES.append(("mcast-publisher", 9132, True))
 # 주문 데스크도 같다. 켜져 있으면 필수 — 죽은 동안 체결·잔고 대사가 멈춘다.
 if os.getenv("MDFEED_ORDER_DESK_ENABLED", "").lower() in ("1", "true", "yes", "on"):
-    SERVICES.append(("order-desk", 9140, True))
+    SERVICES.append(("order-desk", 9141, True))
 # 모의투자대회도 같다. 켜져 있으면 필수 — 죽은 동안 참가자 주문과 장부 대사가 멈춘다.
 if os.getenv("MDFEED_CONTEST_ENABLED", "").lower() in ("1", "true", "yes", "on"):
     SERVICES.append(("contest", 9150, True))

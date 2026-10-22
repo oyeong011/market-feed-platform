@@ -264,8 +264,8 @@ chaos_restart_all() {
     info "멀티캐스트 발행자가 안 떠 있어 건너뛴다 (MDFEED_MCAST_ENABLED=1 로 켠다)"
   fi
   # 주문 데스크: 죽였다 살아나면 보내던 주문은 UNKNOWN 으로 바뀌고 다시 보내지 않는다(ledger.py).
-  if [ -n "$(health 9140)" ]; then
-    chaos_service_kill order_desk 9140
+  if [ -n "$(health 9141)" ]; then
+    chaos_service_kill order_desk 9141
   else
     info "주문 데스크가 안 떠 있어 건너뛴다 (MDFEED_ORDER_DESK_ENABLED=1 로 켠다)"
   fi
