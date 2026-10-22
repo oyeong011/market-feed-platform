@@ -4,12 +4,14 @@
   보낸 뒤 응답이 끊김(들어갔는지 모름) · 버튼 두 번 · 밖에서 낸 주문 · 한도 · 로그인·CSRF·평문 접속.
 """
 import asyncio
+import base64
 import datetime
 import json
 import shutil
 import socket
 import ssl
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -20,7 +22,9 @@ import pytest
 
 from mdfeed import auth, config, ledger as L
 from mdfeed.httpd import HTTPServer, Response
+from mdfeed.kis_notice import NoticeClient
 from mdfeed.kis_trading import KISTrading
+from mdfeed.wsproto import OP_TEXT, FrameDecoder, handshake_response, server_frame
 from mdfeed.services import order_desk as od
 
 pytestmark = pytest.mark.skipif(shutil.which("openssl") is None, reason="openssl 없음")
@@ -61,6 +65,7 @@ class FakeKIS:
         self.srv = HTTPServer("127.0.0.1", port, "fake-kis")
         r = self.srv.route
         r("POST", "/oauth2/tokenP", lambda q: Response.json({"access_token": "t", "expires_in": 86400}))
+        r("POST", "/oauth2/Approval", lambda q: Response.json({"approval_key": "a"}))
         r("GET", "/uapi/domestic-stock/v1/quotations/inquire-price", self._price)
         r("GET", "/uapi/domestic-stock/v1/trading/inquire-balance", self._balance)
         r("GET", "/uapi/domestic-stock/v1/trading/inquire-daily-ccld", self._ccld)
@@ -111,6 +116,56 @@ class FakeKIS:
                               "output": {"ODNO": f"{len(self.orders):010d}", "ORD_TMD": "100000"}})
 
 
+class FakeNoticeWS:
+    """KIS 체결통보 웹소켓 흉내. 구독하면 키·IV 를 주고, send_fill 로 암호화된 체결통보를 민다."""
+    KEY, IV, TR = "k" * 32, "i" * 16, "H0STCNI9"
+
+    def __init__(self):
+        self.writer = None
+        self.loop = None
+        self.subscribed = threading.Event()
+
+    async def start(self) -> str:
+        self.loop = asyncio.get_running_loop()
+        self.server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        return f"ws://127.0.0.1:{self.server.sockets[0].getsockname()[1]}"
+
+    async def _handle(self, reader, writer):
+        raw = await reader.readuntil(b"\r\n\r\n")
+        headers = {k.strip().lower(): v.strip() for k, _, v in
+                   (line.partition(":") for line in raw.decode("latin-1").split("\r\n")[1:] if ":" in line)}
+        writer.write(handshake_response(headers))
+        dec = FrameDecoder(expect_masked=True)
+        while True:
+            chunk = await reader.read(65536)
+            if not chunk:
+                return
+            for op, payload in dec.feed(chunk):
+                if op != OP_TEXT:
+                    continue                                 # close 프레임 등
+                msg = json.loads(payload)
+                assert msg["body"]["input"] == {"tr_id": self.TR, "tr_key": "HTSID"}
+                writer.write(server_frame(OP_TEXT, json.dumps({
+                    "header": {"tr_id": self.TR},
+                    "body": {"rt_cd": "0", "msg1": "SUBSCRIBE SUCCESS", "output": {"key": self.KEY, "iv": self.IV}},
+                }).encode()))
+                await writer.drain()
+                self.writer = writer
+                self.subscribed.set()
+
+    def send_fill(self, odno, sym, qty, price, side="02", at="093015"):
+        from cryptography.hazmat.primitives import padding
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        f = [""] * 23
+        f[2], f[4], f[8], f[9], f[10], f[11], f[12], f[13], f[16] = odno, side, sym, str(qty), str(price), at, "N", "2", str(qty)
+        p = padding.PKCS7(128).padder()
+        data = p.update("^".join(f).encode()) + p.finalize()
+        enc = Cipher(algorithms.AES(self.KEY.encode()), modes.CBC(self.IV.encode())).encryptor()
+        body = base64.b64encode(enc.update(data) + enc.finalize()).decode()
+        frame = server_frame(OP_TEXT, f"1|{self.TR}|001|{body}".encode())
+        self.loop.call_soon_threadsafe(self.writer.write, frame)
+
+
 class Browser:
     def __init__(self, port: int, cafile: str):
         ctx = ssl.create_default_context(cafile=cafile)
@@ -140,11 +195,14 @@ class Browser:
                                          "qty": qty, "price": price})
 
 
-def run_desk(cert, fn, tmp_path, **cfg_over):
+def run_desk(cert, fn, tmp_path, notice=False, **cfg_over):
     async def main():
         kis_port, web_port, admin_port = _free_port(), _free_port(), _free_port()
         kis = FakeKIS(kis_port)
         await kis.srv.start()
+        kis.notice_ws = FakeNoticeWS() if notice else None
+        notice_client = (NoticeClient("mock", "k", "s", "HTSID", rest_base=f"http://127.0.0.1:{kis_port}",
+                                      ws_url=await kis.notice_ws.start()) if notice else None)
         cfg = config.Config()
         cfg.desk_password_hash = HASH
         cfg.desk_host, cfg.desk_port, cfg.desk_admin_port, cfg.http_host = \
@@ -155,7 +213,7 @@ def run_desk(cert, fn, tmp_path, **cfg_over):
         client = KISTrading("mock", "k", "s", "12345678-01", base=f"http://127.0.0.1:{kis_port}",
                             token_cache=str(tmp_path / "tok.json"), timeout_s=0.5, min_interval_s=0)
         led = L.Ledger(str(tmp_path / "orders.db"))
-        desk = od.OrderDesk(cfg, client=client, ledger=led, tls=od.make_tls_context(*cert))
+        desk = od.OrderDesk(cfg, client=client, ledger=led, tls=od.make_tls_context(*cert), notice=notice_client)
         desk._now = lambda: at(10, 0)            # 기본은 장중. 저녁에 시험을 돌려도 장부가 닫히지 않게
         stop = asyncio.Event()
         task = asyncio.create_task(desk.run(stop))
@@ -329,6 +387,33 @@ def test_day_close_waits_while_an_order_outcome_is_unknown(cert, tmp_path):
         assert 'mdfeed_ledger_close_blocked{service="order-desk"} 1' in desk.registry.prometheus().splitlines()
         assert desk.ledger.day_close(od.trade_date()) is None
     run_desk(cert, check, tmp_path)
+
+
+def test_fill_notice_reaches_ledger_before_totals(cert, tmp_path):
+    """증권사 합계는 아직 체결 0인데 통보가 먼저 온다. 원장은 바로 반영하고, 그 차이를 불일치로 보지 않는다."""
+    pytest.importorskip("cryptography")
+
+    def check(b, kis, desk):
+        b.login()
+        kis.mode = "no_fill"
+        st, d, _ = b.order("test-order-0001", qty=2, price=900)
+        assert st == 201
+        odno = d["order"]["odno"]
+        assert kis.notice_ws.subscribed.wait(5)
+        kis.notice_ws.send_fill(odno, "005930", 2, 900)
+        assert wait_for(lambda: desk.ledger.orders()[0]["state"] == "FILLED")
+        assert desk.ledger.orders()[0]["filled_amt"] == 1800
+        kis.notice_ws.send_fill(odno, "005930", 2, 900)                 # 재접속 뒤 같은 통보
+        kis.notice_ws.send_fill("0000099999", "005930", 1, 900)         # 데스크 밖 주문의 통보
+        assert wait_for(lambda: desk.notice.counts.get("fill", 0) == 3)
+        time.sleep(0.3)
+        assert desk.ledger.orders()[0]["filled_qty"] == 2
+        lines = desk.registry.prometheus().splitlines()
+        for kind, n in (("applied", 1), ("duplicate", 1), ("unmatched", 1)):
+            assert f'mdfeed_order_notices_total{{service="order-desk",kind="{kind}"}} {n}' in lines, kind
+        assert desk.health()["notice"]["subscribed"] is True
+        assert desk.breaks == []
+    run_desk(cert, check, tmp_path, notice=True)
 
 
 def test_outside_order_is_a_break_not_absorbed(cert, tmp_path):

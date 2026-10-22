@@ -45,6 +45,9 @@ OPEN_STATES = (PENDING_SUBMIT, ACCEPTED, PARTIAL, UNKNOWN)
 LIVE_STATES = (ACCEPTED, PARTIAL, FILLED, EXPIRED)  # 증권사에 들어간 것이 확실한 주문
 FILLABLE_STATES = (ACCEPTED, PARTIAL)                # 그중 아직 체결을 받을 수 있는 주문
 UNKNOWN_GRACE_S = 30.0
+# 체결통보로 먼저 붙인 체결을 증권사 합계가 따라잡을 때까지 기다리는 시간.
+# 이 안에서는 "합계가 원장보다 작다"를 불일치로 보지 않는다(통보가 합계보다 먼저 오는 게 정상이다).
+NOTICE_GRACE_S = 60.0
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS orders (
@@ -84,6 +87,10 @@ CREATE TABLE IF NOT EXISTS holdings_baseline (
     PRIMARY KEY (trade_date, symbol)
 );
 CREATE TABLE IF NOT EXISTS holdings_baseline_taken (trade_date TEXT PRIMARY KEY, ts REAL NOT NULL);
+-- 체결통보로 받은 체결. 같은 통보가 다시 와도 한 번만 붙인다(key = 주문번호·시각·수량·가격).
+CREATE TABLE IF NOT EXISTS notice_fills (
+    key TEXT PRIMARY KEY, order_id INTEGER NOT NULL, qty INTEGER NOT NULL, amt INTEGER NOT NULL, ts REAL NOT NULL
+);
 -- 하루 마감 기록. 한 번 닫힌 날은 다시 닫지 않는다.
 CREATE TABLE IF NOT EXISTS day_close (trade_date TEXT PRIMARY KEY, ts REAL NOT NULL, summary TEXT NOT NULL);
 -- 감사 기록. 지우거나 고치지 않는다.
@@ -268,6 +275,12 @@ class Ledger:
         delta = b_fill - sum(o["filled_qty"] for o in live)
         amt_delta = b_amt - sum(o["filled_amt"] for o in live)
         if delta < 0:
+            ids = [o["id"] for o in live]
+            recent = self._db.execute(
+                f"SELECT COALESCE(SUM(qty),0) FROM notice_fills WHERE ts > ? AND order_id IN ({','.join('?' * len(ids))})",
+                (now - NOTICE_GRACE_S, *ids)).fetchone()[0] if ids else 0
+            if -delta <= recent:
+                return breaks            # 통보가 먼저 왔고 합계가 아직 못 따라왔다. 기다린다
             return breaks + [{**key, "kind": "broker_fills_below_ledger", "delta": delta}]
         if delta == 0:
             return breaks
@@ -292,6 +305,35 @@ class Ledger:
             self._event("fill", o["id"], qty=take, amt=amt)
         return breaks
 
+    def apply_notice(self, trade_date: str, odno: str, qty: int, price: int, key: str) -> str:
+        """체결통보 한 건을 그 주문에 붙인다. 결과: applied · duplicate · unmatched · ignored.
+
+        unmatched 는 원장에 없는 주문번호다 — 데스크 밖에서 낸 주문의 체결이 합계보다 먼저 보인 것이다.
+        ignored 는 붙이면 원장이 틀릴 수 있는 경우(닫힌 주문, 남은 수량 초과)다. 합계 대사가 판정한다.
+        """
+        with self._lock:
+            if self._db.execute("SELECT 1 FROM notice_fills WHERE key=?", (key,)).fetchone():
+                return "duplicate"
+            want = odno.lstrip("0")
+            o = next((dict(r) for r in self._db.execute(
+                "SELECT * FROM orders WHERE trade_date=? AND odno IS NOT NULL", (trade_date,))
+                if (r["odno"] or "").lstrip("0") == want), None)
+            if o is None:
+                self._event("notice_unmatched", None, odno=odno, qty=qty, price=price)
+                return "unmatched"
+            if o["state"] not in FILLABLE_STATES or qty <= 0 or qty > o["qty"] - o["filled_qty"]:
+                self._event("notice_ignored", o["id"], qty=qty, price=price, state=o["state"])
+                return "ignored"
+            now = self._clock()
+            filled, amt = o["filled_qty"] + qty, qty * price
+            self._db.execute("INSERT INTO notice_fills VALUES (?,?,?,?,?)", (key, o["id"], qty, amt, now))
+            self._db.execute("INSERT INTO fills (order_id, qty, amt, source, ts) VALUES (?,?,?,?,?)",
+                             (o["id"], qty, amt, "notice", now))
+            self._db.execute("UPDATE orders SET filled_qty=?, filled_amt=filled_amt+?, state=?, updated_ts=?"
+                             " WHERE id=?", (filled, amt, FILLED if filled == o["qty"] else PARTIAL, now, o["id"]))
+            self._event("fill", o["id"], qty=qty, amt=amt, source="notice")
+            return "applied"
+
     def _set_state(self, order_id: int, state: str, now: float) -> None:
         self._db.execute("UPDATE orders SET state=?, updated_ts=? WHERE id=?", (state, now, order_id))
 
@@ -307,9 +349,22 @@ class Ledger:
 
     def reconcile_holdings(self, trade_date: str, broker: dict[str, int]) -> list[dict]:
         exp = self.expected_holdings(trade_date)
-        return [{"symbol": s, "kind": "position_mismatch",
-                 "ledger_qty": exp.get(s, 0), "broker_qty": broker.get(s, 0)}
-                for s in sorted(set(exp) | set(broker)) if exp.get(s, 0) != broker.get(s, 0)]
+        # 통보로 방금 붙인 체결은 증권사 잔고에 아직 안 보일 수 있다. 그 방향·크기 안의 차이는 기다린다.
+        recent: dict[str, int] = {}
+        for r in self._db.execute(
+                "SELECT o.symbol, o.side, SUM(n.qty) AS q FROM notice_fills n JOIN orders o ON o.id = n.order_id"
+                " WHERE o.trade_date=? AND n.ts > ? GROUP BY o.symbol, o.side",
+                (trade_date, self._clock() - NOTICE_GRACE_S)):
+            recent[r["symbol"]] = recent.get(r["symbol"], 0) + (r["q"] if r["side"] == "buy" else -r["q"])
+        out = []
+        for s in sorted(set(exp) | set(broker)):
+            diff = exp.get(s, 0) - broker.get(s, 0)
+            pending = recent.get(s, 0)
+            if diff == 0 or (diff * pending > 0 and abs(diff) <= abs(pending)):
+                continue
+            out.append({"symbol": s, "kind": "position_mismatch",
+                        "ledger_qty": exp.get(s, 0), "broker_qty": broker.get(s, 0)})
+        return out
 
     # ── 마감 ──────────────────────────────────────────────────────────────
     def day_close(self, trade_date: str) -> dict | None:

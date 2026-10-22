@@ -851,6 +851,12 @@ curl -s localhost:9111/healthz | python3 -c "import sys,json; print(json.load(sy
 - `breaks` — 불일치가 남아 있다. 위 LedgerReconcileBreak 절차. **불일치를 안고 하루를 확정하지 않는다.**
 - 마감 뒤 체결이 늘면(시간외 등 데스크 밖 체결) 닫힌 주문에 붙이지 않고 `fills_exceed_orders` 불일치로 올린다.
 
+### 체결통보 켜기 · OrderNoticeDisconnected
+`KIS_HTS_ID='HTS 로그인 아이디'` 를 env 파일에 넣고 `pip install '.[notify]'`. 기동 로그에 `체결통보 켜짐` 이 나와야 한다.
+끊겨 있으면 `/healthz` 의 `notice.last_error` 를 본다 — 접속키 발급 실패, HTS ID 오타(구독 거절), 네트워크.
+끊겨 있는 동안에도 원장은 합계 대사로 맞는다. 체결이 늦게 보일 뿐이다.
+처음 받은 통보 3건은 로그에 `원문 필드 N개` 로 남는다. 필드 위치가 명세(kis_notice.py 상수)와 다르면 상수를 고친다.
+
 ### 설치
 ```bash
 sudo install -m 600 -o mdfeed /dev/null /etc/mdfeed/order-desk.env   # KIS_MOCK_APP_KEY·SECRET·ACCOUNT, MDFEED_DESK_PASSWORD_HASH

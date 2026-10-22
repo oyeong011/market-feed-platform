@@ -8,7 +8,8 @@ sys.path.insert(0, str(ROOT / "quant"))
 
 # 테스트는 사용자 환경변수의 영향을 받으면 안 된다
 for k in list(os.environ):
-    if k.startswith("MDFEED_"):
+    if k.startswith("MDFEED_") or k == "KIS_HTS_ID":
+        # KIS_HTS_ID 가 셸에 있으면 주문 데스크 시험이 진짜 체결통보 서버에 붙으려 한다
         del os.environ[k]
 
 

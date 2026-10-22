@@ -621,6 +621,15 @@ groups:
           summary: "대회 현재가 조회가 10분간 10번 넘게 실패했다 — 그동안 주문이 체결되지 않는다"
           action: "KIS 토큰·유량제한(mdfeed_kis_throttled_total)·네트워크를 본다"
 
+      - alert: OrderNoticeDisconnected
+        # 체결통보를 켰는데 구독이 끊겨 있다. 원장은 합계 대사로 계속 맞지만 체결이 대사 주기만큼 늦게 보인다.
+        expr: mdfeed_order_notice_connected == 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "체결통보 구독이 10분 넘게 끊겨 있다 — 체결 반영이 합계 대사 주기로 늦어짐"
+          action: "/healthz 의 notice.last_error 를 본다(접속키·HTS ID·구독 거절)"
+
       - alert: OrdersRejectedSpike
         expr: increase(mdfeed_orders_total{result="rejected"}[10m]) > 3
         for: 1m

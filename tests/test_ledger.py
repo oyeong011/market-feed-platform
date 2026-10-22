@@ -165,3 +165,67 @@ def test_open_break_blocks_close():
     o = _limit_order_half_filled(led)
     assert led.close_day(DAY, open_breaks=1) == {"closed": False, "reason": "breaks", "breaks": 1}
     assert led.order(o["id"])["state"] == L.PARTIAL
+
+
+# ── 체결통보 ─────────────────────────────────────────────────────────────
+def _with_odno(led, qty=3, odno="0000012345"):
+    led.set_totals_baseline(DAY, "005930", "buy", _totals())
+    o, _ = led.new_order("cid-00000001", DAY, "005930", "buy", qty, 0, est_price=100)
+    return led.mark(o["id"], L.ACCEPTED, odno=odno)
+
+
+def test_notice_fills_order_before_totals_and_totals_do_not_double_count():
+    led, _ = _ledger()
+    o = _with_odno(led)
+    assert led.apply_notice(DAY, "12345", 2, 100, "k1") == "applied"      # 앞자리 0 이 달라도 같은 주문
+    assert led.order(o["id"])["filled_qty"] == 2
+    assert led.apply_totals(DAY, "005930", "buy", _totals(3, 2, 200)) == []
+    assert led.order(o["id"])["filled_qty"] == 2
+    assert led.apply_totals(DAY, "005930", "buy", _totals(3, 3, 300)) == []  # 통보를 놓친 1주는 합계가 채운다
+    assert led.order(o["id"])["state"] == L.FILLED
+
+
+def test_same_notice_twice_is_one_fill():
+    led, _ = _ledger()
+    o = _with_odno(led)
+    led.apply_notice(DAY, "0000012345", 1, 100, "k1")
+    assert led.apply_notice(DAY, "0000012345", 1, 100, "k1") == "duplicate"
+    assert led.order(o["id"])["filled_qty"] == 1
+
+
+def test_notice_for_unknown_order_is_reported_not_attached():
+    led, _ = _ledger()
+    o = _with_odno(led)
+    assert led.apply_notice(DAY, "99999", 1, 100, "k1") == "unmatched"
+    assert led.order(o["id"])["filled_qty"] == 0
+    assert led.events(1)[0]["kind"] == "notice_unmatched"
+
+
+def test_notice_beyond_remaining_is_ignored():
+    led, _ = _ledger()
+    o = _with_odno(led, qty=1)
+    assert led.apply_notice(DAY, "12345", 2, 100, "k1") == "ignored"
+    assert led.order(o["id"])["filled_qty"] == 0
+
+
+def test_totals_lagging_behind_notice_wait_then_break():
+    """통보가 합계보다 먼저 오는 건 정상이다. 그런데 유예가 지나도 합계가 안 따라오면 통보가 틀린 것이다."""
+    led, clock = _ledger()
+    _with_odno(led)
+    led.apply_notice(DAY, "12345", 2, 100, "k1")
+    assert led.apply_totals(DAY, "005930", "buy", _totals(3, 0, 0)) == []
+    clock.t += L.NOTICE_GRACE_S + 1
+    breaks = led.apply_totals(DAY, "005930", "buy", _totals(3, 0, 0))
+    assert [b["kind"] for b in breaks] == ["broker_fills_below_ledger"]
+
+
+def test_holdings_wait_for_broker_after_notice_then_break():
+    led, clock = _ledger()
+    led.set_holdings_baseline(DAY, {"005930": 2})
+    _with_odno(led)
+    led.apply_notice(DAY, "12345", 2, 100, "k1")
+    assert led.reconcile_holdings(DAY, {"005930": 2}) == []          # 잔고가 아직 안 따라옴: 기다린다
+    assert led.reconcile_holdings(DAY, {"005930": 4}) == []
+    assert led.reconcile_holdings(DAY, {"005930": 1})                 # 반대 방향 차이는 통보로 설명 안 됨
+    clock.t += L.NOTICE_GRACE_S + 1
+    assert led.reconcile_holdings(DAY, {"005930": 2})[0]["kind"] == "position_mismatch"

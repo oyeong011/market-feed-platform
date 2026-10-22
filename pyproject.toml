@@ -22,6 +22,8 @@ postgres = ["psycopg2-binary>=2.9"]
 # 백테스트 교차검증용 (없으면 자체 엔진만 돈다)
 quant = ["pandas>=2.0", "numpy>=1.24", "vectorbt>=0.26", "backtesting>=0.3", "pandas-ta>=0.3"]
 dev = ["pytest>=7.4"]
+# 주문 데스크 실시간 체결통보(AES-256-CBC 복호화). 없으면 통보를 끄고 합계 대사만 쓴다
+notify = ["cryptography>=42"]
 
 [project.scripts]
 mdfeed = "mdfeed.cli:main"

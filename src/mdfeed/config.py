@@ -183,6 +183,8 @@ class Config:
     desk_tls_cert: str = field(default_factory=lambda: _env("DESK_TLS_CERT", "data/tls/desk.crt"))
     desk_tls_key: str = field(default_factory=lambda: _env("DESK_TLS_KEY", "data/tls/desk.key"))
     desk_password_hash: str = field(default_factory=lambda: _env("DESK_PASSWORD_HASH", ""))
+    # 체결통보: KIS_HTS_ID 가 있고 cryptography 가 깔려 있으면 켜진다. 시험용으로 웹소켓 주소를 바꿀 수 있다
+    order_notice_ws: str = field(default_factory=lambda: _env("ORDER_NOTICE_WS", ""))
 
     # ── 모의투자대회 (선택 서비스, MDFEED_CONTEST_ENABLED=1) ─────────────────
     # 증권사로 주문을 보내지 않는다. 체결가만 증권사 현재가를 쓰고 돈은 대회 장부 안에서만 움직인다.

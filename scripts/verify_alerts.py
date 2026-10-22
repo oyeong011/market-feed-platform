@@ -65,6 +65,8 @@ CONDITIONAL = {
         "REST 로 폴링하는 어댑터(KIS)가 붙어 있어야 생성된다. 웹소켓·리플레이 구성에는 없다",
 }
 DECLARED_OFFLINE = {
+    "mdfeed_order_notices_total",
+    "mdfeed_order_notice_connected",
     "mdfeed_contest_orders_total",
     "mdfeed_contest_quote_errors_total",
     "mdfeed_contest_participants",
@@ -192,7 +194,7 @@ ORDER_DESK_PORT = 9141
 # 모의투자대회도 선택 서비스(MDFEED_CONTEST_ENABLED). login_failures·kis_* 는 주문 데스크와 같이 낸다.
 CONTEST_PORT = 9150
 CONTEST_METRICS = {"mdfeed_contest_orders_total", "mdfeed_contest_quote_errors_total", "mdfeed_contest_participants", "mdfeed_contest_integrity_breaks", "mdfeed_contest_integrity_last_success_timestamp_seconds", "mdfeed_contest_halted"}
-ORDER_DESK_METRICS = {"mdfeed_login_failures_total", "mdfeed_orders_total", "mdfeed_orders_unknown", "mdfeed_reconcile_breaks", "mdfeed_reconcile_errors_total", "mdfeed_reconcile_last_success_timestamp_seconds", "mdfeed_kis_calls_total", "mdfeed_kis_throttled_total", "mdfeed_ledger_close_blocked"}
+ORDER_DESK_METRICS = {"mdfeed_login_failures_total", "mdfeed_orders_total", "mdfeed_orders_unknown", "mdfeed_reconcile_breaks", "mdfeed_reconcile_errors_total", "mdfeed_reconcile_last_success_timestamp_seconds", "mdfeed_kis_calls_total", "mdfeed_kis_throttled_total", "mdfeed_ledger_close_blocked", "mdfeed_order_notices_total", "mdfeed_order_notice_connected"}
 MCAST_METRICS = {
     "mdfeed_mcast_send_errors_total",
     "mdfeed_mcast_retrans_unavailable_total",
@@ -208,6 +210,7 @@ MCAST_METRICS = {
 NO_ALERT_BY_DESIGN = {
     "mdfeed_reconcile_runs_total",     # 대사 주기 분모. 멈춤은 last_success 시각으로 본다
     "mdfeed_kis_calls_total",          # TR 별 호출 수. 한도 거절(kis_throttled_total)의 분모
+    "mdfeed_order_notices_total",      # 통보 종류별 수. 판정은 대사(불일치)와 연결 상태가 한다
     "mdfeed_contest_orders_total",     # 대회 체결·거부 수. 거부는 참가자 실수(예수금 부족 등)라 알람감이 아니다
     "mdfeed_contest_participants",     # 대시보드 표시용
     "mdfeed_uptime_seconds",           # 대시보드 표시용

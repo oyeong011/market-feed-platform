@@ -33,6 +33,7 @@ from pathlib import Path
 from .. import auth, ledger as L
 from ..adapters.kis import KST, market_is_open
 from ..httpd import HTTPServer, Request, Response, health_routes
+from ..kis_notice import Notice, NoticeClient, crypto_available
 from ..kis_trading import THROTTLED, KISTrading, Rejected, Uncertain
 from ..metrics import Registry
 
@@ -97,9 +98,21 @@ def make_client(cfg) -> KISTrading:
         raise StartupError(str(e)) from None
 
 
+def make_notice(cfg, client: KISTrading) -> tuple[NoticeClient | None, str]:
+    """체결통보 클라이언트. 못 켜면 (None, 이유) — 합계 대사만으로 돈다."""
+    hts = os.getenv("KIS_HTS_ID", "")
+    if not hts:
+        return None, "KIS_HTS_ID 미설정"
+    ok, why = crypto_available()
+    if not ok:
+        return None, why
+    return NoticeClient(client.env, client.app_key, client.app_secret, hts,
+                        rest_base=cfg.order_kis_base or None, ws_url=cfg.order_notice_ws or None), ""
+
+
 class OrderDesk:
     def __init__(self, cfg, client: KISTrading | None = None, ledger: L.Ledger | None = None,
-                 tls: ssl.SSLContext | None = None):
+                 tls: ssl.SSLContext | None = None, notice: NoticeClient | None = None):
         self.cfg = cfg
         self.tls = tls or make_tls_context(cfg.desk_tls_cert, cfg.desk_tls_key)
         if not cfg.desk_password_hash.startswith("pbkdf2_sha256$"):
@@ -109,9 +122,13 @@ class OrderDesk:
         self.registry = Registry(SERVICE)
         self.registry.declare_counters(
             "login_failures_total", "reconcile_runs_total", "reconcile_errors_total",
+            order_notices_total=[{"kind": k} for k in ("applied", "duplicate", "unmatched", "ignored",
+                                                      "ack", "refused")],
             orders_total=[{"result": r} for r in ("accepted", "rejected", "unknown", "blocked")],
             kis_throttled_total=[{"code": c} for c in sorted(THROTTLED)])
         self.client.observer = self._kis_event
+        self.notice, self.notice_reason = (notice, "") if notice else make_notice(cfg, self.client)
+        self.last_fill_lag_s: float | None = None
         self.quote_ttl_s = QUOTE_TTL_S[cfg.order_env]
         self._quotes: dict[str, tuple[float, dict]] = {}
         self._quote_inflight: dict[str, asyncio.Task] = {}
@@ -180,6 +197,23 @@ class OrderDesk:
     def session(self, req: Request) -> Response:
         return Response.json({"authenticated": self._authed(req), "env": self.cfg.order_env,
                               "account": self.client.account_label})
+
+    def _on_notice(self, n: Notice) -> None:
+        if n.kind != "fill":
+            self.registry.counter("order_notices_total", kind=n.kind)
+            return
+        r = self.ledger.apply_notice(trade_date(), n.odno, n.qty, n.price, n.key)
+        self.registry.counter("order_notices_total", kind=r)
+        if r == "applied":
+            o = next((x for x in self.ledger.orders(trade_date(), 500)
+                      if (x["odno"] or "").lstrip("0") == n.odno.lstrip("0")), None)
+            if o:
+                self.last_fill_lag_s = round(time.time() - o["created_ts"], 2)
+            log.info("체결통보 %s %s %d주 %s원 → 원장 반영 (주문 후 %ss)", n.side, n.symbol, n.qty,
+                     f"{n.price:,}", self.last_fill_lag_s)
+        elif r == "unmatched":
+            log.warning("원장에 없는 주문번호의 체결통보 %s %s %d주 — 데스크 밖 주문", n.odno, n.symbol, n.qty)
+        self._kick.set()
 
     def _kis_event(self, kind: str, value: str) -> None:
         if kind == "call":
@@ -334,6 +368,8 @@ class OrderDesk:
             except Exception:                          # noqa: BLE001
                 self.registry.counter("reconcile_errors_total")
                 log.exception("대사 루프 예외")
+            if self.notice:
+                self.registry.gauge("order_notice_connected", 1.0 if self.notice.subscribed else 0.0)
             unknown = sum(1 for o in self.ledger.orders(trade_date(), 500) if o["state"] == L.UNKNOWN)
             self.registry.gauge("orders_unknown", float(unknown))
             interval = self.cfg.reconcile_open_s if market_is_open() else self.cfg.reconcile_closed_s
@@ -368,7 +404,9 @@ class OrderDesk:
         return {"service": SERVICE, "env": self.cfg.order_env,
                 "healthy": bool(last) and time.time() - last < 3 * self.cfg.reconcile_closed_s,
                 "reconcile_breaks": len(self.breaks), "sessions": len(self.sessions),
-                "kis_calls": self.client.calls, "uptime_s": round(time.time() - self.started, 1)}
+                "kis_calls": self.client.calls, "uptime_s": round(time.time() - self.started, 1),
+                "notice": ({"enabled": True, **self.notice.status(), "last_fill_lag_s": self.last_fill_lag_s}
+                           if self.notice else {"enabled": False, "reason": self.notice_reason})}
 
     # ── 수명주기 ──────────────────────────────────────────────────────────
     def build_servers(self, tls: ssl.SSLContext) -> tuple[HTTPServer, HTTPServer]:
@@ -394,11 +432,14 @@ class OrderDesk:
         web, admin = self.build_servers(self.tls)
         await admin.start()
         await web.start()
-        log.info("주문 데스크 env=%s 계좌=%s https://%s:%d", self.cfg.order_env,
-                 self.client.account_label, self.cfg.desk_host, self.cfg.desk_port)
+        log.info("주문 데스크 env=%s 계좌=%s https://%s:%d · 체결통보 %s", self.cfg.order_env,
+                 self.client.account_label, self.cfg.desk_host, self.cfg.desk_port,
+                 "켜짐" if self.notice else f"꺼짐({self.notice_reason}) — 합계 대사만")
         from ..runtime import sample_resources
         tasks = [asyncio.create_task(self.reconcile_loop(stop)),
                  asyncio.create_task(sample_resources(self.tracker, stop))]
+        if self.notice:
+            tasks.append(asyncio.create_task(self.notice.run(self._on_notice, stop)))
         await stop.wait()
         for t in tasks:
             t.cancel()
