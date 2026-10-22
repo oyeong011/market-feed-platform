@@ -197,3 +197,16 @@ def test_backup_default_names_are_unique_and_published_atomically(monkeypatch, t
     assert not list(tmp_path.glob("*.partial"))
     assert json.loads(first_manifest.read_text(encoding="utf-8"))["object_id"] != json.loads(
         second_manifest.read_text(encoding="utf-8"))["object_id"]
+
+
+def test_pg_tools_prefer_server_major_over_path(tmp_path, monkeypatch):
+    """PATH 의 pg_dump 가 서버보다 새 버전이면 덤프를 옛 서버에 복원할 수 없다(결함 53)."""
+    from mdfeed import backup
+    d = tmp_path / "pg16"
+    d.mkdir()
+    (d / "pg_restore").write_text("")
+    monkeypatch.setenv("MDFEED_PG_BIN", str(d))
+    assert backup._pg_bin("pg_restore") == str(d / "pg_restore")
+    monkeypatch.setenv("MDFEED_PG_BIN", str(tmp_path / "없음"))
+    monkeypatch.setattr(backup, "PG_BIN_CANDIDATES", ())
+    assert backup._pg_bin("pg_restore") == "pg_restore"

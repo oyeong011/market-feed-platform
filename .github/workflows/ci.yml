@@ -269,10 +269,11 @@ jobs:
           fail=0
           for u in ops/systemd/mdfeed-*.service ops/systemd/mdfeed-*.timer ops/systemd/mdfeed.target; do
             out=$(systemd-analyze verify "$u" 2>&1) || true
-            # 러너에 없는 것(배포 경로 /opt/mdfeed, mdfeed 사용자·그룹)만 거른다.
+            # 러너에 없는 것(배포 경로 /opt/mdfeed, mdfeed 사용자·그룹)과 러너 자신의 시스템 유닛
+            # (/usr/lib/systemd/… — 2026-10 러너 systemd 가 올라가며 CPUAccounting= 경고를 냄)만 거른다.
             # **그 밖의 경고는 전부 실패로 본다.** 느슨하게 거르면 첫 실행에서 찾은 것 같은
             # 진짜 결함(StartLimitIntervalSec 이 [Service] 에 있어 무시되던 것)을 놓친다.
-            filtered=$(echo "$out" | grep -vE "/opt/mdfeed|Failed to (resolve|determine) (user|group)|mdfeed(:mdfeed)?' ?(user|group)? ?(not found|does not exist)" || true)
+            filtered=$(echo "$out" | grep -vE "^/(usr/)?lib/systemd/|/opt/mdfeed|Failed to (resolve|determine) (user|group)|mdfeed(:mdfeed)?' ?(user|group)? ?(not found|does not exist)" || true)
             if [ -n "$filtered" ]; then echo "::error::$u"; echo "$filtered"; fail=1; fi
           done
           [ "$fail" -eq 0 ] && echo "systemd 유닛 $(ls ops/systemd/mdfeed-* | wc -l | tr -d ' ')개 검증 통과"
@@ -516,6 +517,10 @@ jobs:
         with: { python-version: "3.12" }
       - name: Install test dependencies
         run: pip install -e '.[postgres]' pytest
+      - name: 서버와 같은 메이저의 pg_dump·pg_restore
+        # 러너 기본 클라이언트가 17 이상으로 올라가자 덤프에 transaction_timeout 이 실려
+        # 16 서버로의 복원이 깨졌다(결함 53). 백업 도구는 서버 메이저를 따라간다.
+        run: sudo apt-get update -q && sudo apt-get install -y -q postgresql-client-16
       - name: PostgreSQL storage tests
         # 스킵은 실패로 본다. 이 잡은 원래 TEST_POSTGRES_DSN 을 넘기기만 하고
         # 읽는 테스트가 없어서 전부 스킵된 채 초록불이었다.

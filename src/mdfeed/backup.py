@@ -209,9 +209,16 @@ def verify_remote_backup(
     return receipt
 
 
+# 백업 도구는 서버와 같은 메이저여야 한다. 새 pg_dump 의 덤프는 옛 서버가 모르는 설정
+# (17 의 transaction_timeout 등)을 실어 복원이 깨진다(결함 53). PATH 의 기본 도구는 마지막 수단이다.
+PG_BIN_CANDIDATES = (DEFAULT_PG_BIN, "/usr/lib/postgresql/16/bin")
+
+
 def _pg_bin(name: str) -> str:
-    path = pathlib.Path(DEFAULT_PG_BIN) / name
-    return str(path) if path.exists() else name
+    for d in (os.getenv("MDFEED_PG_BIN", ""), *PG_BIN_CANDIDATES):
+        if d and (pathlib.Path(d) / name).exists():
+            return str(pathlib.Path(d) / name)
+    return name
 
 
 def _dsn_from_env(env_name: str) -> str:
